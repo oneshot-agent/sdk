@@ -1,5 +1,5 @@
 {
-  "name": "@oneshot/sdk",
+  "name": "@oneshot-agent/sdk",
   "version": "0.4.0",
   "description": "Autonomous Agent SDK for executing real-world commercial transactions with automatic x402 payments",
   "main": "dist/index.js",
@@ -12,14 +12,6 @@
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "npm run build"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/oneshot-agent/sdk.git"
-  },
-  "homepage": "https://github.com/oneshot-agent/sdk#readme",
-  "bugs": {
-    "url": "https://github.com/oneshot-agent/sdk/issues"
   },
   "keywords": [
     "ai",
