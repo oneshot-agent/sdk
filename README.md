@@ -1,0 +1,199 @@
+# @oneshot/sdk
+
+Autonomous Agent SDK for executing real-world commercial transactions with automatic x402 payments.
+
+## Installation
+
+```bash
+npm install @oneshot/sdk
+```
+
+## Quick Start
+
+```typescript
+import { OneShot } from '@oneshot/sdk';
+
+const agent = new OneShot({
+  privateKey: process.env.AGENT_PRIVATE_KEY!
+});
+
+// Send email
+await agent.email({
+  to: 'user@example.com',
+  subject: 'Hello',
+  body: 'Hello World!'
+});
+
+// Research
+const report = await agent.research({ topic: 'AI agents', depth: 'deep' });
+
+// Check balance
+const balance = await agent.getBalance(agent.usdcAddress);
+```
+
+## Test vs Production Mode
+
+The SDK defaults to **test mode** for safety - no real money until you explicitly opt-in.
+
+```typescript
+// Test mode (default) - Base Sepolia testnet
+const agent = new OneShot({
+  privateKey: process.env.AGENT_PRIVATE_KEY!
+});
+agent.isTestMode;      // true
+agent.usdcAddress;     // 0x036CbD53842c5426634e7929541eC2318f3dCF7e
+agent.expectedChainId; // 84532
+
+// Production mode - Base mainnet (real USDC)
+const prodAgent = new OneShot({
+  privateKey: process.env.AGENT_PRIVATE_KEY!,
+  testMode: false
+});
+```
+
+Get testnet USDC from the [Circle Faucet](https://faucet.circle.com/).
+
+## Available Methods
+
+| Method | Description |
+|--------|-------------|
+| `email()` | Send emails with attachments |
+| `research()` | Deep web research |
+| `peopleSearch()` | Search people by criteria |
+| `enrichProfile()` | Enrich from LinkedIn/email |
+| `findEmail()` | Find email for a person |
+| `verifyEmail()` | Verify email deliverability |
+| `commerceBuy()` | Purchase products |
+| `commerceSearch()` | Search products |
+| `inboxList()` | List inbound emails |
+| `inboxGet()` | Get email by ID |
+| `getBalance()` | Check token balance |
+
+## Configuration
+
+```typescript
+interface OneShotConfig {
+  privateKey: string;    // Required
+  testMode?: boolean;    // Default: true (testnet)
+  baseUrl?: string;      // Override API URL
+  rpcUrl?: string;       // Override RPC URL
+  debug?: boolean;       // Enable logging
+  logger?: (msg: string) => void;
+}
+```
+
+## Tool Options
+
+All methods accept these common options:
+
+```typescript
+interface ToolOptions {
+  maxCost?: number;      // Max USDC willing to pay
+  timeout?: number;      // Timeout in seconds
+  signal?: AbortSignal;  // For cancellation
+  wait?: boolean;        // Wait for async jobs (default: true)
+  onStatusUpdate?: (status: string, requestId: string) => void;
+}
+```
+
+## Error Handling
+
+```typescript
+import { ValidationError, ToolError, JobError, JobTimeoutError } from '@oneshot/sdk';
+
+try {
+  await agent.email({ to: '', subject: 'Test', body: 'Hello' });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    console.log(`Invalid: ${error.field}`);
+  } else if (error instanceof ToolError) {
+    console.log(`API error: ${error.statusCode}`);
+  } else if (error instanceof JobTimeoutError) {
+    console.log(`Timeout: ${error.jobId}`);
+  }
+}
+```
+
+## Examples
+
+### Email with Attachments
+
+```typescript
+await agent.email({
+  to: ['alice@example.com', 'bob@example.com'],
+  subject: 'Report',
+  body: 'See attached.',
+  attachments: [{
+    filename: 'report.pdf',
+    content: base64Content,
+    content_type: 'application/pdf'
+  }]
+});
+```
+
+### People Search & Enrichment
+
+```typescript
+const results = await agent.peopleSearch({
+  job_titles: ['CEO', 'CTO'],
+  companies: ['Stripe'],
+  limit: 10
+});
+
+const profile = await agent.enrichProfile({
+  linkedin_url: results.results[0].linkedin_url
+});
+```
+
+### Commerce
+
+```typescript
+const order = await agent.commerceBuy({
+  product_url: 'https://amazon.com/dp/B07ZPC9QD4',
+  shipping_address: {
+    first_name: 'John',
+    last_name: 'Doe',
+    street: '123 Main St',
+    city: 'San Francisco',
+    state: 'CA',
+    zip_code: '94102',
+    country: 'US',
+    phone: '4155550100'
+  },
+  maxCost: 100
+});
+```
+
+### Cancellation
+
+```typescript
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 30000);
+
+try {
+  await agent.research({
+    topic: 'Long research',
+    signal: controller.signal
+  });
+} catch (error) {
+  if (error.message === 'Operation cancelled') {
+    console.log('Cancelled');
+  }
+}
+```
+
+## Environment Constants
+
+```typescript
+import { TEST_ENV, PROD_ENV } from '@oneshot/sdk';
+
+TEST_ENV.chainId;     // 84532
+TEST_ENV.usdcAddress; // 0x036CbD53842c5426634e7929541eC2318f3dCF7e
+
+PROD_ENV.chainId;     // 8453
+PROD_ENV.usdcAddress; // 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+```
+
+## License
+
+MIT
