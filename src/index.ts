@@ -760,7 +760,7 @@ export class OneShot {
 
     const signature = await this.wallet.signTypedData(
       {
-        name: paymentInfo.token.symbol,
+        name: 'USD Coin', // EIP-712 domain name from USDC contract (not the ticker symbol)
         version: '2',
         chainId,
         verifyingContract: paymentInfo.token.address
@@ -779,8 +779,8 @@ export class OneShot {
         from: this.wallet.address,
         to: paymentInfo.payTo,
         value,
-        validAfter: now,
-        validBefore: now + 300,
+        validAfter: now - 300, // Buffer for clock skew
+        validBefore: now + 3600,
         nonce: ethers.hexlify(nonce)
       }
     );
@@ -791,8 +791,8 @@ export class OneShot {
       from: this.wallet.address,
       to: paymentInfo.payTo,
       value: value.toString(),
-      validAfter: now,
-      validBefore: now + 300,
+      validAfter: now - 300,
+      validBefore: now + 3600,
       nonce: ethers.hexlify(nonce),
       signature: { v: sig.v, r: sig.r, s: sig.s },
       network: paymentInfo.network,
