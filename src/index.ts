@@ -234,11 +234,11 @@ export interface CommerceSearchOptions extends ToolOptions {
 }
 
 export interface VoiceCallOptions extends ToolOptions {
-  /** The objective of the call - what should the AI accomplish */
+  /** The objective of the call - what should the OneShot Agent accomplish */
   objective: string;
   /** Target phone number(s) in E.164 format. Array triggers conference mode analysis. */
   target_number: string | string[];
-  /** Optional persona for the AI caller */
+  /** Optional persona for the OneShot Agent caller */
   caller_persona?: string;
   /** Additional context about the call */
   context?: string;
@@ -666,6 +666,7 @@ export class OneShot {
       token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
     };
 
+    this.checkAbortBeforePayment(options.signal);
     const auth = await this.signPaymentAuthorization(paymentInfo);
     const buyResp = await this.makeRequest('/v1/tools/commerce/buy', payload, auth, quoteData.context.quote_id, options.signal);
 
@@ -688,7 +689,7 @@ export class OneShot {
   }
 
   /**
-   * Make an AI-powered voice call
+   * Make an autonomous voice call
    *
    * @example
    * ```typescript
@@ -770,6 +771,7 @@ export class OneShot {
       token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
     };
 
+    this.checkAbortBeforePayment(options.signal);
     const auth = await this.signPaymentAuthorization(paymentInfo);
     const callResp = await this.makeRequest('/v1/tools/voice/call', payload, auth, quoteData.context.quote_id, options.signal);
 
@@ -868,6 +870,7 @@ export class OneShot {
       token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
     };
 
+    this.checkAbortBeforePayment(options.signal);
     const auth = await this.signPaymentAuthorization(paymentInfo);
     const sendResp = await this.makeRequest('/v1/tools/sms/send', payload, auth, quoteData.context.quote_id, options.signal);
 
@@ -991,6 +994,7 @@ export class OneShot {
       const { payment_info } = await response.json() as { payment_info: PaymentInfo };
       this.log(`Payment required: ${payment_info.amount} USDC`);
 
+      this.checkAbortBeforePayment(signal);
       const auth = await this.signPaymentAuthorization(payment_info);
       response = await this.makeRequest(endpoint, payload, auth, quoteId, signal);
     }
@@ -1107,6 +1111,12 @@ export class OneShot {
       body: JSON.stringify(data),
       signal
     });
+  }
+
+  private checkAbortBeforePayment(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+      throw new OneShotError('Operation cancelled before payment');
+    }
   }
 
   private async signPaymentAuthorization(paymentInfo: PaymentInfo): Promise<PaymentAuthorization> {

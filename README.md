@@ -71,7 +71,7 @@ Get testnet USDC from the [Circle Faucet](https://faucet.circle.com/).
 | Method | Description |
 |--------|-------------|
 | `email()` | Send emails with attachments |
-| `voice()` | Make AI-powered voice calls |
+| `voice()` | Make voice calls |
 | `sms()` | Send SMS messages |
 | `smsInboxList()` | List inbound SMS |
 | `smsInboxGet()` | Get SMS by ID |
@@ -107,7 +107,7 @@ All methods accept these common options:
 interface ToolOptions {
   maxCost?: number;      // Max USDC willing to pay
   timeout?: number;      // Timeout in seconds
-  signal?: AbortSignal;  // For cancellation
+  signal?: AbortSignal;  // Cancel before payment (see Cancellation section)
   wait?: boolean;        // Wait for async jobs (default: true)
   onStatusUpdate?: (status: string, requestId: string) => void;
 }
@@ -249,21 +249,34 @@ const order = await agent.commerceBuy({
 
 ### Cancellation
 
+Use `AbortSignal` to cancel operations **before payment is made**. Once payment is signed, the operation will execute regardless of cancellation.
+
 ```typescript
 const controller = new AbortController();
-setTimeout(() => controller.abort(), 30000);
+
+// Cancel after 5 seconds if still in quote phase
+setTimeout(() => controller.abort(), 5000);
 
 try {
-  await agent.research({
-    topic: 'Long research',
+  await agent.voice({
+    objective: 'Make a reservation',
+    target_number: '+14155551234',
     signal: controller.signal
   });
 } catch (error) {
-  if (error.message === 'Operation cancelled') {
-    console.log('Cancelled');
+  if (error.message === 'Operation cancelled before payment') {
+    console.log('Cancelled before paying - no charge');
   }
 }
 ```
+
+**Important:** The signal can cancel:
+- Quote requests (before receiving price)
+- The decision phase (after quote, before payment)
+
+The signal **cannot** cancel:
+- Operations after payment is signed (call/SMS will still execute)
+- Server-side job execution
 
 ## Environment Constants
 
