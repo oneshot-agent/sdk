@@ -24,6 +24,19 @@ await agent.email({
   body: 'Hello World!'
 });
 
+// Make a voice call
+const call = await agent.voice({
+  objective: 'Call the restaurant to make a reservation for 2 at 7pm',
+  target_number: '+14155551234'
+});
+console.log(call.transcript);
+
+// Send SMS
+await agent.sms({
+  message: 'Your order has shipped!',
+  to_number: '+14155551234'
+});
+
 // Research
 const report = await agent.research({ topic: 'AI agents', depth: 'deep' });
 
@@ -58,6 +71,10 @@ Get testnet USDC from the [Circle Faucet](https://faucet.circle.com/).
 | Method | Description |
 |--------|-------------|
 | `email()` | Send emails with attachments |
+| `voice()` | Make AI-powered voice calls |
+| `sms()` | Send SMS messages |
+| `smsInboxList()` | List inbound SMS |
+| `smsInboxGet()` | Get SMS by ID |
 | `research()` | Deep web research |
 | `peopleSearch()` | Search people by criteria |
 | `enrichProfile()` | Enrich from LinkedIn/email |
@@ -99,12 +116,29 @@ interface ToolOptions {
 ## Error Handling
 
 ```typescript
-import { ValidationError, ToolError, JobError, JobTimeoutError } from '@oneshot/sdk';
+import {
+  ValidationError,
+  ToolError,
+  JobError,
+  JobTimeoutError,
+  ContentBlockedError,
+  EmergencyNumberError
+} from '@oneshot/sdk';
 
 try {
-  await agent.email({ to: '', subject: 'Test', body: 'Hello' });
+  await agent.voice({
+    objective: 'Make a call',
+    target_number: '+14155551234'
+  });
 } catch (error) {
-  if (error instanceof ValidationError) {
+  if (error instanceof ContentBlockedError) {
+    // Content blocked by safety filters
+    console.log(`Blocked: ${error.message}`);
+    console.log(`Categories: ${error.categories.join(', ')}`);
+  } else if (error instanceof EmergencyNumberError) {
+    // Attempted to call/SMS emergency number
+    console.log(`Emergency number blocked: ${error.blockedNumber}`);
+  } else if (error instanceof ValidationError) {
     console.log(`Invalid: ${error.field}`);
   } else if (error instanceof ToolError) {
     console.log(`API error: ${error.statusCode}`);
@@ -115,6 +149,55 @@ try {
 ```
 
 ## Examples
+
+### Voice Calls
+
+```typescript
+// Simple call
+const call = await agent.voice({
+  objective: 'Call to schedule a dentist appointment for next Tuesday',
+  target_number: '+14155551234',
+  caller_persona: 'A polite assistant scheduling an appointment',
+  context: 'Patient prefers morning appointments',
+  maxCost: 5
+});
+
+console.log('Transcript:', call.transcript);
+console.log('Summary:', call.summary);
+console.log('Success:', call.success_evaluation);
+
+// Conference call (multiple numbers)
+const conference = await agent.voice({
+  objective: 'Connect the buyer and seller to negotiate the final price',
+  target_number: ['+14155551234', '+14155555678'],
+  caller_persona: 'A professional meeting facilitator'
+});
+```
+
+### SMS
+
+```typescript
+// Single recipient
+await agent.sms({
+  message: 'Your appointment is confirmed for tomorrow at 10am',
+  to_number: '+14155551234'
+});
+
+// Multiple recipients (up to 10)
+await agent.sms({
+  message: 'Team meeting moved to 3pm',
+  to_number: ['+14155551234', '+14155555678', '+14155559012']
+});
+
+// Check SMS inbox
+const inbox = await agent.smsInboxList({ limit: 10 });
+for (const msg of inbox.messages) {
+  console.log(`From ${msg.from}: ${msg.body}`);
+}
+
+// Get specific message
+const msg = await agent.smsInboxGet('msg_abc123');
+```
 
 ### Email with Attachments
 

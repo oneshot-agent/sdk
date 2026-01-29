@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 
-const SDK_VERSION = '0.4.0';
+const SDK_VERSION = '0.5.0';
 
 // ============================================================================
 // Environment Configuration
@@ -8,7 +8,7 @@ const SDK_VERSION = '0.4.0';
 
 /** Test environment (Base Sepolia) - safe for development */
 export const TEST_ENV = {
-  baseUrl: 'https://oneshot-api-stg-525492415644.us-central1.run.app',
+  baseUrl: 'https://api-stg.oneshotagent.com',
   rpcUrl: 'https://sepolia.base.org',
   chainId: 84532,
   usdcAddress: '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
@@ -70,6 +70,26 @@ export class ValidationError extends OneShotError {
   constructor(message: string, public readonly field: string) {
     super(message);
     this.name = 'ValidationError';
+  }
+}
+
+export class ContentBlockedError extends OneShotError {
+  constructor(
+    message: string,
+    public readonly categories: string[]
+  ) {
+    super(message);
+    this.name = 'ContentBlockedError';
+  }
+}
+
+export class EmergencyNumberError extends OneShotError {
+  constructor(
+    message: string,
+    public readonly blockedNumber: string
+  ) {
+    super(message);
+    this.name = 'EmergencyNumberError';
   }
 }
 
@@ -213,6 +233,35 @@ export interface CommerceSearchOptions extends ToolOptions {
   limit?: number;
 }
 
+export interface VoiceCallOptions extends ToolOptions {
+  /** The objective of the call - what should the AI accomplish */
+  objective: string;
+  /** Target phone number(s) in E.164 format. Array triggers conference mode analysis. */
+  target_number: string | string[];
+  /** Optional persona for the AI caller */
+  caller_persona?: string;
+  /** Additional context about the call */
+  context?: string;
+  /** Maximum call duration in minutes (1-30) */
+  max_duration_minutes?: number;
+}
+
+export interface SmsOptions extends ToolOptions {
+  /** The SMS message body (max 1600 characters) */
+  message: string;
+  /** Target phone number(s) in E.164 format (max 10 recipients) */
+  to_number: string | string[];
+}
+
+export interface SmsInboxOptions {
+  /** Filter messages received after this ISO timestamp */
+  since?: string;
+  /** Maximum number of messages to return (default: 50, max: 100) */
+  limit?: number;
+  /** Filter by sender phone number */
+  from?: string;
+}
+
 // Result types
 export interface Experience {
   company?: { name?: string; website?: string };
@@ -341,6 +390,75 @@ export interface CommerceBuyResult {
 export interface CommerceSearchResult {
   request_id: string;
   status: string;
+}
+
+export interface VoiceQuote {
+  quote_id: string;
+  target_numbers: string[];
+  conference_mode: boolean;
+  objective_summary: string;
+  talking_points: string[];
+  success_criteria: string[];
+  estimated_duration_minutes: number;
+  complexity_score: number;
+  pipeline_fee: string;
+  phone_registration_fee: string;
+  estimated_call_cost: string;
+  total: string;
+  needs_phone_registration: boolean;
+  expires_at: string;
+}
+
+export interface VoiceCallResult {
+  request_id: string;
+  status: string;
+  ended_reason?: string;
+  duration_seconds?: number;
+  transcript?: string;
+  summary?: string;
+  success_evaluation?: string;
+  structured_data?: Record<string, unknown>;
+  cost?: number;
+  credit_issued?: number;
+}
+
+export interface SmsQuote {
+  quote_id: string;
+  recipient_count: number;
+  message_length: number;
+  segment_count: number;
+  per_message_rate: string;
+  messaging_fee: string;
+  phone_registration_fee: string;
+  total: string;
+  needs_phone_registration: boolean;
+  expires_at: string;
+}
+
+export interface SmsSendResult {
+  request_id: string;
+  status: string;
+  delivered?: number;
+  failed?: number;
+  total?: number;
+}
+
+export interface SmsInboxMessage {
+  id: string;
+  from: string;
+  to: string;
+  body: string;
+  num_media: number;
+  media_urls?: string[];
+  thread_id?: string;
+  related_outbound_id?: string;
+  received_at: string;
+  created_at: string;
+}
+
+export interface SmsInboxResult {
+  messages: SmsInboxMessage[];
+  count: number;
 }
 
 // ============================================================================
@@ -567,6 +685,256 @@ export class OneShot {
   async commerceSearch(options: CommerceSearchOptions): Promise<CommerceSearchResult> {
     this.validate(options.query, 'query');
     return this.tool('commerce/search', { ...options, limit: options.limit ?? 10 });
+  }
+
+  /**
+   * Make an AI-powered voice call
+   *
+   * @example
+   * ```typescript
+   * const result = await agent.voice({
+   *   objective: 'Call the restaurant to make a reservation for 2 at 7pm',
+   *   target_number: '+14155551234',
+   *   caller_persona: 'A polite assistant making a reservation'
+   * });
+   * console.log(result.transcript);
+   * ```
+   */
+  async voice(options: VoiceCallOptions): Promise<VoiceCallResult> {
+    this.validate(options.objective, 'objective');
+    this.validate(options.target_number, 'target_number');
+
+    // Check for empty arrays
+    if (Array.isArray(options.target_number) && options.target_number.length === 0) {
+      throw new ValidationError('target_number array cannot be empty', 'target_number');
+    }
+
+    if (options.objective.length < 10) {
+      throw new ValidationError('Objective must be at least 10 characters', 'objective');
+    }
+
+    if (options.max_duration_minutes && (options.max_duration_minutes < 1 || options.max_duration_minutes > 30)) {
+      throw new ValidationError('max_duration_minutes must be between 1 and 30', 'max_duration_minutes');
+    }
+
+    const payload: Record<string, unknown> = {
+      objective: options.objective,
+      target_number: options.target_number,
+      signal: options.signal,
+      onStatusUpdate: options.onStatusUpdate,
+      wait: options.wait
+    };
+
+    if (options.caller_persona) payload.caller_persona = options.caller_persona;
+    if (options.context) payload.context = options.context;
+    if (options.max_duration_minutes) payload.max_duration_minutes = options.max_duration_minutes;
+
+    // Voice uses quote-to-pay flow (402 -> payment -> 202)
+    const quoteResp = await this.makeRequest('/v1/tools/voice/call', payload, undefined, undefined, options.signal);
+
+    // Handle error responses before expecting 402
+    if (quoteResp.status === 400) {
+      const errorData = await quoteResp.json() as { error: string; message: string; categories?: string[]; blocked_number?: string };
+      if (errorData.error === 'content_blocked') {
+        throw new ContentBlockedError(errorData.message, errorData.categories || []);
+      }
+      if (errorData.error === 'emergency_number_blocked') {
+        throw new EmergencyNumberError(errorData.message, errorData.blocked_number || '');
+      }
+      throw new ValidationError(errorData.message || 'Invalid request', 'request');
+    }
+
+    if (quoteResp.status !== 402) {
+      throw new ToolError('Expected 402 for quote', quoteResp.status, await quoteResp.text());
+    }
+
+    const quoteData = await quoteResp.json() as {
+      context: VoiceQuote;
+      payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
+    };
+
+    this.log(`Voice quote: $${quoteData.context.total} for ${quoteData.context.estimated_duration_minutes}min call`);
+    this.log(`Objective summary: ${quoteData.context.objective_summary}`);
+
+    if (options.maxCost && parseFloat(quoteData.context.total) > options.maxCost) {
+      throw new OneShotError(`Quote $${quoteData.context.total} exceeds maxCost $${options.maxCost}`);
+    }
+
+    const paymentInfo: PaymentInfo = {
+      protocol: 'x402',
+      network: `eip155:${quoteData.payment_request.chain_id}`,
+      payTo: quoteData.payment_request.recipient,
+      amount: quoteData.payment_request.amount,
+      currency: 'USD',
+      facilitator_url: this.baseUrl,
+      token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
+    };
+
+    const auth = await this.signPaymentAuthorization(paymentInfo);
+    const callResp = await this.makeRequest('/v1/tools/voice/call', payload, auth, quoteData.context.quote_id, options.signal);
+
+    if (callResp.status !== 202) {
+      throw new ToolError('Voice call initiation failed', callResp.status, await callResp.text());
+    }
+
+    const result = await callResp.json() as { request_id: string; status: string };
+    this.log(`Call initiated: ${result.request_id}`);
+
+    if (options.wait !== false && result.request_id) {
+      return this.pollJob(result.request_id, options.timeout ?? 300, options.signal, options.onStatusUpdate);
+    }
+    return result as VoiceCallResult;
+  }
+
+  /**
+   * Send an SMS message
+   *
+   * @example
+   * ```typescript
+   * const result = await agent.sms({
+   *   message: 'Your order has shipped!',
+   *   to_number: '+14155551234'
+   * });
+   * console.log(result.status);
+   * ```
+   */
+  async sms(options: SmsOptions): Promise<SmsSendResult> {
+    this.validate(options.message, 'message');
+    this.validate(options.to_number, 'to_number');
+
+    // Check for empty arrays
+    if (Array.isArray(options.to_number) && options.to_number.length === 0) {
+      throw new ValidationError('to_number array cannot be empty', 'to_number');
+    }
+
+    if (options.message.length < 1) {
+      throw new ValidationError('Message is required', 'message');
+    }
+
+    if (options.message.length > 1600) {
+      throw new ValidationError('Message must be 1600 characters or less', 'message');
+    }
+
+    const recipientCount = Array.isArray(options.to_number) ? options.to_number.length : 1;
+    if (recipientCount > 10) {
+      throw new ValidationError('Maximum 10 recipients allowed', 'to_number');
+    }
+
+    const payload: Record<string, unknown> = {
+      message: options.message,
+      to_number: options.to_number,
+      signal: options.signal,
+      onStatusUpdate: options.onStatusUpdate,
+      wait: options.wait
+    };
+
+    // SMS uses quote-to-pay flow (402 -> payment -> 202)
+    const quoteResp = await this.makeRequest('/v1/tools/sms/send', payload, undefined, undefined, options.signal);
+
+    // Handle error responses before expecting 402
+    if (quoteResp.status === 400) {
+      const errorData = await quoteResp.json() as { error: string; message: string; categories?: string[]; blocked_number?: string };
+      if (errorData.error === 'content_blocked') {
+        throw new ContentBlockedError(errorData.message, errorData.categories || []);
+      }
+      if (errorData.error === 'emergency_number_blocked') {
+        throw new EmergencyNumberError(errorData.message, errorData.blocked_number || '');
+      }
+      throw new ValidationError(errorData.message || 'Invalid request', 'request');
+    }
+
+    if (quoteResp.status !== 402) {
+      throw new ToolError('Expected 402 for quote', quoteResp.status, await quoteResp.text());
+    }
+
+    const quoteData = await quoteResp.json() as {
+      context: SmsQuote;
+      payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
+    };
+
+    this.log(`SMS quote: $${quoteData.context.total} for ${quoteData.context.segment_count} segment(s) to ${recipientCount} recipient(s)`);
+
+    if (options.maxCost && parseFloat(quoteData.context.total) > options.maxCost) {
+      throw new OneShotError(`Quote $${quoteData.context.total} exceeds maxCost $${options.maxCost}`);
+    }
+
+    const paymentInfo: PaymentInfo = {
+      protocol: 'x402',
+      network: `eip155:${quoteData.payment_request.chain_id}`,
+      payTo: quoteData.payment_request.recipient,
+      amount: quoteData.payment_request.amount,
+      currency: 'USD',
+      facilitator_url: this.baseUrl,
+      token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
+    };
+
+    const auth = await this.signPaymentAuthorization(paymentInfo);
+    const sendResp = await this.makeRequest('/v1/tools/sms/send', payload, auth, quoteData.context.quote_id, options.signal);
+
+    if (sendResp.status !== 202) {
+      throw new ToolError('SMS send failed', sendResp.status, await sendResp.text());
+    }
+
+    const result = await sendResp.json() as { request_id: string; status: string };
+    this.log(`SMS queued: ${result.request_id}`);
+
+    if (options.wait !== false && result.request_id) {
+      return this.pollJob(result.request_id, options.timeout ?? 60, options.signal, options.onStatusUpdate);
+    }
+    return result as SmsSendResult;
+  }
+
+  /**
+   * List inbound SMS messages
+   *
+   * @example
+   * ```typescript
+   * const inbox = await agent.smsInboxList({ limit: 10 });
+   * for (const msg of inbox.messages) {
+   *   console.log(`From ${msg.from}: ${msg.body}`);
+   * }
+   * ```
+   */
+  async smsInboxList(options: SmsInboxOptions = {}): Promise<SmsInboxResult> {
+    const params = new URLSearchParams();
+    if (options.since) params.set('since', options.since);
+    if (options.limit) params.set('limit', String(options.limit));
+    if (options.from) params.set('from', options.from);
+
+    const qs = params.toString();
+    const response = await fetch(`${this.baseUrl}/v1/tools/sms/inbox${qs ? `?${qs}` : ''}`, {
+      headers: this.headers()
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to list SMS inbox', response.status, await response.text());
+    }
+    return response.json() as Promise<SmsInboxResult>;
+  }
+
+  /**
+   * Get a specific inbound SMS message
+   *
+   * @example
+   * ```typescript
+   * const msg = await agent.smsInboxGet('msg_abc123');
+   * console.log(msg.body);
+   * ```
+   */
+  async smsInboxGet(messageId: string): Promise<SmsInboxMessage> {
+    this.validate(messageId, 'messageId');
+
+    const response = await fetch(`${this.baseUrl}/v1/tools/sms/inbox/${messageId}`, {
+      headers: this.headers()
+    });
+
+    if (response.status === 404) {
+      throw new ToolError('SMS message not found', 404, 'Message not found');
+    }
+    if (!response.ok) {
+      throw new ToolError('Failed to get SMS message', response.status, await response.text());
+    }
+    return response.json() as Promise<SmsInboxMessage>;
   }
 
   async getBalance(tokenAddress: string): Promise<string> {
