@@ -48,5 +48,13 @@
     "node": ">=18.0.0"
   },
   "author": "OneShot",
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/oneshot-agent/sdk.git"
+  },
+  "homepage": "https://docs.oneshotagent.com/sdk/overview",
+  "bugs": {
+    "url": "https://github.com/oneshot-agent/sdk/issues"
+  }
 }
