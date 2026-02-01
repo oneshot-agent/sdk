@@ -1,17 +1,27 @@
-# @oneshot/sdk
+# @oneshot-agent/sdk
 
 Autonomous Agent SDK for executing real-world commercial transactions with automatic x402 payments.
 
 ## Installation
 
 ```bash
-npm install @oneshot/sdk
+npm install @oneshot-agent/sdk
 ```
+
+### Using with Claude Desktop, Cursor, or Claude Code?
+
+Use the MCP server instead for zero-code integration:
+
+```bash
+npx -y @oneshot-agent/mcp-server
+```
+
+See the [MCP Server documentation](https://docs.oneshotagent.com/sdk/mcp) for setup instructions.
 
 ## Quick Start
 
 ```typescript
-import { OneShot } from '@oneshot/sdk';
+import { OneShot } from '@oneshot-agent/sdk';
 
 const agent = new OneShot({
   privateKey: process.env.AGENT_PRIVATE_KEY!
@@ -36,6 +46,16 @@ await agent.sms({
   message: 'Your order has shipped!',
   to_number: '+14155551234'
 });
+
+// Build a website
+const site = await agent.build({
+  type: 'saas',
+  product: {
+    name: 'TaskFlow',
+    description: 'AI-powered task management for remote teams'
+  }
+});
+console.log('Live at:', site.url);
 
 // Research
 const report = await agent.research({ topic: 'AI agents', depth: 'deep' });
@@ -71,7 +91,7 @@ Get testnet USDC from the [Circle Faucet](https://faucet.circle.com/).
 | Method | Description |
 |--------|-------------|
 | `email()` | Send emails with attachments |
-| `voice()` | Make voice calls |
+| `voice()` | Make phone calls |
 | `sms()` | Send SMS messages |
 | `smsInboxList()` | List inbound SMS |
 | `smsInboxGet()` | Get SMS by ID |
@@ -82,8 +102,12 @@ Get testnet USDC from the [Circle Faucet](https://faucet.circle.com/).
 | `verifyEmail()` | Verify email deliverability |
 | `commerceBuy()` | Purchase products |
 | `commerceSearch()` | Search products |
+| `build()` | Build and deploy production websites |
+| `updateBuild()` | Update an existing website |
 | `inboxList()` | List inbound emails |
 | `inboxGet()` | Get email by ID |
+| `notifications()` | List agent notifications |
+| `markNotificationRead()` | Mark notification as read |
 | `getBalance()` | Check token balance |
 
 ## Configuration
@@ -123,7 +147,7 @@ import {
   JobTimeoutError,
   ContentBlockedError,
   EmergencyNumberError
-} from '@oneshot/sdk';
+} from '@oneshot-agent/sdk';
 
 try {
   await agent.voice({
@@ -149,6 +173,41 @@ try {
 ```
 
 ## Examples
+
+### Build Websites
+
+```typescript
+// Build a SaaS landing page
+const site = await agent.build({
+  type: 'saas',
+  product: {
+    name: 'TaskFlow',
+    description: 'AI-powered task management for remote teams. Automate workflows, track progress, and collaborate seamlessly.',
+    industry: 'Productivity',
+    pricing: 'Free tier, Pro $12/mo, Team $29/mo'
+  },
+  lead_capture: { enabled: true },
+  brand: {
+    primary_color: '#4F46E5',
+    tone: 'professional'
+  }
+});
+
+console.log('Website URL:', site.url);
+console.log('Leads go to:', site.lead_capture_email);
+
+// Update existing website
+const updated = await agent.updateBuild({
+  build_id: site.request_id,
+  product: {
+    name: 'TaskFlow 2.0',
+    description: 'Now with AI automation! Task management reimagined.',
+    pricing: 'Free tier, Pro $15/mo, Team $35/mo'
+  }
+});
+```
+
+Build types: `saas`, `portfolio`, `agency`, `personal`, `product`, `funnel`, `restaurant`, `event`
 
 ### Voice Calls
 
@@ -247,6 +306,19 @@ const order = await agent.commerceBuy({
 });
 ```
 
+### Notifications
+
+```typescript
+// List notifications
+const notifications = await agent.notifications({ unread: true, limit: 20 });
+for (const n of notifications.notifications) {
+  console.log(`[${n.type}] ${n.title}: ${n.message}`);
+}
+
+// Mark as read
+await agent.markNotificationRead('notification-uuid');
+```
+
 ### Cancellation
 
 Use `AbortSignal` to cancel operations **before payment is made**. Once payment is signed, the operation will execute regardless of cancellation.
@@ -281,7 +353,7 @@ The signal **cannot** cancel:
 ## Environment Constants
 
 ```typescript
-import { TEST_ENV, PROD_ENV } from '@oneshot/sdk';
+import { TEST_ENV, PROD_ENV } from '@oneshot-agent/sdk';
 
 TEST_ENV.chainId;     // 84532
 TEST_ENV.usdcAddress; // 0x036CbD53842c5426634e7929541eC2318f3dCF7e
@@ -289,6 +361,13 @@ TEST_ENV.usdcAddress; // 0x036CbD53842c5426634e7929541eC2318f3dCF7e
 PROD_ENV.chainId;     // 8453
 PROD_ENV.usdcAddress; // 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
 ```
+
+## Links
+
+- [Documentation](https://docs.oneshotagent.com)
+- [MCP Server](https://www.npmjs.com/package/@oneshot-agent/mcp-server) - For Claude Desktop, Cursor, Claude Code
+- [Pricing](https://docs.oneshotagent.com/pricing)
+- [GitHub](https://github.com/oneshot-agent/sdk)
 
 ## License
 

@@ -1295,11 +1295,22 @@ export class OneShot {
 
     // Handle 402 Payment Required
     if (response.status === 402) {
-      const { payment_info } = await response.json() as { payment_info: PaymentInfo };
-      this.log(`Payment required: ${payment_info.amount} USDC`);
+      const data = await response.json() as {
+        payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
+      };
+      const paymentInfo: PaymentInfo = {
+        protocol: 'x402',
+        network: `eip155:${data.payment_request.chain_id}`,
+        payTo: data.payment_request.recipient,
+        amount: data.payment_request.amount,
+        currency: 'USD',
+        facilitator_url: this.baseUrl,
+        token: { address: data.payment_request.token_address, symbol: 'USDC', decimals: 6 }
+      };
+      this.log(`Payment required: ${paymentInfo.amount} USDC`);
 
       this.checkAbortBeforePayment(signal);
-      const auth = await this.signPaymentAuthorization(payment_info);
+      const auth = await this.signPaymentAuthorization(paymentInfo);
       response = await this.makeRequest(endpoint, payload, auth, quoteId, signal);
     }
 
