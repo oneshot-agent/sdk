@@ -461,6 +461,143 @@ export interface SmsInboxResult {
   count: number;
 }
 
+export interface Notification {
+  id: string;
+  agentId: string;
+  type: 'job_completed' | 'job_failed' | 'voice_completed' | 'sms_completed' | 'credit_issued' | 'domain_expiring' | 'phone_expiring';
+  title: string;
+  body?: string;
+  metadata?: Record<string, unknown>;
+  read: boolean;
+  createdAt: string;
+}
+
+export interface NotificationsListOptions {
+  /** Only return unread notifications */
+  unread?: boolean;
+  /** Maximum number of notifications to return (default: 50, max: 100) */
+  limit?: number;
+}
+
+export interface NotificationsResult {
+  notifications: Notification[];
+  count: number;
+}
+
+// Build types
+export interface BuildProduct {
+  /** Product or business name */
+  name: string;
+  /** Description of the product/service (min 10 chars) */
+  description: string;
+  /** Industry category */
+  industry?: string;
+  /** Pricing information to display */
+  pricing?: string;
+}
+
+export interface BuildLeadCapture {
+  /** Enable lead capture form */
+  enabled: boolean;
+  /** Email to receive leads (defaults to agent inbox) */
+  inbox_email?: string;
+}
+
+export interface BuildBrand {
+  /** Primary brand color (hex format, e.g., #FF5733) */
+  primary_color?: string;
+  /** Font family preference */
+  font?: string;
+  /** Brand tone */
+  tone?: 'professional' | 'playful' | 'bold' | 'minimal';
+}
+
+export interface BuildImages {
+  /** Hero image URL */
+  hero?: string;
+  /** Logo image URL */
+  logo?: string;
+}
+
+export interface BuildOptions extends ToolOptions {
+  /** Website type */
+  type?: 'saas' | 'portfolio' | 'agency' | 'personal' | 'product' | 'funnel' | 'restaurant' | 'event';
+  /** Product/business information */
+  product: BuildProduct;
+  /** URL to analyze for content/inspiration */
+  source_url?: string;
+  /** Specific sections to include */
+  sections?: string[];
+  /** Lead capture configuration */
+  lead_capture?: BuildLeadCapture;
+  /** Brand customization */
+  brand?: BuildBrand;
+  /** Image URLs to use */
+  images?: BuildImages;
+  /** Custom domain (e.g., mysite.com) */
+  domain?: string;
+  /** Existing build ID to update */
+  build_id?: string;
+}
+
+export interface BuildQuote {
+  quote_id: string;
+  type: string;
+  product_name: string;
+  analysis: {
+    inferred_type: string;
+    estimated_sections: number;
+    estimated_ai_images: number;
+    needs_lead_capture: boolean;
+    needs_video: boolean;
+    video_type?: string;
+    complexity_score: number;
+    reasoning: string;
+  };
+  pricing: {
+    base_price: string;
+    extra_sections_fee: string;
+    ai_images_fee: string;
+    video_embed_fee: string;
+    lead_capture_fee: string;
+    source_analysis_fee: string;
+    custom_domain_fee: string;
+    total: string;
+  };
+  expires_at: string;
+}
+
+export interface BuildResult {
+  request_id: string;
+  status: string;
+  url?: string;
+  preview_url?: string;
+  lead_capture_email?: string;
+  design_score?: number;
+  error?: string;
+}
+
+export interface UpdateBuildOptions extends ToolOptions {
+  /** Existing build ID to update (required) */
+  build_id: string;
+  /** Updated product/business information */
+  product: BuildProduct;
+  /** Website type (optional, defaults to existing) */
+  type?: 'saas' | 'portfolio' | 'agency' | 'personal' | 'product' | 'funnel' | 'restaurant' | 'event';
+  /** URL to analyze for content/inspiration */
+  source_url?: string;
+  /** Specific sections to include */
+  sections?: string[];
+  /** Lead capture configuration */
+  lead_capture?: BuildLeadCapture;
+  /** Brand customization */
+  brand?: BuildBrand;
+  /** Image URLs to use */
+  images?: BuildImages;
+  /** Custom domain */
+  domain?: string;
+}
+
 // ============================================================================
 // OneShot SDK
 // ============================================================================
@@ -888,6 +1025,121 @@ export class OneShot {
   }
 
   /**
+   * Build a website
+   *
+   * @example
+   * ```typescript
+   * const result = await agent.build({
+   *   type: 'saas',
+   *   product: {
+   *     name: 'Acme Analytics',
+   *     description: 'Real-time analytics for modern teams'
+   *   },
+   *   lead_capture: { enabled: true }
+   * });
+   * console.log(result.url);
+   * ```
+   */
+  async build(options: BuildOptions): Promise<BuildResult> {
+    this.validate(options.product, 'product');
+    this.validate(options.product?.name, 'product.name');
+    this.validate(options.product?.description, 'product.description');
+
+    if (options.product.description.length < 10) {
+      throw new ValidationError('Product description must be at least 10 characters', 'product.description');
+    }
+
+    const payload: Record<string, unknown> = {
+      type: options.type ?? 'saas',
+      product: options.product,
+      signal: options.signal,
+      onStatusUpdate: options.onStatusUpdate,
+      wait: options.wait
+    };
+
+    if (options.source_url) payload.source_url = options.source_url;
+    if (options.sections) payload.sections = options.sections;
+    if (options.lead_capture) payload.lead_capture = options.lead_capture;
+    if (options.brand) payload.brand = options.brand;
+    if (options.images) payload.images = options.images;
+    if (options.domain) payload.domain = options.domain;
+    if (options.build_id) payload.build_id = options.build_id;
+
+    // Build uses quote-to-pay flow (402 -> payment -> 202)
+    const quoteResp = await this.makeRequest('/v1/tools/build', payload, undefined, undefined, options.signal);
+
+    if (quoteResp.status === 400) {
+      const errorData = await quoteResp.json() as { error: string; message: string; details?: unknown };
+      throw new ValidationError(errorData.message || 'Invalid request', 'request');
+    }
+
+    if (quoteResp.status !== 402) {
+      throw new ToolError('Expected 402 for quote', quoteResp.status, await quoteResp.text());
+    }
+
+    const quoteData = await quoteResp.json() as {
+      context: BuildQuote;
+      payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
+    };
+
+    this.log(`Build quote: $${quoteData.context.pricing.total} for "${quoteData.context.product_name}"`);
+    this.log(`Type: ${quoteData.context.analysis.inferred_type}, Sections: ${quoteData.context.analysis.estimated_sections}`);
+
+    if (options.maxCost && parseFloat(quoteData.context.pricing.total) > options.maxCost) {
+      throw new OneShotError(`Quote $${quoteData.context.pricing.total} exceeds maxCost $${options.maxCost}`);
+    }
+
+    const paymentInfo: PaymentInfo = {
+      protocol: 'x402',
+      network: `eip155:${quoteData.payment_request.chain_id}`,
+      payTo: quoteData.payment_request.recipient,
+      amount: quoteData.payment_request.amount,
+      currency: 'USD',
+      facilitator_url: this.baseUrl,
+      token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
+    };
+
+    this.checkAbortBeforePayment(options.signal);
+    const auth = await this.signPaymentAuthorization(paymentInfo);
+    const buildResp = await this.makeRequest('/v1/tools/build', payload, auth, quoteData.context.quote_id, options.signal);
+
+    if (buildResp.status !== 202) {
+      throw new ToolError('Build initiation failed', buildResp.status, await buildResp.text());
+    }
+
+    const result = await buildResp.json() as { request_id: string; status: string; build?: { lead_capture_email?: string } };
+    this.log(`Build initiated: ${result.request_id}`);
+
+    if (options.wait !== false && result.request_id) {
+      return this.pollJob(result.request_id, options.timeout ?? 600, options.signal, options.onStatusUpdate);
+    }
+    return result as BuildResult;
+  }
+
+  /**
+   * Update an existing website build
+   *
+   * @example
+   * ```typescript
+   * const result = await agent.updateBuild({
+   *   build_id: 'existing-build-uuid',
+   *   product: {
+   *     name: 'Acme Analytics v2',
+   *     description: 'Updated: Real-time analytics with new AI features'
+   *   }
+   * });
+   * console.log(result.url);
+   * ```
+   */
+  async updateBuild(options: UpdateBuildOptions): Promise<BuildResult> {
+    this.validate(options.build_id, 'build_id');
+    return this.build({
+      ...options,
+      build_id: options.build_id
+    });
+  }
+
+  /**
    * List inbound SMS messages
    *
    * @example
@@ -938,6 +1190,58 @@ export class OneShot {
       throw new ToolError('Failed to get SMS message', response.status, await response.text());
     }
     return response.json() as Promise<SmsInboxMessage>;
+  }
+
+  /**
+   * List notifications for the agent
+   *
+   * @example
+   * ```typescript
+   * // Get all notifications
+   * const all = await agent.notifications();
+   *
+   * // Get only unread notifications
+   * const unread = await agent.notifications({ unread: true });
+   * ```
+   */
+  async notifications(options: NotificationsListOptions = {}): Promise<NotificationsResult> {
+    const params = new URLSearchParams();
+    if (options.unread) params.set('unread', 'true');
+    if (options.limit) params.set('limit', String(options.limit));
+
+    const qs = params.toString();
+    const response = await fetch(`${this.baseUrl}/v1/tools/notifications${qs ? `?${qs}` : ''}`, {
+      headers: this.headers()
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to list notifications', response.status, await response.text());
+    }
+    return response.json() as Promise<NotificationsResult>;
+  }
+
+  /**
+   * Mark a notification as read
+   *
+   * @example
+   * ```typescript
+   * await agent.markNotificationRead('notification-uuid');
+   * ```
+   */
+  async markNotificationRead(notificationId: string): Promise<void> {
+    this.validate(notificationId, 'notificationId');
+
+    const response = await fetch(`${this.baseUrl}/v1/tools/notifications/${notificationId}/read`, {
+      method: 'PATCH',
+      headers: this.headers()
+    });
+
+    if (response.status === 404) {
+      throw new ToolError('Notification not found', 404, 'Notification not found');
+    }
+    if (!response.ok) {
+      throw new ToolError('Failed to mark notification as read', response.status, await response.text());
+    }
   }
 
   async getBalance(tokenAddress: string): Promise<string> {
