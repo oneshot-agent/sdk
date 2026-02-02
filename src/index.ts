@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 
-const SDK_VERSION = '0.5.0';
+const SDK_VERSION = '0.6.3';
 
 // ============================================================================
 // Environment Configuration
@@ -777,7 +777,8 @@ export class OneShot {
       variant_id: options.variant_id
     };
 
-    const quoteResp = await this.makeRequest('/v1/tools/commerce/buy', payload, undefined, undefined, options.signal);
+    // Commerce quotes can take up to 90s due to Rye API polling
+    const quoteResp = await this.makeRequest('/v1/tools/commerce/buy', payload, undefined, undefined, options.signal, 120000);
     if (quoteResp.status !== 402) {
       throw new ToolError('Expected 402 for quote', quoteResp.status, await quoteResp.text());
     }
@@ -805,7 +806,7 @@ export class OneShot {
 
     this.checkAbortBeforePayment(options.signal);
     const auth = await this.signPaymentAuthorization(paymentInfo);
-    const buyResp = await this.makeRequest('/v1/tools/commerce/buy', payload, auth, quoteData.context.quote_id, options.signal);
+    const buyResp = await this.makeRequest('/v1/tools/commerce/buy', payload, auth, quoteData.context.quote_id, options.signal, 60000);
 
     if (buyResp.status !== 202) {
       throw new ToolError('Commerce buy failed', buyResp.status, await buyResp.text());
@@ -815,7 +816,7 @@ export class OneShot {
     this.log(`Order submitted: ${result.request_id}`);
 
     if (options.wait !== false && result.request_id) {
-      return this.pollJob(result.request_id, options.timeout, options.signal, options.onStatusUpdate);
+      return this.pollJob(result.request_id, options.timeout ?? 180, options.signal, options.onStatusUpdate);
     }
     return result;
   }
@@ -1410,7 +1411,8 @@ export class OneShot {
     data: Record<string, unknown>,
     payment?: PaymentAuthorization,
     quoteId?: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    timeoutMs?: number
   ): Promise<Response> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -1420,12 +1422,26 @@ export class OneShot {
     if (payment) headers['x-payment'] = JSON.stringify(payment);
     if (quoteId) headers['x-quote-id'] = quoteId;
 
-    return fetch(`${this.baseUrl}${endpoint}`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(data),
-      signal
-    });
+    // Create timeout signal if specified
+    let fetchSignal = signal;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    if (timeoutMs && !signal) {
+      const controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      fetchSignal = controller.signal;
+    }
+
+    try {
+      return await fetch(`${this.baseUrl}${endpoint}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(data),
+        signal: fetchSignal
+      });
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
   }
 
   private checkAbortBeforePayment(signal?: AbortSignal): void {
