@@ -1,6 +1,6 @@
 {
   "name": "@oneshot-agent/sdk",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "description": "Autonomous Agent SDK for executing real-world commercial transactions with automatic x402 payments",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -37,9 +37,13 @@
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
+    "@coinbase/cdp-sdk": "^1.0.0",
     "typescript": ">=5.0.0"
   },
   "peerDependenciesMeta": {
+    "@coinbase/cdp-sdk": {
+      "optional": true
+    },
     "typescript": {
       "optional": true
     }

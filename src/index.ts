@@ -1,6 +1,12 @@
 import { ethers } from 'ethers';
+import type { WalletProvider, TypedDataDomain, TypedDataField } from './wallet-provider';
+import { EthersWalletProvider } from './providers/ethers';
 
-const SDK_VERSION = '0.6.3';
+export type { WalletProvider, TypedDataDomain, TypedDataField } from './wallet-provider';
+export { EthersWalletProvider } from './providers/ethers';
+export { CdpWalletProvider } from './providers/cdp';
+
+const SDK_VERSION = '0.7.0';
 
 // ============================================================================
 // Environment Configuration
@@ -130,8 +136,12 @@ export type LoggerFn = (message: string) => void;
 export type StatusUpdateFn = (status: string, requestId: string) => void;
 
 export interface OneShotConfig {
-  /** Private key for the agent's wallet (required) */
-  privateKey: string;
+  /** Option A: Raw private key (existing behavior) */
+  privateKey?: string;
+  /** Option B: Use Coinbase CDP Server Wallet (reads CDP_* env vars). Pass true or { address } to reuse existing. */
+  cdp?: boolean | { address?: string };
+  /** Option C: Bring your own WalletProvider implementation */
+  walletProvider?: WalletProvider;
   /** Test mode uses staging API + testnet (default: true) */
   testMode?: boolean;
   /** Override API URL */
@@ -612,7 +622,8 @@ export interface UpdateBuildOptions extends ToolOptions {
  * ```
  */
 export class OneShot {
-  private readonly wallet: ethers.Wallet;
+  private readonly provider: WalletProvider;
+  private readonly rpcProvider: ethers.JsonRpcProvider;
   private readonly baseUrl: string;
   private readonly debug: boolean;
   private readonly logger: LoggerFn;
@@ -620,11 +631,49 @@ export class OneShot {
   private readonly _expectedChainId: number;
   private readonly _usdcAddress: string;
 
-  constructor(config: OneShotConfig) {
-    if (!config.privateKey) {
-      throw new ValidationError('privateKey is required', 'privateKey');
+  /**
+   * Async factory — required for CDP wallets (account creation is async).
+   * Also works with privateKey and custom walletProvider.
+   *
+   * @example
+   * ```typescript
+   * // CDP wallet (no private keys)
+   * const agent = await OneShot.create({ cdp: true });
+   *
+   * // Raw private key (still works)
+   * const agent = await OneShot.create({ privateKey: '0x...' });
+   * ```
+   */
+  static async create(config: OneShotConfig): Promise<OneShot> {
+    if (config.walletProvider) {
+      return new OneShot(config, config.walletProvider);
     }
 
+    if (config.cdp) {
+      const { CdpWalletProvider } = await import('./providers/cdp');
+      const cdpOpts = typeof config.cdp === 'object' ? config.cdp : undefined;
+      const walletProvider = await CdpWalletProvider.create(cdpOpts);
+      return new OneShot(config, walletProvider);
+    }
+
+    if (config.privateKey) {
+      const env = (config.testMode ?? true) ? TEST_ENV : PROD_ENV;
+      const rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? env.rpcUrl);
+      const walletProvider = new EthersWalletProvider(config.privateKey, rpcProvider);
+      return new OneShot(config, walletProvider);
+    }
+
+    throw new ValidationError(
+      'Provide one of: privateKey, cdp, or walletProvider',
+      'config'
+    );
+  }
+
+  /**
+   * Sync constructor — works with privateKey (backwards compatible).
+   * For CDP wallets, use OneShot.create() instead.
+   */
+  constructor(config: OneShotConfig, walletProvider?: WalletProvider) {
     this._testMode = config.testMode ?? true;
     const env = this._testMode ? TEST_ENV : PROD_ENV;
 
@@ -633,9 +682,18 @@ export class OneShot {
     this._usdcAddress = env.usdcAddress;
     this.debug = config.debug ?? false;
     this.logger = config.logger ?? console.log;
+    this.rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? env.rpcUrl);
 
-    const provider = new ethers.JsonRpcProvider(config.rpcUrl ?? env.rpcUrl);
-    this.wallet = new ethers.Wallet(config.privateKey, provider);
+    if (walletProvider) {
+      this.provider = walletProvider;
+    } else if (config.privateKey) {
+      this.provider = new EthersWalletProvider(config.privateKey, this.rpcProvider);
+    } else {
+      throw new ValidationError(
+        'Provide privateKey or use OneShot.create() for CDP/custom wallets',
+        'config'
+      );
+    }
 
     if (this.debug) {
       this.log(`SDK initialized [${this._testMode ? 'TEST' : 'PROD'}] chain=${this._expectedChainId}`);
@@ -647,7 +705,7 @@ export class OneShot {
   // ---------------------------------------------------------------------------
 
   get address(): string {
-    return this.wallet.address;
+    return this.provider.address;
   }
 
   get isTestMode(): boolean {
@@ -1251,11 +1309,11 @@ export class OneShot {
     const contract = new ethers.Contract(
       tokenAddress,
       ['function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)'],
-      this.wallet
+      this.rpcProvider
     );
 
     const [balance, decimals] = await Promise.all([
-      contract.balanceOf(this.wallet.address),
+      contract.balanceOf(this.provider.address),
       contract.decimals()
     ]);
 
@@ -1276,7 +1334,7 @@ export class OneShot {
 
   private headers(): Record<string, string> {
     return {
-      'X-Agent-ID': this.wallet.address,
+      'X-Agent-ID': this.provider.address,
       'X-OneShot-SDK-Version': SDK_VERSION
     };
   }
@@ -1467,7 +1525,7 @@ export class OneShot {
       );
     }
 
-    const signature = await this.wallet.signTypedData(
+    const signature = await this.provider.signTypedData(
       {
         name: 'USD Coin', // EIP-712 domain name from USDC contract (not the ticker symbol)
         version: '2',
@@ -1485,7 +1543,7 @@ export class OneShot {
         ]
       },
       {
-        from: this.wallet.address,
+        from: this.provider.address,
         to: paymentInfo.payTo,
         value,
         validAfter: now - 300, // Buffer for clock skew
@@ -1497,7 +1555,7 @@ export class OneShot {
     const sig = ethers.Signature.from(signature);
 
     return {
-      from: this.wallet.address,
+      from: this.provider.address,
       to: paymentInfo.payTo,
       value: value.toString(),
       validAfter: now - 300,
