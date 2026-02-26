@@ -1527,7 +1527,7 @@ export class OneShot {
 
     const signature = await this.provider.signTypedData(
       {
-        name: 'USD Coin', // EIP-712 domain name from USDC contract (not the ticker symbol)
+        name: chainId === 84532 ? 'USDC' : 'USD Coin', // Base Sepolia uses "USDC", Base Mainnet uses "USD Coin"
         version: '2',
         chainId,
         verifyingContract: paymentInfo.token.address
