@@ -18,6 +18,18 @@ export interface TypedDataField {
   type: string;
 }
 
+export interface TransactionRequest {
+  to: string;
+  value?: bigint;
+  data?: string;
+  gasLimit?: bigint;
+}
+
+export interface TransactionResponse {
+  hash: string;
+  wait(): Promise<{ status: number }>;
+}
+
 export interface WalletProvider {
   /** The wallet's public address (checksummed) */
   readonly address: string;
@@ -33,4 +45,19 @@ export interface WalletProvider {
     types: Record<string, TypedDataField[]>,
     value: Record<string, unknown>
   ): Promise<string>;
+
+  /**
+   * Send an on-chain transaction.
+   * Used for ETH→USDC swaps via Uniswap and other contract interactions.
+   *
+   * @returns Transaction hash and wait function
+   */
+  sendTransaction?(tx: TransactionRequest): Promise<TransactionResponse>;
+
+  /**
+   * Get the native ETH balance of the wallet.
+   *
+   * @returns Balance in wei as bigint
+   */
+  getBalance?(): Promise<bigint>;
 }

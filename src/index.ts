@@ -2,9 +2,11 @@ import { ethers } from 'ethers';
 import type { WalletProvider, TypedDataDomain, TypedDataField } from './wallet-provider';
 import { EthersWalletProvider } from './providers/ethers';
 
-export type { WalletProvider, TypedDataDomain, TypedDataField } from './wallet-provider';
+export type { WalletProvider, TypedDataDomain, TypedDataField, TransactionRequest, TransactionResponse } from './wallet-provider';
 export { EthersWalletProvider } from './providers/ethers';
 export { CdpWalletProvider } from './providers/cdp';
+export { getSwapQuote, executeSwap } from './swap';
+export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 
 const SDK_VERSION = '0.7.0';
 
@@ -152,6 +154,10 @@ export interface OneShotConfig {
   debug?: boolean;
   /** Custom logger function */
   logger?: LoggerFn;
+  /** Payment currency: "USDC" (default, no swap) or "ETH" (auto-swap via Uniswap V3) */
+  currency?: 'USDC' | 'ETH';
+  /** Slippage tolerance for ETH→USDC swaps (default: 0.01 = 1%). Only used when currency is "ETH". */
+  slippage?: number;
 }
 
 export interface ToolOptions {
@@ -160,6 +166,8 @@ export interface ToolOptions {
   signal?: AbortSignal;
   onStatusUpdate?: StatusUpdateFn;
   wait?: boolean;
+  /** Optional value tag for RoCS tracking — stored in the receipt at creation time */
+  valueTag?: { type: string; amount?: number; label?: string };
 }
 
 export interface EmailToolOptions extends ToolOptions {
@@ -212,6 +220,41 @@ export interface VerifyEmailOptions extends ToolOptions {
   email: string;
 }
 
+export interface DeepResearchPersonOptions extends ToolOptions {
+  email?: string;
+  social_media_url?: string;
+  name?: string;
+  company?: string;
+}
+
+export interface SocialProfilesOptions extends ToolOptions {
+  email?: string;
+  social_media_url?: string;
+}
+
+export interface ArticleSearchOptions extends ToolOptions {
+  name: string;
+  company: string;
+  sort?: 'recent' | 'popular';
+  limit?: number;
+}
+
+export interface PersonNewsfeedOptions extends ToolOptions {
+  social_media_url: string;
+}
+
+export interface PersonInterestsOptions extends ToolOptions {
+  email?: string;
+  phone?: string;
+  social_media_url?: string;
+}
+
+export interface PersonInteractionsOptions extends ToolOptions {
+  social_media_url: string;
+  type?: 'replies' | 'followers' | 'following' | 'followers,following';
+  max_results?: number;
+}
+
 export interface InboxListOptions {
   since?: string;
   limit?: number;
@@ -241,6 +284,32 @@ export interface CommerceBuyOptions extends ToolOptions {
 export interface CommerceSearchOptions extends ToolOptions {
   query: string;
   limit?: number;
+}
+
+export interface WebSearchOptions extends ToolOptions {
+  query: string;
+  max_results?: number;
+}
+
+export interface WebSearchResult {
+  query: string;
+  results: Array<{ url: string; title: string; description: string }>;
+  result_count: number;
+}
+
+export interface WebReadOptions extends ToolOptions {
+  /** URL of the web page to read */
+  url: string;
+}
+
+export interface WebReadResult {
+  request_id: string;
+  status: string;
+  url: string;
+  markdown: string;
+  screenshot_url?: string;
+  metadata?: { title: string; description: string; statusCode?: number };
+  truncated?: boolean;
 }
 
 export interface VoiceCallOptions extends ToolOptions {
@@ -587,6 +656,43 @@ export interface BuildResult {
   error?: string;
 }
 
+// Browser types
+export interface BrowserTaskOptions extends ToolOptions {
+  /** Natural language instruction for what to do in the browser (min 10 chars) */
+  task: string;
+  /** JSON schema for structured output extraction */
+  output_schema?: Record<string, unknown>;
+  /** Initial URL to navigate to */
+  start_url?: string;
+  /** Restrict browsing to specific domains */
+  allowed_domains?: string[];
+  /** Reuse an existing browser session */
+  session_id?: string;
+  /** Maximum browser steps (default: 50, max: 100) */
+  max_steps?: number;
+}
+
+export interface BrowserQuote {
+  quote_id: string;
+  task_preview: string;
+  estimated_steps: number;
+  max_steps: number;
+  estimated_cost: string;
+  has_output_schema: boolean;
+  start_url: string | null;
+  expires_at: string;
+}
+
+export interface BrowserResult {
+  request_id: string;
+  status: string;
+  output?: string | Record<string, unknown>;
+  steps?: Array<{ number: number; goal: string; url: string }>;
+  cost?: number;
+  output_files?: string[];
+  browser_task_id?: string;
+}
+
 export interface UpdateBuildOptions extends ToolOptions {
   /** Existing build ID to update (required) */
   build_id: string;
@@ -606,6 +712,53 @@ export interface UpdateBuildOptions extends ToolOptions {
   images?: BuildImages;
   /** Custom domain */
   domain?: string;
+}
+
+// ============================================================================
+// Analytics Types
+// ============================================================================
+
+export interface SpendCategory {
+  category: string;
+  total: string;
+  count: number;
+  pct: number;
+}
+
+export interface SpendBreakdown {
+  categories: SpendCategory[];
+  total: string;
+  period_days: number;
+}
+
+export interface RoCSResult {
+  rocs: number;
+  total_spend: string;
+  total_value: string;
+  period_days: number;
+}
+
+export interface Receipt {
+  id: string;
+  receipt_id: string;
+  category: string;
+  subcategory: string;
+  amount_usdc: string;
+  service_fee: string;
+  provider_cost: string;
+  status: string;
+  settlement_tx: string | null;
+  value_tag: { type: string; amount?: number; label?: string } | null;
+  job_id: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+  settled_at: string | null;
+}
+
+export interface ReceiptsListResult {
+  receipts: Receipt[];
+  count: number;
+  has_more: boolean;
 }
 
 // ============================================================================
@@ -630,6 +783,8 @@ export class OneShot {
   private readonly _testMode: boolean;
   private readonly _expectedChainId: number;
   private readonly _usdcAddress: string;
+  private readonly _currency: 'USDC' | 'ETH';
+  private readonly _slippage: number;
 
   /**
    * Async factory — required for CDP wallets (account creation is async).
@@ -683,6 +838,8 @@ export class OneShot {
     this.debug = config.debug ?? false;
     this.logger = config.logger ?? console.log;
     this.rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? env.rpcUrl);
+    this._currency = config.currency ?? 'USDC';
+    this._slippage = config.slippage ?? 0.01;
 
     if (walletProvider) {
       this.provider = walletProvider;
@@ -695,8 +852,16 @@ export class OneShot {
       );
     }
 
+    // Validate ETH mode requirements
+    if (this._currency === 'ETH' && !this.provider.sendTransaction) {
+      throw new ValidationError(
+        'ETH currency mode requires a wallet provider that supports sendTransaction',
+        'currency'
+      );
+    }
+
     if (this.debug) {
-      this.log(`SDK initialized [${this._testMode ? 'TEST' : 'PROD'}] chain=${this._expectedChainId}`);
+      this.log(`SDK initialized [${this._testMode ? 'TEST' : 'PROD'}] chain=${this._expectedChainId} currency=${this._currency}`);
     }
   }
 
@@ -718,6 +883,14 @@ export class OneShot {
 
   get expectedChainId(): number {
     return this._expectedChainId;
+  }
+
+  get currency(): 'USDC' | 'ETH' {
+    return this._currency;
+  }
+
+  get slippage(): number {
+    return this._slippage;
   }
 
   // ---------------------------------------------------------------------------
@@ -788,6 +961,43 @@ export class OneShot {
   async verifyEmail(options: VerifyEmailOptions): Promise<VerifyEmailResult> {
     this.validate(options.email, 'email');
     return this.tool('verify/email', { ...options });
+  }
+
+  async deepResearchPerson(options: DeepResearchPersonOptions): Promise<any> {
+    if (!options.email && !options.social_media_url && !options.name) {
+      throw new ValidationError('At least one of email, social_media_url, or name is required', 'identifier');
+    }
+    return this.tool('research/person', { ...options });
+  }
+
+  async socialProfiles(options: SocialProfilesOptions): Promise<any> {
+    if (!options.email && !options.social_media_url) {
+      throw new ValidationError('At least one of email or social_media_url is required', 'identifier');
+    }
+    return this.tool('research/social', { ...options });
+  }
+
+  async articleSearch(options: ArticleSearchOptions): Promise<any> {
+    this.validate(options.name, 'name');
+    this.validate(options.company, 'company');
+    return this.tool('research/articles', { ...options });
+  }
+
+  async personNewsfeed(options: PersonNewsfeedOptions): Promise<any> {
+    this.validate(options.social_media_url, 'social_media_url');
+    return this.tool('research/newsfeed', { ...options });
+  }
+
+  async personInterests(options: PersonInterestsOptions): Promise<any> {
+    if (!options.email && !options.phone && !options.social_media_url) {
+      throw new ValidationError('At least one of email, phone, or social_media_url is required', 'identifier');
+    }
+    return this.tool('research/interests', { ...options });
+  }
+
+  async personInteractions(options: PersonInteractionsOptions): Promise<any> {
+    this.validate(options.social_media_url, 'social_media_url');
+    return this.tool('research/interactions', { ...options });
   }
 
   async inboxList(options: InboxListOptions = {}): Promise<InboxListResult> {
@@ -882,6 +1092,16 @@ export class OneShot {
   async commerceSearch(options: CommerceSearchOptions): Promise<CommerceSearchResult> {
     this.validate(options.query, 'query');
     return this.tool('commerce/search', { ...options, limit: options.limit ?? 10 });
+  }
+
+  async webSearch(options: WebSearchOptions): Promise<WebSearchResult> {
+    this.validate(options.query, 'query');
+    return this.tool('search', { ...options, max_results: options.max_results ?? 5 });
+  }
+
+  async webRead(options: WebReadOptions): Promise<WebReadResult> {
+    this.validate(options.url, 'url');
+    return this.tool('web-read', { ...options });
   }
 
   /**
@@ -1176,6 +1396,92 @@ export class OneShot {
   }
 
   /**
+   * Automate a browser task using natural language
+   *
+   * @example
+   * ```typescript
+   * const result = await agent.browser({
+   *   task: 'Go to CoinGecko and find the current price of Bitcoin',
+   *   start_url: 'https://www.coingecko.com',
+   * });
+   * console.log(result.output);
+   * ```
+   */
+  async browser(options: BrowserTaskOptions): Promise<BrowserResult> {
+    this.validate(options.task, 'task');
+
+    if (options.task.length < 10) {
+      throw new ValidationError('Task must be at least 10 characters', 'task');
+    }
+
+    if (options.max_steps && (options.max_steps < 1 || options.max_steps > 100)) {
+      throw new ValidationError('max_steps must be between 1 and 100', 'max_steps');
+    }
+
+    const payload: Record<string, unknown> = {
+      task: options.task,
+      signal: options.signal,
+      onStatusUpdate: options.onStatusUpdate,
+      wait: options.wait
+    };
+
+    if (options.output_schema) payload.output_schema = options.output_schema;
+    if (options.start_url) payload.start_url = options.start_url;
+    if (options.allowed_domains) payload.allowed_domains = options.allowed_domains;
+    if (options.session_id) payload.session_id = options.session_id;
+    if (options.max_steps) payload.max_steps = options.max_steps;
+
+    // Browser uses quote-to-pay flow (402 -> payment -> 202)
+    const quoteResp = await this.makeRequest('/v1/tools/browser', payload, undefined, undefined, options.signal);
+
+    if (quoteResp.status === 400) {
+      const errorData = await quoteResp.json() as { error: string; message: string };
+      throw new ValidationError(errorData.message || 'Invalid request', 'request');
+    }
+
+    if (quoteResp.status !== 402) {
+      throw new ToolError('Expected 402 for quote', quoteResp.status, await quoteResp.text());
+    }
+
+    const quoteData = await quoteResp.json() as {
+      context: BrowserQuote;
+      payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
+    };
+
+    this.log(`Browser quote: $${quoteData.context.estimated_cost} for ~${quoteData.context.estimated_steps} steps`);
+
+    if (options.maxCost && parseFloat(quoteData.context.estimated_cost) > options.maxCost) {
+      throw new OneShotError(`Quote $${quoteData.context.estimated_cost} exceeds maxCost $${options.maxCost}`);
+    }
+
+    const paymentInfo: PaymentInfo = {
+      protocol: 'x402',
+      network: `eip155:${quoteData.payment_request.chain_id}`,
+      payTo: quoteData.payment_request.recipient,
+      amount: quoteData.payment_request.amount,
+      currency: 'USD',
+      facilitator_url: this.baseUrl,
+      token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
+    };
+
+    this.checkAbortBeforePayment(options.signal);
+    const auth = await this.signPaymentAuthorization(paymentInfo);
+    const execResp = await this.makeRequest('/v1/tools/browser', payload, auth, quoteData.context.quote_id, options.signal);
+
+    if (execResp.status !== 202) {
+      throw new ToolError('Browser task initiation failed', execResp.status, await execResp.text());
+    }
+
+    const result = await execResp.json() as { request_id: string; status: string };
+    this.log(`Browser task initiated: ${result.request_id}`);
+
+    if (options.wait !== false && result.request_id) {
+      return this.pollJob(result.request_id, options.timeout ?? 300, options.signal, options.onStatusUpdate);
+    }
+    return result as BrowserResult;
+  }
+
+  /**
    * Update an existing website build
    *
    * @example
@@ -1321,6 +1627,118 @@ export class OneShot {
   }
 
   // ---------------------------------------------------------------------------
+  // Analytics methods
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Get spend breakdown by category
+   *
+   * @example
+   * ```typescript
+   * const breakdown = await agent.spendBreakdown({ period: 30 });
+   * console.log(`Total: $${breakdown.total}`);
+   * for (const cat of breakdown.categories) {
+   *   console.log(`${cat.category}: $${cat.total} (${cat.pct}%)`);
+   * }
+   * ```
+   */
+  async spendBreakdown(options?: { period?: number }): Promise<SpendBreakdown> {
+    const params = new URLSearchParams();
+    if (options?.period) params.set('period', String(options.period));
+
+    const qs = params.toString();
+    const response = await fetch(`${this.baseUrl}/v1/analytics/spend/breakdown${qs ? `?${qs}` : ''}`, {
+      headers: this.headers()
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to get spend breakdown', response.status, await response.text());
+    }
+    return response.json() as Promise<SpendBreakdown>;
+  }
+
+  /**
+   * Get Return on Cognitive Spend (RoCS)
+   *
+   * @example
+   * ```typescript
+   * const result = await agent.rocs({ period: 30 });
+   * console.log(`RoCS: ${result.rocs}x (spent $${result.total_spend}, generated $${result.total_value})`);
+   * ```
+   */
+  async rocs(options?: { period?: number }): Promise<RoCSResult> {
+    const params = new URLSearchParams();
+    if (options?.period) params.set('period', String(options.period));
+
+    const qs = params.toString();
+    const response = await fetch(`${this.baseUrl}/v1/analytics/rocs${qs ? `?${qs}` : ''}`, {
+      headers: this.headers()
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to get RoCS', response.status, await response.text());
+    }
+    return response.json() as Promise<RoCSResult>;
+  }
+
+  /**
+   * List receipts with optional filtering
+   *
+   * @example
+   * ```typescript
+   * const result = await agent.receiptsList({ period: 7, category: 'communication' });
+   * for (const r of result.receipts) {
+   *   console.log(`${r.subcategory}: $${r.amount_usdc}`);
+   * }
+   * ```
+   */
+  async receiptsList(options?: { period?: number; category?: string; limit?: number }): Promise<ReceiptsListResult> {
+    const params = new URLSearchParams();
+    if (options?.period) params.set('period', String(options.period));
+    if (options?.category) params.set('category', options.category);
+    if (options?.limit) params.set('limit', String(options.limit));
+
+    const qs = params.toString();
+    const response = await fetch(`${this.baseUrl}/v1/analytics/receipts${qs ? `?${qs}` : ''}`, {
+      headers: this.headers()
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to list receipts', response.status, await response.text());
+    }
+    return response.json() as Promise<ReceiptsListResult>;
+  }
+
+  /**
+   * Tag a receipt with a value for RoCS computation
+   *
+   * @example
+   * ```typescript
+   * await agent.tagReceiptValue('rcpt_01HX...', { type: 'revenue', amount: 5.00, label: 'Sale from lead' });
+   * ```
+   */
+  async tagReceiptValue(receiptId: string, valueTag: { type: string; amount?: number; label?: string }): Promise<void> {
+    this.validate(receiptId, 'receiptId');
+    this.validate(valueTag.type, 'valueTag.type');
+
+    const response = await fetch(`${this.baseUrl}/v1/analytics/receipts/${receiptId}/value`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.headers()
+      },
+      body: JSON.stringify(valueTag)
+    });
+
+    if (response.status === 404) {
+      throw new ToolError('Receipt not found', 404, 'Receipt not found or not owned by this agent');
+    }
+    if (!response.ok) {
+      throw new ToolError('Failed to tag receipt value', response.status, await response.text());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
 
@@ -1392,6 +1810,98 @@ export class OneShot {
   }
 
   private async pollJob<T>(
+    requestId: string,
+    timeoutSec?: number,
+    signal?: AbortSignal,
+    onStatusUpdate?: StatusUpdateFn
+  ): Promise<T> {
+    // Try WebSocket push first, fall back to HTTP polling
+    try {
+      return await this.waitViaWebSocket<T>(requestId, timeoutSec, signal, onStatusUpdate);
+    } catch {
+      this.log('WebSocket unavailable, falling back to HTTP polling');
+      return this.pollJobHttp<T>(requestId, timeoutSec, signal, onStatusUpdate);
+    }
+  }
+
+  private waitViaWebSocket<T>(
+    requestId: string,
+    timeoutSec?: number,
+    signal?: AbortSignal,
+    onStatusUpdate?: StatusUpdateFn
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const maxWaitMs = (timeoutSec ?? 120) * 1000;
+      const wsUrl = this.baseUrl.replace(/^http/, 'ws') +
+        `/v1/requests/subscribe?wallet=${encodeURIComponent(this.provider.address)}`;
+
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch {
+        return reject(new Error('WebSocket not available'));
+      }
+
+      const timeout = setTimeout(() => {
+        ws.close();
+        reject(new JobTimeoutError(requestId, maxWaitMs));
+      }, maxWaitMs);
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
+      };
+
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          cleanup();
+          reject(new OneShotError('Operation cancelled'));
+        }, { once: true });
+      }
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ subscribe: [requestId] }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
+
+          if (msg.request_id !== requestId) return;
+
+          if (msg.status === 'completed') {
+            this.log('Job completed (WebSocket)');
+            cleanup();
+            resolve((msg.result ?? msg) as T);
+          } else if (msg.status === 'failed') {
+            cleanup();
+            reject(new JobError(`Job failed: ${msg.error ?? 'Unknown'}`, requestId, String(msg.error ?? 'Unknown')));
+          } else {
+            onStatusUpdate?.(msg.status, requestId);
+          }
+        } catch {
+          // Ignore malformed messages
+        }
+      };
+
+      ws.onerror = () => {
+        cleanup();
+        reject(new Error('WebSocket error'));
+      };
+
+      ws.onclose = (event) => {
+        // If closed before we got a result, reject so HTTP fallback kicks in
+        if (event.code !== 1000) {
+          cleanup();
+          reject(new Error('WebSocket closed unexpectedly'));
+        }
+      };
+    });
+  }
+
+  private async pollJobHttp<T>(
     requestId: string,
     timeoutSec?: number,
     signal?: AbortSignal,
@@ -1508,7 +2018,32 @@ export class OneShot {
     }
   }
 
+  /**
+   * If currency is ETH, swap ETH→USDC to ensure the wallet has enough USDC for payment.
+   * This is called before signing the x402 payment authorization.
+   */
+  private async ensureUsdcBalance(paymentInfo: PaymentInfo): Promise<void> {
+    if (this._currency !== 'ETH') return;
+
+    const { executeSwap } = await import('./swap');
+
+    this.log(`Swapping ETH→USDC for ${paymentInfo.amount} USDC (slippage: ${this._slippage * 100}%)`);
+
+    const result = await executeSwap(
+      this.provider,
+      this.rpcProvider,
+      paymentInfo.amount,
+      this._expectedChainId,
+      this._slippage,
+    );
+
+    this.log(`Swap complete: tx=${result.txHash}, USDC received=${ethers.formatUnits(result.usdcReceived, 6)}`);
+  }
+
   private async signPaymentAuthorization(paymentInfo: PaymentInfo): Promise<PaymentAuthorization> {
+    // If paying with ETH, swap to USDC first
+    await this.ensureUsdcBalance(paymentInfo);
+
     const now = Math.floor(Date.now() / 1000);
     const nonce = ethers.randomBytes(32);
     const value = ethers.parseUnits(paymentInfo.amount, paymentInfo.token.decimals);

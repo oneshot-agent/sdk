@@ -1,4 +1,4 @@
-import type { WalletProvider, TypedDataDomain, TypedDataField } from '../wallet-provider';
+import type { WalletProvider, TypedDataDomain, TypedDataField, TransactionRequest, TransactionResponse } from '../wallet-provider';
 
 /**
  * Wallet provider backed by Coinbase CDP Server Wallets v2.
@@ -66,5 +66,31 @@ export class CdpWalletProvider implements WalletProvider {
       primaryType,
       message: value,
     });
+  }
+
+  async sendTransaction(tx: TransactionRequest): Promise<TransactionResponse> {
+    const result = await this.cdp.evm.sendTransaction({
+      address: this._address,
+      transaction: {
+        to: tx.to,
+        value: tx.value ? `0x${tx.value.toString(16)}` : '0x0',
+        data: tx.data || '0x',
+      },
+    });
+
+    return {
+      hash: result.transactionHash,
+      wait: async () => {
+        // CDP transactions are confirmed by the time sendTransaction resolves
+        return { status: 1 };
+      },
+    };
+  }
+
+  async getBalance(): Promise<bigint> {
+    const result = await this.cdp.evm.getBalance({
+      address: this._address,
+    });
+    return BigInt(result.balance || '0');
   }
 }

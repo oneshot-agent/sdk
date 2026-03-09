@@ -30,14 +30,14 @@
     "base"
   ],
   "dependencies": {
-    "ethers": "^6.16.0"
+    "ethers": "6.16.0"
   },
   "devDependencies": {
-    "@types/node": "^25.0.3",
-    "typescript": "^5.9.3"
+    "@types/node": "25.3.5",
+    "typescript": "5.9.3"
   },
   "peerDependencies": {
-    "@coinbase/cdp-sdk": "^1.0.0",
+    "@coinbase/cdp-sdk": ">=1.0.0",
     "typescript": ">=5.0.0"
   },
   "peerDependenciesMeta": {

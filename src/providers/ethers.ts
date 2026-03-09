@@ -1,5 +1,5 @@
 import { ethers } from 'ethers';
-import type { WalletProvider, TypedDataDomain, TypedDataField } from '../wallet-provider';
+import type { WalletProvider, TypedDataDomain, TypedDataField, TransactionRequest, TransactionResponse } from '../wallet-provider';
 
 /**
  * Wallet provider backed by a raw private key via ethers.js.
@@ -22,5 +22,27 @@ export class EthersWalletProvider implements WalletProvider {
     value: Record<string, unknown>
   ): Promise<string> {
     return this.wallet.signTypedData(domain, types, value);
+  }
+
+  async sendTransaction(tx: TransactionRequest): Promise<TransactionResponse> {
+    const resp = await this.wallet.sendTransaction({
+      to: tx.to,
+      value: tx.value,
+      data: tx.data,
+      gasLimit: tx.gasLimit,
+    });
+    return {
+      hash: resp.hash,
+      wait: async () => {
+        const receipt = await resp.wait();
+        return { status: receipt?.status ?? 0 };
+      },
+    };
+  }
+
+  async getBalance(): Promise<bigint> {
+    const provider = this.wallet.provider;
+    if (!provider) throw new Error('No provider connected');
+    return provider.getBalance(this.wallet.address);
   }
 }
