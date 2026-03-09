@@ -100,6 +100,15 @@ Get testnet USDC from the [Circle Faucet](https://faucet.circle.com/).
 | `enrichProfile()` | Enrich from LinkedIn/email |
 | `findEmail()` | Find email for a person |
 | `verifyEmail()` | Verify email deliverability |
+| `deepResearchPerson()` | Full dossier on a person |
+| `socialProfiles()` | Find all social accounts |
+| `articleSearch()` | Find articles about a person |
+| `personNewsfeed()` | Recent social posts with engagement |
+| `personInterests()` | Analyze interests across categories |
+| `personInteractions()` | Map followers, following, replies |
+| `webSearch()` | Search the web |
+| `webRead()` | Read any URL as markdown + screenshot |
+| `browser()` | Autonomous browser — navigate, click, extract |
 | `commerceBuy()` | Purchase products |
 | `commerceSearch()` | Search products |
 | `build()` | Build and deploy production websites |
@@ -365,7 +374,9 @@ PROD_ENV.usdcAddress; // 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
 ## Links
 
 - [Documentation](https://docs.oneshotagent.com)
-- [MCP Server](https://www.npmjs.com/package/@oneshot-agent/mcp-server) - For Claude Desktop, Cursor, Claude Code
+- [MCP Server](https://www.npmjs.com/package/@oneshot-agent/mcp-server) — Claude Desktop, Cursor, Claude Code
+- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 26 tools as LangChain BaseTool
+- [Python SDK (Core)](https://pypi.org/project/oneshot-python/) — HTTP client with x402 payments
 - [Pricing](https://docs.oneshotagent.com/pricing)
 - [GitHub](https://github.com/oneshot-agent/sdk)
 
