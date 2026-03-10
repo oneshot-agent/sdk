@@ -3,7 +3,7 @@ import { OneShot } from "@oneshot-agent/sdk";
 
 export const webReadTool: Tool = {
   name: "oneshot_web_read",
-  description: "Read a web page and extract its content as markdown with a screenshot. Costs ~$0.02 per page.",
+  description: "Read a web page and extract its content as markdown with a screenshot. Paid tool.",
   inputSchema: {
     type: "object",
     properties: {

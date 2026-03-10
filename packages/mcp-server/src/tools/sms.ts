@@ -3,7 +3,7 @@ import { OneShot } from "@oneshot-agent/sdk";
 
 export const smsTool: Tool = {
   name: "oneshot_sms",
-  description: "Send an SMS message. Costs ~$0.035 per segment (160 chars).",
+  description: "Send an SMS message. Paid tool — quote provided before payment.",
   inputSchema: {
     type: "object",
     properties: {

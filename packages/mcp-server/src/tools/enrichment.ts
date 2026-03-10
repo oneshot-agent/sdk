@@ -3,7 +3,7 @@ import { OneShot } from "@oneshot-agent/sdk";
 
 export const enrichProfileTool: Tool = {
   name: "oneshot_enrich_profile",
-  description: "Enrich a person's profile from LinkedIn URL, email, or name. Returns job title, company, social links, etc. Costs ~$0.10.",
+  description: "Enrich a person's profile from LinkedIn URL, email, or name. Returns job title, company, social links, etc. Paid tool.",
   inputSchema: {
     type: "object",
     properties: {
@@ -29,7 +29,7 @@ export const enrichProfileTool: Tool = {
 
 export const findEmailTool: Tool = {
   name: "oneshot_find_email",
-  description: "Find email address for a person at a company. Costs ~$0.10.",
+  description: "Find email address for a person at a company. Paid tool.",
   inputSchema: {
     type: "object",
     properties: {
@@ -56,7 +56,7 @@ export const findEmailTool: Tool = {
 
 export const verifyEmailTool: Tool = {
   name: "oneshot_verify_email",
-  description: "Verify if an email address is valid and deliverable. Costs ~$0.01.",
+  description: "Verify if an email address is valid and deliverable. Paid tool.",
   inputSchema: {
     type: "object",
     properties: {

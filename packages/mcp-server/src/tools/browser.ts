@@ -3,7 +3,7 @@ import { OneShot } from "@oneshot-agent/sdk";
 
 export const browserTool: Tool = {
   name: "oneshot_browser",
-  description: "Automate web browsing tasks using AI. Navigate websites, extract data, fill forms, and perform multi-step workflows using natural language instructions. Costs ~$0.05-0.25 per task depending on complexity.",
+  description: "Automate web browsing tasks using AI. Navigate websites, extract data, fill forms, and perform multi-step workflows using natural language instructions. Paid tool — quote provided before payment.",
   inputSchema: {
     type: "object",
     properties: {

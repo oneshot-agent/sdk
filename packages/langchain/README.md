@@ -45,34 +45,36 @@ result = research.invoke({"topic": "AI agent frameworks 2026"})
 
 ## Available Tools
 
-| Tool | Description | Cost |
-|------|-------------|------|
-| `oneshot_email` | Send emails | ~$0.01 |
-| `oneshot_voice` | Make phone calls | ~$0.25/min |
-| `oneshot_sms` | Send SMS messages | ~$0.035/segment |
-| `oneshot_research` | Deep web research | $0.50–$2.00 |
-| `oneshot_web_search` | Search the web | ~$0.02 |
-| `oneshot_people_search` | Search for people | ~$0.10/result |
-| `oneshot_enrich_profile` | Enrich a profile | ~$0.10 |
-| `oneshot_find_email` | Find email address | ~$0.10 |
-| `oneshot_verify_email` | Verify email | ~$0.01 |
-| `oneshot_deep_research_person` | Full dossier on a person | ~$0.50 |
-| `oneshot_social_profiles` | Find all social accounts | ~$0.05 |
-| `oneshot_article_search` | Find articles about a person | ~$0.10 |
-| `oneshot_person_newsfeed` | Recent social posts | ~$0.05 |
-| `oneshot_person_interests` | Analyze interests | ~$0.05 |
-| `oneshot_person_interactions` | Map followers/following | ~$0.10 |
-| `oneshot_commerce_search` | Search products | Free |
-| `oneshot_commerce_buy` | Purchase product | Price + fee |
-| `oneshot_build` | Build a website | ~$10 base |
-| `oneshot_update_build` | Update a website | ~$10 base |
-| `oneshot_inbox_list` | List inbox emails | Free |
-| `oneshot_inbox_get` | Get email by ID | Free |
-| `oneshot_sms_inbox_list` | List SMS inbox | Free |
-| `oneshot_sms_inbox_get` | Get SMS by ID | Free |
-| `oneshot_notifications` | List notifications | Free |
-| `oneshot_mark_notification_read` | Mark read | Free |
-| `oneshot_get_balance` | USDC balance | Free |
+| Tool | Description |
+|------|-------------|
+| `oneshot_email` | Send emails |
+| `oneshot_voice` | Make phone calls |
+| `oneshot_sms` | Send SMS messages |
+| `oneshot_research` | Deep web research |
+| `oneshot_web_search` | Search the web |
+| `oneshot_people_search` | Search for people |
+| `oneshot_enrich_profile` | Enrich a profile |
+| `oneshot_find_email` | Find email address |
+| `oneshot_verify_email` | Verify email |
+| `oneshot_deep_research_person` | Full dossier on a person |
+| `oneshot_social_profiles` | Find all social accounts |
+| `oneshot_article_search` | Find articles about a person |
+| `oneshot_person_newsfeed` | Recent social posts |
+| `oneshot_person_interests` | Analyze interests |
+| `oneshot_person_interactions` | Map followers/following |
+| `oneshot_commerce_search` | Search products |
+| `oneshot_commerce_buy` | Purchase product |
+| `oneshot_build` | Build a website |
+| `oneshot_update_build` | Update a website |
+| `oneshot_inbox_list` | List inbox emails |
+| `oneshot_inbox_get` | Get email by ID |
+| `oneshot_sms_inbox_list` | List SMS inbox |
+| `oneshot_sms_inbox_get` | Get SMS by ID |
+| `oneshot_notifications` | List notifications |
+| `oneshot_mark_notification_read` | Mark read |
+| `oneshot_get_balance` | USDC balance |
+
+Paid tools are priced in USDC via x402. See [Pricing](https://docs.oneshotagent.com/pricing) for current rates.
 
 ## How Payments Work
 

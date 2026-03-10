@@ -13,12 +13,12 @@ from oneshot import OneShotClient
 
 
 class WebSearchTool(BaseTool):
-    """Search the web via OneShot. Costs $0.01 per search."""
+    """Search the web via OneShot. Paid tool. per search."""
 
     name: str = "oneshot_web_search"
     description: str = (
         "Search the web for a query. Returns URLs, titles, and descriptions. "
-        "Fast and synchronous. Costs $0.01."
+        "Fast and synchronous. Paid tool."
     )
     args_schema: Type[BaseModel] = WebSearchInput
     handle_tool_error: bool = True

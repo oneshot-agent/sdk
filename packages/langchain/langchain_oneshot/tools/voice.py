@@ -13,12 +13,12 @@ from oneshot import OneShotClient
 
 
 class VoiceTool(BaseTool):
-    """Make an autonomous phone call via OneShot. Costs ~$0.25/minute."""
+    """Make an autonomous phone call via OneShot. Paid tool.minute."""
 
     name: str = "oneshot_voice"
     description: str = (
         "Make a phone call with an AI agent. Provide an objective describing what "
-        "the call should accomplish, and a target_number in E.164 format. Costs ~$0.25/min."
+        "the call should accomplish, and a target_number in E.164 format. Paid tool.min."
     )
     args_schema: Type[BaseModel] = VoiceInput
     handle_tool_error: bool = True

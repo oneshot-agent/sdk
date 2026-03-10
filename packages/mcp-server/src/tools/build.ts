@@ -3,7 +3,7 @@ import { OneShot } from "@oneshot-agent/sdk";
 
 export const buildTool: Tool = {
   name: "oneshot_build",
-  description: "Build and deploy production websites - SaaS landing pages, portfolios, agency sites, restaurant pages, event sites, and more. Creates fully-functional sites with real hosting. Base price ~$10 includes 3 sections. Additional fees for extra sections, AI images, lead capture, custom domain, etc.",
+  description: "Build and deploy production websites - SaaS landing pages, portfolios, agency sites, restaurant pages, event sites, and more. Creates fully-functional sites with real hosting. Paid tool — quote provided before payment.",
   inputSchema: {
     type: "object",
     properties: {
@@ -36,7 +36,7 @@ export const buildTool: Tool = {
       },
       source_url: {
         type: "string",
-        description: "URL to analyze for content/inspiration (+$10)",
+        description: "URL to analyze for content/inspiration (additional fee)",
       },
       sections: {
         type: "array",
@@ -48,7 +48,7 @@ export const buildTool: Tool = {
         properties: {
           enabled: {
             type: "boolean",
-            description: "Enable lead capture form (+$15)",
+            description: "Enable lead capture form (additional fee)",
           },
           inbox_email: {
             type: "string",
@@ -89,7 +89,7 @@ export const buildTool: Tool = {
       },
       domain: {
         type: "string",
-        description: "Custom domain (e.g., mysite.com) (+$20)",
+        description: "Custom domain (e.g., mysite.com) (additional fee)",
       },
       build_id: {
         type: "string",

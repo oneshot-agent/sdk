@@ -32,15 +32,17 @@ agent.run()
 
 ## Tools
 
-| Tool | Description | Cost (USDC) |
-|------|-------------|-------------|
-| `oneshot_email` | Send emails to real recipients | ~$0.01 |
-| `oneshot_sms` | Send SMS text messages | ~$0.035 |
-| `oneshot_voice` | Make phone calls with AI voice | ~$0.25/min |
-| `oneshot_research` | Deep research reports | $0.50-$2.00 |
-| `oneshot_commerce_search` | Search for products | Free |
-| `oneshot_commerce_buy` | Purchase products online | Product price |
-| `oneshot_build` | Generate and deploy websites | ~$10+ |
+| Tool | Description |
+|------|-------------|
+| `oneshot_email` | Send emails to real recipients |
+| `oneshot_sms` | Send SMS text messages |
+| `oneshot_voice` | Make phone calls with AI voice |
+| `oneshot_research` | Deep research reports |
+| `oneshot_commerce_search` | Search for products |
+| `oneshot_commerce_buy` | Purchase products online |
+| `oneshot_build` | Generate and deploy websites |
+
+Paid tools are priced in USDC via x402. See [Pricing](https://docs.oneshotagent.com/pricing) for current rates.
 
 ## Payment
 

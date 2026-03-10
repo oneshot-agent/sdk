@@ -13,12 +13,12 @@ from oneshot import OneShotClient
 
 
 class SmsTool(BaseTool):
-    """Send SMS messages via OneShot. Costs ~$0.035 per segment."""
+    """Send SMS messages via OneShot. Paid tool. per segment."""
 
     name: str = "oneshot_sms"
     description: str = (
         "Send an SMS message. Provide a message body (max 1600 chars) and "
-        "a to_number in E.164 format. Costs ~$0.035 per 160-char segment."
+        "a to_number in E.164 format. Paid tool. per 160-char segment."
     )
     args_schema: Type[BaseModel] = SmsInput
     handle_tool_error: bool = True

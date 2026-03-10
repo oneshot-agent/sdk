@@ -13,12 +13,12 @@ from oneshot import OneShotClient
 
 
 class ResearchTool(BaseTool):
-    """Perform deep web research via OneShot. Costs $0.50-$2.00."""
+    """Perform deep web research via OneShot. Paid tool.$2.00."""
 
     name: str = "oneshot_research"
     description: str = (
         "Perform deep web research on any topic. Returns a comprehensive report "
-        "with sources. Provide a topic string. Costs $0.50-$2.00."
+        "with sources. Provide a topic string. Paid tool.$2.00."
     )
     args_schema: Type[BaseModel] = ResearchInput
     handle_tool_error: bool = True

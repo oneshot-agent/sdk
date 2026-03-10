@@ -14,12 +14,12 @@ from oneshot import OneShotClient
 
 
 class EmailTool(BaseTool):
-    """Send emails via OneShot. Costs ~$0.01 per email."""
+    """Send emails via OneShot. Paid tool. per email."""
 
     name: str = "oneshot_email"
     description: str = (
         "Send an email to one or more recipients. "
-        "Provide to (email address), subject, and body. Costs ~$0.01."
+        "Provide to (email address), subject, and body. Paid tool."
     )
     args_schema: Type[BaseModel] = EmailInput
     handle_tool_error: bool = True

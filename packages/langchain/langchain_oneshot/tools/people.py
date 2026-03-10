@@ -22,12 +22,12 @@ def _strip_none(d: dict[str, Any]) -> dict[str, Any]:
 
 
 class PeopleSearchTool(BaseTool):
-    """Search for people by job title, company, location, etc. Costs ~$0.10/result."""
+    """Search for people by job title, company, location, etc. Paid tool.result."""
 
     name: str = "oneshot_people_search"
     description: str = (
         "Search for people by job title, company, location, skills, seniority, "
-        "or industry. Returns matching profiles. Costs ~$0.10 per result."
+        "or industry. Returns matching profiles. Paid tool. per result."
     )
     args_schema: Type[BaseModel] = PeopleSearchInput
     handle_tool_error: bool = True
@@ -44,12 +44,12 @@ class PeopleSearchTool(BaseTool):
 
 
 class EnrichProfileTool(BaseTool):
-    """Enrich a person's profile from LinkedIn, email, or name. Costs ~$0.10."""
+    """Enrich a person's profile from LinkedIn, email, or name. Paid tool."""
 
     name: str = "oneshot_enrich_profile"
     description: str = (
         "Enrich a person's profile using their LinkedIn URL, email, or name. "
-        "Returns detailed professional information. Costs ~$0.10."
+        "Returns detailed professional information. Paid tool."
     )
     args_schema: Type[BaseModel] = EnrichProfileInput
     handle_tool_error: bool = True
@@ -66,12 +66,12 @@ class EnrichProfileTool(BaseTool):
 
 
 class FindEmailTool(BaseTool):
-    """Find a person's email address at a company. Costs ~$0.10."""
+    """Find a person's email address at a company. Paid tool."""
 
     name: str = "oneshot_find_email"
     description: str = (
         "Find someone's email address given their name and company domain. "
-        "Provide company_domain and either full_name or first_name+last_name. Costs ~$0.10."
+        "Provide company_domain and either full_name or first_name+last_name. Paid tool."
     )
     args_schema: Type[BaseModel] = FindEmailInput
     handle_tool_error: bool = True
@@ -88,12 +88,12 @@ class FindEmailTool(BaseTool):
 
 
 class VerifyEmailTool(BaseTool):
-    """Verify if an email address is valid and deliverable. Costs ~$0.01."""
+    """Verify if an email address is valid and deliverable. Paid tool."""
 
     name: str = "oneshot_verify_email"
     description: str = (
         "Verify whether an email address is valid and deliverable. "
-        "Returns deliverability status. Costs ~$0.01."
+        "Returns deliverability status. Paid tool."
     )
     args_schema: Type[BaseModel] = VerifyEmailInput
     handle_tool_error: bool = True

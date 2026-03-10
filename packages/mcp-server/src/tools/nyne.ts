@@ -3,7 +3,7 @@ import { OneShot } from "@oneshot-agent/sdk";
 
 export const deepResearchPersonTool: Tool = {
   name: "oneshot_deep_research_person",
-  description: "Deep research on a person — returns career history, social presence, interests, and connections. Takes 2-5 minutes. Costs ~$0.50.",
+  description: "Deep research on a person — returns career history, social presence, interests, and connections. Takes 2-5 minutes. Paid tool.",
   inputSchema: {
     type: "object",
     properties: {
@@ -17,7 +17,7 @@ export const deepResearchPersonTool: Tool = {
 
 export const socialProfilesTool: Tool = {
   name: "oneshot_social_profiles",
-  description: "Discover all social media profiles for a person across platforms (LinkedIn, Twitter, GitHub, YouTube, etc). Costs ~$0.05.",
+  description: "Discover all social media profiles for a person across platforms (LinkedIn, Twitter, GitHub, YouTube, etc). Paid tool.",
   inputSchema: {
     type: "object",
     properties: {
@@ -29,7 +29,7 @@ export const socialProfilesTool: Tool = {
 
 export const articleSearchTool: Tool = {
   name: "oneshot_article_search",
-  description: "Find articles, publications, and interviews about a person. Requires name and company. Costs ~$0.10.",
+  description: "Find articles, publications, and interviews about a person. Requires name and company. Paid tool.",
   inputSchema: {
     type: "object",
     properties: {
@@ -44,7 +44,7 @@ export const articleSearchTool: Tool = {
 
 export const personNewsfeedTool: Tool = {
   name: "oneshot_person_newsfeed",
-  description: "Get a person's recent social media posts with likes, replies, and shares. Costs ~$0.05.",
+  description: "Get a person's recent social media posts with likes, replies, and shares. Paid tool.",
   inputSchema: {
     type: "object",
     properties: {
@@ -56,7 +56,7 @@ export const personNewsfeedTool: Tool = {
 
 export const personInterestsTool: Tool = {
   name: "oneshot_person_interests",
-  description: "Figure out what someone cares about — sports, politics, tech, entertainment, etc. Costs ~$0.05.",
+  description: "Figure out what someone cares about — sports, politics, tech, entertainment, etc. Paid tool.",
   inputSchema: {
     type: "object",
     properties: {
@@ -69,7 +69,7 @@ export const personInterestsTool: Tool = {
 
 export const personInteractionsTool: Tool = {
   name: "oneshot_person_interactions",
-  description: "See who someone follows, who follows them, and who they reply to. Costs ~$0.10.",
+  description: "See who someone follows, who follows them, and who they reply to. Paid tool.",
   inputSchema: {
     type: "object",
     properties: {

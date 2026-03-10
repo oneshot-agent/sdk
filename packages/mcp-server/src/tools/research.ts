@@ -3,7 +3,7 @@ import { OneShot } from "@oneshot-agent/sdk";
 
 export const researchTool: Tool = {
   name: "oneshot_research",
-  description: "Perform deep web research on a topic. Returns comprehensive report with sources. Costs $0.50-$2.00 depending on depth.",
+  description: "Perform deep web research on a topic. Returns comprehensive report with sources. Paid tool — quote provided before payment.",
   inputSchema: {
     type: "object",
     properties: {

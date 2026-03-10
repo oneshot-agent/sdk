@@ -3,7 +3,7 @@ import { OneShot } from "@oneshot-agent/sdk";
 
 export const emailTool: Tool = {
   name: "oneshot_email",
-  description: "Send an email. Costs ~$0.01 per email. Supports HTML body and attachments.",
+  description: "Send an email. Supports HTML body and attachments. Paid tool — quote provided before payment.",
   inputSchema: {
     type: "object",
     properties: {

@@ -3,7 +3,7 @@ import { OneShot } from "@oneshot-agent/sdk";
 
 export const peopleSearchTool: Tool = {
   name: "oneshot_people_search",
-  description: "Search for people by job title, company, location, skills, etc. Returns professional profiles. Costs ~$0.10 per result.",
+  description: "Search for people by job title, company, location, skills, etc. Returns professional profiles. Paid tool — quote provided before payment.",
   inputSchema: {
     type: "object",
     properties: {

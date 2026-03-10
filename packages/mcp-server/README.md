@@ -20,7 +20,6 @@ The server supports two auth methods: **CDP Wallet** (recommended, no private ke
 | `CDP_API_KEY_SECRET` | Option A | Coinbase CDP API key secret |
 | `CDP_WALLET_SECRET` | Option A | Coinbase CDP wallet secret |
 | `ONESHOT_WALLET_PRIVATE_KEY` | Option B | Raw private key for signing payments |
-| `ONESHOT_TEST_MODE` | No | Set to `"false"` for production (default: `"true"`) |
 
 ### Claude Desktop
 
@@ -88,71 +87,73 @@ Get CDP credentials at [Coinbase Agentic Wallet](https://docs.cdp.coinbase.com/a
 
 ### Communication
 
-| Tool | Description | Cost |
-|------|-------------|------|
-| `oneshot_email` | Send emails with attachments | ~$0.01 |
-| `oneshot_voice` | Make phone calls | ~$0.25/min |
-| `oneshot_sms` | Send SMS messages | ~$0.035/segment |
+| Tool | Description |
+|------|-------------|
+| `oneshot_email` | Send emails with attachments |
+| `oneshot_voice` | Make phone calls |
+| `oneshot_sms` | Send SMS messages |
 
 ### Inbox
 
-| Tool | Description | Cost |
-|------|-------------|------|
-| `oneshot_inbox_list` | List received emails | Free |
-| `oneshot_inbox_get` | Get a specific email | Free |
-| `oneshot_sms_inbox_list` | List received SMS messages | Free |
-| `oneshot_sms_inbox_get` | Get a specific SMS message | Free |
+| Tool | Description |
+|------|-------------|
+| `oneshot_inbox_list` | List received emails |
+| `oneshot_inbox_get` | Get a specific email |
+| `oneshot_sms_inbox_list` | List received SMS messages |
+| `oneshot_sms_inbox_get` | Get a specific SMS message |
 
 ### Research & Enrichment
 
-| Tool | Description | Cost |
-|------|-------------|------|
-| `oneshot_research` | Deep web research with sources | $0.50-$2.00 |
-| `oneshot_people_search` | Search for people by title, company, etc. | ~$0.10/result |
-| `oneshot_enrich_profile` | Enrich person profile from LinkedIn/email | ~$0.10 |
-| `oneshot_find_email` | Find someone's email address | ~$0.10 |
-| `oneshot_verify_email` | Verify email deliverability | ~$0.01 |
+| Tool | Description |
+|------|-------------|
+| `oneshot_research` | Deep web research with sources |
+| `oneshot_people_search` | Search for people by title, company, etc. |
+| `oneshot_enrich_profile` | Enrich person profile from LinkedIn/email |
+| `oneshot_find_email` | Find someone's email address |
+| `oneshot_verify_email` | Verify email deliverability |
 
 ### Person Intelligence
 
-| Tool | Description | Cost |
-|------|-------------|------|
-| `oneshot_deep_research_person` | Full dossier on a person (2-5 min) | ~$0.50 |
-| `oneshot_social_profiles` | Find all social accounts for a person | ~$0.05 |
-| `oneshot_article_search` | Find articles about a person | ~$0.10 |
-| `oneshot_person_newsfeed` | Recent social posts with engagement | ~$0.05 |
-| `oneshot_person_interests` | Analyze interests across categories | ~$0.05 |
-| `oneshot_person_interactions` | Map followers, following, replies | ~$0.10 |
+| Tool | Description |
+|------|-------------|
+| `oneshot_deep_research_person` | Full dossier on a person |
+| `oneshot_social_profiles` | Find all social accounts for a person |
+| `oneshot_article_search` | Find articles about a person |
+| `oneshot_person_newsfeed` | Recent social posts with engagement |
+| `oneshot_person_interests` | Analyze interests across categories |
+| `oneshot_person_interactions` | Map followers, following, replies |
 
 ### Web
 
-| Tool | Description | Cost |
-|------|-------------|------|
-| `oneshot_web_search` | Search the web | ~$0.02 |
-| `oneshot_web_read` | Read any URL as markdown + screenshot | ~$0.02 |
-| `oneshot_browser` | Autonomous browser — navigate, click, extract | ~$0.10+ |
+| Tool | Description |
+|------|-------------|
+| `oneshot_web_search` | Search the web |
+| `oneshot_web_read` | Read any URL as markdown + screenshot |
+| `oneshot_browser` | Autonomous browser — navigate, click, extract |
 
 ### Commerce
 
-| Tool | Description | Cost |
-|------|-------------|------|
-| `oneshot_commerce_search` | Search for products | Free |
-| `oneshot_commerce_buy` | Purchase products | Product price + fee |
+| Tool | Description |
+|------|-------------|
+| `oneshot_commerce_search` | Search for products |
+| `oneshot_commerce_buy` | Purchase products |
 
 ### Build
 
-| Tool | Description | Cost |
-|------|-------------|------|
-| `oneshot_build` | Build and deploy production websites | ~$10+ |
-| `oneshot_update_build` | Update an existing website | Discounted |
+| Tool | Description |
+|------|-------------|
+| `oneshot_build` | Build and deploy production websites |
+| `oneshot_update_build` | Update an existing website |
 
 ### Account
 
-| Tool | Description | Cost |
-|------|-------------|------|
-| `oneshot_notifications` | List agent notifications | Free |
-| `oneshot_mark_notification_read` | Mark notification as read | Free |
-| `oneshot_get_balance` | Get USDC wallet balance | Free |
+| Tool | Description |
+|------|-------------|
+| `oneshot_notifications` | List agent notifications |
+| `oneshot_mark_notification_read` | Mark notification as read |
+| `oneshot_get_balance` | Get USDC wallet balance |
+
+All paid tools are priced in USDC via the x402 protocol. See [Pricing](https://docs.oneshotagent.com/pricing) for current rates.
 
 ## Tool Examples
 
@@ -241,8 +242,7 @@ Use oneshot_inbox_list:
 
 ## Funding Your Agent
 
-- **Test Mode** (default): Uses Base Sepolia testnet — get free test USDC from the [Circle Faucet](https://faucet.circle.com/) (select Base Sepolia)
-- **Production Mode**: Uses Base Mainnet — send USDC to your agent's wallet address on Base
+Send USDC to your agent's wallet address on Base. The server operates on Base Mainnet (chain 8453).
 
 ## Links
 

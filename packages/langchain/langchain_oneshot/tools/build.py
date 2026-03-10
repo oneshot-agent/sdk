@@ -30,13 +30,13 @@ def _prepare_build_payload(kwargs: dict[str, Any]) -> dict[str, Any]:
 
 
 class BuildTool(BaseTool):
-    """Build and deploy a production website via OneShot. Base price ~$10."""
+    """Build and deploy a production website via OneShot. Paid tool."""
 
     name: str = "oneshot_build"
     description: str = (
         "Build and deploy a production website. Supports SaaS landing pages, "
         "portfolios, agency sites, restaurants, events, and more. "
-        "Requires product info (name + description). Base price ~$10 for 3 sections."
+        "Requires product info (name + description). Paid tool — quote provided before payment."
     )
     args_schema: Type[BaseModel] = BuildInput
     handle_tool_error: bool = True

@@ -3,7 +3,7 @@ import { OneShot } from "@oneshot-agent/sdk";
 
 export const voiceTool: Tool = {
   name: "oneshot_voice",
-  description: "Make a phone call. Costs ~$0.25/minute. The call will follow the provided objective.",
+  description: "Make a phone call. The call will follow the provided objective. Paid tool — quote provided before payment.",
   inputSchema: {
     type: "object",
     properties: {

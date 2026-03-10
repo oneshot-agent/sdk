@@ -50,7 +50,7 @@ def make_email_function(client: OneShotClient) -> Function:
     return Function(
         fn_name="oneshot_email",
         fn_description=(
-            "Send an email to a real recipient. Costs ~$0.01 USDC. "
+            "Send an email to a real recipient. Paid tool — USDC quote provided before payment. "
             "Provide to (email address), subject, body, and optionally from_domain."
         ),
         args=[
@@ -81,7 +81,7 @@ def make_sms_function(client: OneShotClient) -> Function:
     return Function(
         fn_name="oneshot_sms",
         fn_description=(
-            "Send an SMS text message. Costs ~$0.035 USDC per 160-char segment. "
+            "Send an SMS text message. Paid tool — USDC quote provided before payment. "
             "Max 1600 characters."
         ),
         args=[
@@ -116,7 +116,7 @@ def make_voice_function(client: OneShotClient) -> Function:
     return Function(
         fn_name="oneshot_voice",
         fn_description=(
-            "Make a real phone call with an AI voice agent. Costs ~$0.25 USDC/min. "
+            "Make a real phone call with an AI voice agent. Paid tool — USDC quote provided before payment. "
             "The agent will follow the objective and return a transcript."
         ),
         args=[
@@ -148,7 +148,7 @@ def make_research_function(client: OneShotClient) -> Function:
     return Function(
         fn_name="oneshot_research",
         fn_description=(
-            "Run a deep research report on any topic. Costs $0.50-$2.00 USDC. "
+            "Run a deep research report on any topic. Paid tool — USDC quote provided before payment. "
             "Returns a comprehensive report with sources."
         ),
         args=[
@@ -178,7 +178,7 @@ def make_commerce_search_function(client: OneShotClient) -> Function:
     return Function(
         fn_name="oneshot_commerce_search",
         fn_description=(
-            "Search for real products to buy online. Free (no USDC cost). "
+            "Search for real products to buy online. Free tool. "
             "Returns product listings with prices, images, and URLs."
         ),
         args=[
@@ -219,7 +219,7 @@ def make_commerce_buy_function(client: OneShotClient) -> Function:
     return Function(
         fn_name="oneshot_commerce_buy",
         fn_description=(
-            "Purchase a real product online. Costs the product price + service fee in USDC. "
+            "Purchase a real product online. Paid tool — costs product price + service fee. "
             "Requires a product URL from commerce_search and a shipping address as a JSON string."
         ),
         args=[
@@ -269,7 +269,7 @@ def make_build_function(client: OneShotClient) -> Function:
     return Function(
         fn_name="oneshot_build",
         fn_description=(
-            "Generate and deploy a real website. Costs ~$10+ USDC depending on complexity. "
+            "Generate and deploy a real website. Paid tool — USDC quote provided before payment. "
             "Returns a live URL. Product info must be a JSON string."
         ),
         args=[

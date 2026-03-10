@@ -3,7 +3,7 @@ import { OneShot } from "@oneshot-agent/sdk";
 
 export const webSearchTool: Tool = {
   name: "oneshot_web_search",
-  description: "Search the web and get URLs, titles, and descriptions. Fast and synchronous. Costs $0.01 per search.",
+  description: "Search the web and get URLs, titles, and descriptions. Fast and synchronous. Paid tool.",
   inputSchema: {
     type: "object",
     properties: {
