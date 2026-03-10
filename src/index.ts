@@ -14,16 +14,10 @@ const SDK_VERSION = '0.9.0';
 // Environment Configuration
 // ============================================================================
 
-/** Production environment (Base Mainnet) */
-export const PROD_ENV = {
-  baseUrl: 'https://win.oneshotagent.com',
-  rpcUrl: 'https://mainnet.base.org',
-  chainId: 8453,
-  usdcAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
-} as const;
-
-/** @deprecated Use PROD_ENV. Staging is internal-only and not accessible via the SDK. */
-export const TEST_ENV = PROD_ENV;
+const BASE_URL = 'https://win.oneshotagent.com';
+const RPC_URL = 'https://mainnet.base.org';
+const CHAIN_ID = 8453;
+const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 
 // ============================================================================
 // Error Classes
@@ -139,8 +133,6 @@ export interface OneShotConfig {
   cdp?: boolean | { address?: string };
   /** Option C: Bring your own WalletProvider implementation */
   walletProvider?: WalletProvider;
-  /** @deprecated No longer has any effect. SDK always uses production (Base Mainnet). */
-  testMode?: boolean;
   /** Override API URL */
   baseUrl?: string;
   /** Override RPC URL */
@@ -775,9 +767,6 @@ export class OneShot {
   private readonly baseUrl: string;
   private readonly debug: boolean;
   private readonly logger: LoggerFn;
-  private readonly _testMode: boolean;
-  private readonly _expectedChainId: number;
-  private readonly _usdcAddress: string;
   private readonly _currency: 'USDC' | 'ETH';
   private readonly _slippage: number;
 
@@ -807,7 +796,7 @@ export class OneShot {
     }
 
     if (config.privateKey) {
-      const rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? PROD_ENV.rpcUrl);
+      const rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? RPC_URL);
       const walletProvider = new EthersWalletProvider(config.privateKey, rpcProvider);
       return new OneShot(config, walletProvider);
     }
@@ -823,16 +812,12 @@ export class OneShot {
    * For CDP wallets, use OneShot.create() instead.
    */
   constructor(config: OneShotConfig, walletProvider?: WalletProvider) {
-    this._testMode = false; // testMode deprecated — always production
-
-    this.baseUrl = config.baseUrl ?? PROD_ENV.baseUrl;
-    this._expectedChainId = PROD_ENV.chainId;
-    this._usdcAddress = PROD_ENV.usdcAddress;
+    this.baseUrl = config.baseUrl ?? BASE_URL;
     this.debug = config.debug ?? false;
     this.logger = config.logger ?? console.log;
-    this.rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? PROD_ENV.rpcUrl);
     this._currency = config.currency ?? 'USDC';
     this._slippage = config.slippage ?? 0.01;
+    this.rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? RPC_URL);
 
     if (walletProvider) {
       this.provider = walletProvider;
@@ -854,7 +839,7 @@ export class OneShot {
     }
 
     if (this.debug) {
-      this.log(`SDK initialized [PROD] chain=${this._expectedChainId} currency=${this._currency}`);
+      this.log(`SDK initialized — chain=${CHAIN_ID} currency=${this._currency}`);
     }
   }
 
@@ -866,16 +851,12 @@ export class OneShot {
     return this.provider.address;
   }
 
-  get isTestMode(): boolean {
-    return this._testMode;
-  }
-
   get usdcAddress(): string {
-    return this._usdcAddress;
+    return USDC_ADDRESS;
   }
 
-  get expectedChainId(): number {
-    return this._expectedChainId;
+  get chainId(): number {
+    return CHAIN_ID;
   }
 
   get currency(): 'USDC' | 'ETH' {
@@ -2026,7 +2007,7 @@ export class OneShot {
       this.provider,
       this.rpcProvider,
       paymentInfo.amount,
-      this._expectedChainId,
+      CHAIN_ID,
       this._slippage,
     );
 
@@ -2041,23 +2022,11 @@ export class OneShot {
     const nonce = ethers.randomBytes(32);
     const value = ethers.parseUnits(paymentInfo.amount, paymentInfo.token.decimals);
 
-    // Parse chain ID from CAIP-2 format or plain number
-    const chainId = paymentInfo.network.includes(':')
-      ? parseInt(paymentInfo.network.split(':')[1])
-      : parseInt(paymentInfo.network);
-
-    // Warn on chain mismatch
-    if (chainId !== this._expectedChainId) {
-      console.warn(
-        `[OneShot] Chain mismatch: API returned ${chainId}, expected ${this._expectedChainId} (${this._testMode ? 'test' : 'prod'})`
-      );
-    }
-
     const signature = await this.provider.signTypedData(
       {
-        name: chainId === 84532 ? 'USDC' : 'USD Coin', // Base Sepolia uses "USDC", Base Mainnet uses "USD Coin"
+        name: 'USD Coin',
         version: '2',
-        chainId,
+        chainId: CHAIN_ID,
         verifyingContract: paymentInfo.token.address
       },
       {
@@ -2090,7 +2059,7 @@ export class OneShot {
       validBefore: now + 3600,
       nonce: ethers.hexlify(nonce),
       signature: { v: sig.v, r: sig.r, s: sig.s },
-      network: paymentInfo.network,
+      network: `eip155:${CHAIN_ID}`,
       token: paymentInfo.token.address
     };
   }

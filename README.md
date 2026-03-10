@@ -64,27 +64,14 @@ const report = await agent.research({ topic: 'AI agents', depth: 'deep' });
 const balance = await agent.getBalance(agent.usdcAddress);
 ```
 
-## Test vs Production Mode
+## Network
 
-The SDK defaults to **test mode** for safety - no real money until you explicitly opt-in.
+The SDK operates on **Base Mainnet** with real USDC. Fund your agent wallet with USDC on Base before making paid tool calls.
 
 ```typescript
-// Test mode (default) - Base Sepolia testnet
-const agent = new OneShot({
-  privateKey: process.env.AGENT_PRIVATE_KEY!
-});
-agent.isTestMode;      // true
-agent.usdcAddress;     // 0x036CbD53842c5426634e7929541eC2318f3dCF7e
-agent.expectedChainId; // 84532
-
-// Production mode - Base mainnet (real USDC)
-const prodAgent = new OneShot({
-  privateKey: process.env.AGENT_PRIVATE_KEY!,
-  testMode: false
-});
+agent.usdcAddress; // 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+agent.chainId;     // 8453
 ```
-
-Get testnet USDC from the [Circle Faucet](https://faucet.circle.com/).
 
 ## Available Methods
 
@@ -124,7 +111,6 @@ Get testnet USDC from the [Circle Faucet](https://faucet.circle.com/).
 ```typescript
 interface OneShotConfig {
   privateKey: string;    // Required
-  testMode?: boolean;    // Default: true (testnet)
   baseUrl?: string;      // Override API URL
   rpcUrl?: string;       // Override RPC URL
   debug?: boolean;       // Enable logging
@@ -358,18 +344,6 @@ try {
 The signal **cannot** cancel:
 - Operations after payment is signed (call/SMS will still execute)
 - Server-side job execution
-
-## Environment Constants
-
-```typescript
-import { TEST_ENV, PROD_ENV } from '@oneshot-agent/sdk';
-
-TEST_ENV.chainId;     // 84532
-TEST_ENV.usdcAddress; // 0x036CbD53842c5426634e7929541eC2318f3dCF7e
-
-PROD_ENV.chainId;     // 8453
-PROD_ENV.usdcAddress; // 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
-```
 
 ## Links
 

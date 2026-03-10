@@ -29,20 +29,9 @@ export const BASE_MAINNET_ADDRESSES: UniswapAddresses = {
   usdc: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',         // USDC on Base
 };
 
-/** Base Sepolia (chain 84532) */
-export const BASE_SEPOLIA_ADDRESSES: UniswapAddresses = {
-  swapRouter: '0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4',  // SwapRouter02 on Sepolia
-  quoterV2: '0xC5290058841028F1614F3A6F0F5816cAd0df5E27',    // QuoterV2 on Sepolia
-  weth: '0x4200000000000000000000000000000000000006',          // WETH on Base Sepolia
-  usdc: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',         // USDC on Base Sepolia
-};
-
 export function getAddresses(chainId: number): UniswapAddresses {
-  switch (chainId) {
-    case 8453: return BASE_MAINNET_ADDRESSES;
-    case 84532: return BASE_SEPOLIA_ADDRESSES;
-    default: throw new Error(`Unsupported chain ${chainId} for ETH→USDC swap`);
-  }
+  if (chainId !== 8453) throw new Error(`Unsupported chain ${chainId} for ETH→USDC swap`);
+  return BASE_MAINNET_ADDRESSES;
 }
 
 // ============================================================================
@@ -84,7 +73,7 @@ export interface SwapQuote {
  *
  * @param provider - JSON-RPC provider for the target chain
  * @param usdcAmount - Amount of USDC needed (human-readable, e.g. "0.10")
- * @param chainId - Chain ID (8453 for Base, 84532 for Base Sepolia)
+ * @param chainId - Chain ID (8453 for Base Mainnet)
  * @param slippage - Slippage tolerance (0.01 = 1%)
  */
 export async function getSwapQuote(
