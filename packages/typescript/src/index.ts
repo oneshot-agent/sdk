@@ -8,27 +8,22 @@ export { CdpWalletProvider } from './providers/cdp';
 export { getSwapQuote, executeSwap } from './swap';
 export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 
-const SDK_VERSION = '0.7.0';
+const SDK_VERSION = '0.9.0';
 
 // ============================================================================
 // Environment Configuration
 // ============================================================================
 
-/** Test environment (Base Sepolia) - safe for development */
-export const TEST_ENV = {
-  baseUrl: 'https://api-stg.oneshotagent.com',
-  rpcUrl: 'https://sepolia.base.org',
-  chainId: 84532,
-  usdcAddress: '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
-} as const;
-
-/** Production environment (Base Mainnet) - real money */
+/** Production environment (Base Mainnet) */
 export const PROD_ENV = {
   baseUrl: 'https://win.oneshotagent.com',
   rpcUrl: 'https://mainnet.base.org',
   chainId: 8453,
   usdcAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 } as const;
+
+/** @deprecated Use PROD_ENV. Staging is internal-only and not accessible via the SDK. */
+export const TEST_ENV = PROD_ENV;
 
 // ============================================================================
 // Error Classes
@@ -144,7 +139,7 @@ export interface OneShotConfig {
   cdp?: boolean | { address?: string };
   /** Option C: Bring your own WalletProvider implementation */
   walletProvider?: WalletProvider;
-  /** Test mode uses staging API + testnet (default: true) */
+  /** @deprecated No longer has any effect. SDK always uses production (Base Mainnet). */
   testMode?: boolean;
   /** Override API URL */
   baseUrl?: string;
@@ -812,8 +807,7 @@ export class OneShot {
     }
 
     if (config.privateKey) {
-      const env = (config.testMode ?? true) ? TEST_ENV : PROD_ENV;
-      const rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? env.rpcUrl);
+      const rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? PROD_ENV.rpcUrl);
       const walletProvider = new EthersWalletProvider(config.privateKey, rpcProvider);
       return new OneShot(config, walletProvider);
     }
@@ -829,15 +823,14 @@ export class OneShot {
    * For CDP wallets, use OneShot.create() instead.
    */
   constructor(config: OneShotConfig, walletProvider?: WalletProvider) {
-    this._testMode = config.testMode ?? true;
-    const env = this._testMode ? TEST_ENV : PROD_ENV;
+    this._testMode = false; // testMode deprecated — always production
 
-    this.baseUrl = config.baseUrl ?? env.baseUrl;
-    this._expectedChainId = env.chainId;
-    this._usdcAddress = env.usdcAddress;
+    this.baseUrl = config.baseUrl ?? PROD_ENV.baseUrl;
+    this._expectedChainId = PROD_ENV.chainId;
+    this._usdcAddress = PROD_ENV.usdcAddress;
     this.debug = config.debug ?? false;
     this.logger = config.logger ?? console.log;
-    this.rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? env.rpcUrl);
+    this.rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? PROD_ENV.rpcUrl);
     this._currency = config.currency ?? 'USDC';
     this._slippage = config.slippage ?? 0.01;
 
@@ -861,7 +854,7 @@ export class OneShot {
     }
 
     if (this.debug) {
-      this.log(`SDK initialized [${this._testMode ? 'TEST' : 'PROD'}] chain=${this._expectedChainId} currency=${this._currency}`);
+      this.log(`SDK initialized [PROD] chain=${this._expectedChainId} currency=${this._currency}`);
     }
   }
 

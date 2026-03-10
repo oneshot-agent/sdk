@@ -1,384 +1,87 @@
-# @oneshot-agent/sdk
+# OneShot SDK
 
-Autonomous Agent SDK for executing real-world commercial transactions with automatic x402 payments.
+The commercial action layer for AI agents. Send emails, make calls, run research, buy products, build websites, and execute code — all paid with USDC via the [x402 protocol](https://www.x402.org/).
 
-## Installation
+## Packages
 
-```bash
-npm install @oneshot-agent/sdk
-```
+| Package | Language | Install | Description |
+|---------|----------|---------|-------------|
+| [`@oneshot-agent/sdk`](packages/typescript) | TypeScript | `npm i @oneshot-agent/sdk` | Core SDK with x402 payment handling |
+| [`@oneshot-agent/mcp-server`](packages/mcp-server) | TypeScript | `npm i -g @oneshot-agent/mcp-server` | MCP server for Claude Desktop / Cursor |
+| [`oneshot-python`](packages/python) | Python | `pip install oneshot-python` | Core Python client |
+| [`langchain-oneshot`](packages/langchain) | Python | `pip install langchain-oneshot` | LangChain tools (26 tools) |
+| [`game-plugin-oneshot`](packages/game-plugin) | Python | `pip install game-plugin-oneshot` | Virtuals GAME SDK plugin |
 
-### Using with Claude Desktop, Cursor, or Claude Code?
+## Quick start
 
-Use the MCP server instead for zero-code integration:
-
-```bash
-npx -y @oneshot-agent/mcp-server
-```
-
-See the [MCP Server documentation](https://docs.oneshotagent.com/sdk/mcp) for setup instructions.
-
-## Quick Start
+### TypeScript
 
 ```typescript
 import { OneShot } from '@oneshot-agent/sdk';
 
-const agent = new OneShot({
-  privateKey: process.env.AGENT_PRIVATE_KEY!
-});
+const agent = new OneShot({ privateKey: process.env.WALLET_PRIVATE_KEY });
 
-// Send email
-await agent.email({
-  to: 'user@example.com',
-  subject: 'Hello',
-  body: 'Hello World!'
-});
-
-// Make a voice call
-const call = await agent.voice({
-  objective: 'Call the restaurant to make a reservation for 2 at 7pm',
-  target_number: '+14155551234'
-});
-console.log(call.transcript);
-
-// Send SMS
-await agent.sms({
-  message: 'Your order has shipped!',
-  to_number: '+14155551234'
-});
-
-// Build a website
-const site = await agent.build({
-  type: 'saas',
-  product: {
-    name: 'TaskFlow',
-    description: 'AI-powered task management for remote teams'
-  }
-});
-console.log('Live at:', site.url);
-
-// Research
-const report = await agent.research({ topic: 'AI agents', depth: 'deep' });
-
-// Check balance
-const balance = await agent.getBalance(agent.usdcAddress);
+const result = await agent.research({ query: 'AI agent infrastructure landscape' });
+console.log(result.report);
 ```
 
-## Test vs Production Mode
+### Python
 
-The SDK defaults to **test mode** for safety - no real money until you explicitly opt-in.
+```python
+from oneshot import OneShotClient
 
-```typescript
-// Test mode (default) - Base Sepolia testnet
-const agent = new OneShot({
-  privateKey: process.env.AGENT_PRIVATE_KEY!
-});
-agent.isTestMode;      // true
-agent.usdcAddress;     // 0x036CbD53842c5426634e7929541eC2318f3dCF7e
-agent.expectedChainId; // 84532
-
-// Production mode - Base mainnet (real USDC)
-const prodAgent = new OneShot({
-  privateKey: process.env.AGENT_PRIVATE_KEY!,
-  testMode: false
-});
+client = OneShotClient(private_key="0x...")
+result = client.call_tool("research", {"query": "AI agent infrastructure landscape"})
 ```
 
-Get testnet USDC from the [Circle Faucet](https://faucet.circle.com/).
+### MCP Server (Claude Desktop)
 
-## Available Methods
+Add to your Claude Desktop config:
 
-| Method | Description |
-|--------|-------------|
-| `email()` | Send emails with attachments |
-| `voice()` | Make phone calls |
-| `sms()` | Send SMS messages |
-| `smsInboxList()` | List inbound SMS |
-| `smsInboxGet()` | Get SMS by ID |
-| `research()` | Deep web research |
-| `peopleSearch()` | Search people by criteria |
-| `enrichProfile()` | Enrich from LinkedIn/email |
-| `findEmail()` | Find email for a person |
-| `verifyEmail()` | Verify email deliverability |
-| `deepResearchPerson()` | Full dossier on a person |
-| `socialProfiles()` | Find all social accounts |
-| `articleSearch()` | Find articles about a person |
-| `personNewsfeed()` | Recent social posts with engagement |
-| `personInterests()` | Analyze interests across categories |
-| `personInteractions()` | Map followers, following, replies |
-| `webSearch()` | Search the web |
-| `webRead()` | Read any URL as markdown + screenshot |
-| `browser()` | Autonomous browser — navigate, click, extract |
-| `commerceBuy()` | Purchase products |
-| `commerceSearch()` | Search products |
-| `build()` | Build and deploy production websites |
-| `updateBuild()` | Update an existing website |
-| `inboxList()` | List inbound emails |
-| `inboxGet()` | Get email by ID |
-| `notifications()` | List agent notifications |
-| `markNotificationRead()` | Mark notification as read |
-| `getBalance()` | Check token balance |
-
-## Configuration
-
-```typescript
-interface OneShotConfig {
-  privateKey: string;    // Required
-  testMode?: boolean;    // Default: true (testnet)
-  baseUrl?: string;      // Override API URL
-  rpcUrl?: string;       // Override RPC URL
-  debug?: boolean;       // Enable logging
-  logger?: (msg: string) => void;
-}
-```
-
-## Tool Options
-
-All methods accept these common options:
-
-```typescript
-interface ToolOptions {
-  maxCost?: number;      // Max USDC willing to pay
-  timeout?: number;      // Timeout in seconds
-  signal?: AbortSignal;  // Cancel before payment (see Cancellation section)
-  wait?: boolean;        // Wait for async jobs (default: true)
-  onStatusUpdate?: (status: string, requestId: string) => void;
-}
-```
-
-## Error Handling
-
-```typescript
-import {
-  ValidationError,
-  ToolError,
-  JobError,
-  JobTimeoutError,
-  ContentBlockedError,
-  EmergencyNumberError
-} from '@oneshot-agent/sdk';
-
-try {
-  await agent.voice({
-    objective: 'Make a call',
-    target_number: '+14155551234'
-  });
-} catch (error) {
-  if (error instanceof ContentBlockedError) {
-    // Content blocked by safety filters
-    console.log(`Blocked: ${error.message}`);
-    console.log(`Categories: ${error.categories.join(', ')}`);
-  } else if (error instanceof EmergencyNumberError) {
-    // Attempted to call/SMS emergency number
-    console.log(`Emergency number blocked: ${error.blockedNumber}`);
-  } else if (error instanceof ValidationError) {
-    console.log(`Invalid: ${error.field}`);
-  } else if (error instanceof ToolError) {
-    console.log(`API error: ${error.statusCode}`);
-  } else if (error instanceof JobTimeoutError) {
-    console.log(`Timeout: ${error.jobId}`);
+```json
+{
+  "mcpServers": {
+    "oneshot": {
+      "command": "npx",
+      "args": ["-y", "@oneshot-agent/mcp-server"],
+      "env": {
+        "ONESHOT_WALLET_PRIVATE_KEY": "0x..."
+      }
+    }
   }
 }
 ```
 
-## Examples
+## Tools
 
-### Build Websites
+All packages expose the same set of tools:
 
-```typescript
-// Build a SaaS landing page
-const site = await agent.build({
-  type: 'saas',
-  product: {
-    name: 'TaskFlow',
-    description: 'AI-powered task management for remote teams. Automate workflows, track progress, and collaborate seamlessly.',
-    industry: 'Productivity',
-    pricing: 'Free tier, Pro $12/mo, Team $29/mo'
-  },
-  lead_capture: { enabled: true },
-  brand: {
-    primary_color: '#4F46E5',
-    tone: 'professional'
-  }
-});
+- **Email** — send emails with attachments, manage inbox
+- **Voice** — make phone calls with AI voice agents
+- **SMS** — send text messages
+- **Research** — deep web research, people search, article discovery
+- **Enrichment** — email lookup, profile enrichment, social discovery
+- **Commerce** — search and buy products online
+- **Build** — generate and deploy production websites
+- **Browser** — automated web browsing
+- **Compute** — execute code in sandboxed environments
 
-console.log('Website URL:', site.url);
-console.log('Leads go to:', site.lead_capture_email);
+## Payments
 
-// Update existing website
-const updated = await agent.updateBuild({
-  build_id: site.request_id,
-  product: {
-    name: 'TaskFlow 2.0',
-    description: 'Now with AI automation! Task management reimagined.',
-    pricing: 'Free tier, Pro $15/mo, Team $35/mo'
-  }
-});
-```
+All paid tools use the [x402 protocol](https://www.x402.org/) on Base (Ethereum L2). The SDK handles the payment flow automatically:
 
-Build types: `saas`, `portfolio`, `agency`, `personal`, `product`, `funnel`, `restaurant`, `event`
+1. Call a tool
+2. API returns a price quote (HTTP 402)
+3. SDK signs a USDC authorization
+4. API verifies and executes
 
-### Voice Calls
+You need a wallet with USDC on Base mainnet. Gas costs are fractions of a cent.
 
-```typescript
-// Simple call
-const call = await agent.voice({
-  objective: 'Call to schedule a dentist appointment for next Tuesday',
-  target_number: '+14155551234',
-  caller_persona: 'A polite assistant scheduling an appointment',
-  context: 'Patient prefers morning appointments',
-  maxCost: 5
-});
+## Documentation
 
-console.log('Transcript:', call.transcript);
-console.log('Summary:', call.summary);
-console.log('Success:', call.success_evaluation);
-
-// Conference call (multiple numbers)
-const conference = await agent.voice({
-  objective: 'Connect the buyer and seller to negotiate the final price',
-  target_number: ['+14155551234', '+14155555678'],
-  caller_persona: 'A professional meeting facilitator'
-});
-```
-
-### SMS
-
-```typescript
-// Single recipient
-await agent.sms({
-  message: 'Your appointment is confirmed for tomorrow at 10am',
-  to_number: '+14155551234'
-});
-
-// Multiple recipients (up to 10)
-await agent.sms({
-  message: 'Team meeting moved to 3pm',
-  to_number: ['+14155551234', '+14155555678', '+14155559012']
-});
-
-// Check SMS inbox
-const inbox = await agent.smsInboxList({ limit: 10 });
-for (const msg of inbox.messages) {
-  console.log(`From ${msg.from}: ${msg.body}`);
-}
-
-// Get specific message
-const msg = await agent.smsInboxGet('msg_abc123');
-```
-
-### Email with Attachments
-
-```typescript
-await agent.email({
-  to: ['alice@example.com', 'bob@example.com'],
-  subject: 'Report',
-  body: 'See attached.',
-  attachments: [{
-    filename: 'report.pdf',
-    content: base64Content,
-    content_type: 'application/pdf'
-  }]
-});
-```
-
-### People Search & Enrichment
-
-```typescript
-const results = await agent.peopleSearch({
-  job_titles: ['CEO', 'CTO'],
-  companies: ['Stripe'],
-  limit: 10
-});
-
-const profile = await agent.enrichProfile({
-  linkedin_url: results.results[0].linkedin_url
-});
-```
-
-### Commerce
-
-```typescript
-const order = await agent.commerceBuy({
-  product_url: 'https://amazon.com/dp/B07ZPC9QD4',
-  shipping_address: {
-    first_name: 'John',
-    last_name: 'Doe',
-    street: '123 Main St',
-    city: 'San Francisco',
-    state: 'CA',
-    zip_code: '94102',
-    country: 'US',
-    phone: '4155550100'
-  },
-  maxCost: 100
-});
-```
-
-### Notifications
-
-```typescript
-// List notifications
-const notifications = await agent.notifications({ unread: true, limit: 20 });
-for (const n of notifications.notifications) {
-  console.log(`[${n.type}] ${n.title}: ${n.message}`);
-}
-
-// Mark as read
-await agent.markNotificationRead('notification-uuid');
-```
-
-### Cancellation
-
-Use `AbortSignal` to cancel operations **before payment is made**. Once payment is signed, the operation will execute regardless of cancellation.
-
-```typescript
-const controller = new AbortController();
-
-// Cancel after 5 seconds if still in quote phase
-setTimeout(() => controller.abort(), 5000);
-
-try {
-  await agent.voice({
-    objective: 'Make a reservation',
-    target_number: '+14155551234',
-    signal: controller.signal
-  });
-} catch (error) {
-  if (error.message === 'Operation cancelled before payment') {
-    console.log('Cancelled before paying - no charge');
-  }
-}
-```
-
-**Important:** The signal can cancel:
-- Quote requests (before receiving price)
-- The decision phase (after quote, before payment)
-
-The signal **cannot** cancel:
-- Operations after payment is signed (call/SMS will still execute)
-- Server-side job execution
-
-## Environment Constants
-
-```typescript
-import { TEST_ENV, PROD_ENV } from '@oneshot-agent/sdk';
-
-TEST_ENV.chainId;     // 84532
-TEST_ENV.usdcAddress; // 0x036CbD53842c5426634e7929541eC2318f3dCF7e
-
-PROD_ENV.chainId;     // 8453
-PROD_ENV.usdcAddress; // 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
-```
-
-## Links
-
-- [Documentation](https://docs.oneshotagent.com)
-- [MCP Server](https://www.npmjs.com/package/@oneshot-agent/mcp-server) — Claude Desktop, Cursor, Claude Code
-- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 26 tools as LangChain BaseTool
-- [Python SDK (Core)](https://pypi.org/project/oneshot-python/) — HTTP client with x402 payments
-- [Pricing](https://docs.oneshotagent.com/pricing)
-- [GitHub](https://github.com/oneshot-agent/sdk)
+- [OneShot Docs](https://docs.oneshotagent.com)
+- [Soul.Markets Docs](https://docs.soul.mds.markets)
+- [API Reference](https://docs.soul.mds.markets/api-reference/overview)
 
 ## License
 

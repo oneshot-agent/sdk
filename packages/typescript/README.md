@@ -1,0 +1,363 @@
+# @oneshot-agent/sdk
+
+Autonomous Agent SDK for executing real-world commercial transactions with automatic x402 payments.
+
+## Installation
+
+```bash
+npm install @oneshot-agent/sdk
+```
+
+### Using with Claude Desktop, Cursor, or Claude Code?
+
+Use the MCP server instead for zero-code integration:
+
+```bash
+npx -y @oneshot-agent/mcp-server
+```
+
+See the [MCP Server documentation](https://docs.oneshotagent.com/sdk/mcp) for setup instructions.
+
+## Quick Start
+
+```typescript
+import { OneShot } from '@oneshot-agent/sdk';
+
+const agent = new OneShot({
+  privateKey: process.env.AGENT_PRIVATE_KEY!
+});
+
+// Send email
+await agent.email({
+  to: 'user@example.com',
+  subject: 'Hello',
+  body: 'Hello World!'
+});
+
+// Make a voice call
+const call = await agent.voice({
+  objective: 'Call the restaurant to make a reservation for 2 at 7pm',
+  target_number: '+14155551234'
+});
+console.log(call.transcript);
+
+// Send SMS
+await agent.sms({
+  message: 'Your order has shipped!',
+  to_number: '+14155551234'
+});
+
+// Build a website
+const site = await agent.build({
+  type: 'saas',
+  product: {
+    name: 'TaskFlow',
+    description: 'AI-powered task management for remote teams'
+  }
+});
+console.log('Live at:', site.url);
+
+// Research
+const report = await agent.research({ topic: 'AI agents', depth: 'deep' });
+
+// Check balance
+const balance = await agent.getBalance(agent.usdcAddress);
+```
+
+## Network
+
+The SDK operates on Base mainnet (chain 8453) with real USDC. You need a wallet with USDC on Base to use paid tools.
+
+## Available Methods
+
+| Method | Description |
+|--------|-------------|
+| `email()` | Send emails with attachments |
+| `voice()` | Make phone calls |
+| `sms()` | Send SMS messages |
+| `smsInboxList()` | List inbound SMS |
+| `smsInboxGet()` | Get SMS by ID |
+| `research()` | Deep web research |
+| `peopleSearch()` | Search people by criteria |
+| `enrichProfile()` | Enrich from LinkedIn/email |
+| `findEmail()` | Find email for a person |
+| `verifyEmail()` | Verify email deliverability |
+| `deepResearchPerson()` | Full dossier on a person |
+| `socialProfiles()` | Find all social accounts |
+| `articleSearch()` | Find articles about a person |
+| `personNewsfeed()` | Recent social posts with engagement |
+| `personInterests()` | Analyze interests across categories |
+| `personInteractions()` | Map followers, following, replies |
+| `webSearch()` | Search the web |
+| `webRead()` | Read any URL as markdown + screenshot |
+| `browser()` | Autonomous browser — navigate, click, extract |
+| `commerceBuy()` | Purchase products |
+| `commerceSearch()` | Search products |
+| `build()` | Build and deploy production websites |
+| `updateBuild()` | Update an existing website |
+| `inboxList()` | List inbound emails |
+| `inboxGet()` | Get email by ID |
+| `notifications()` | List agent notifications |
+| `markNotificationRead()` | Mark notification as read |
+| `getBalance()` | Check token balance |
+
+## Configuration
+
+```typescript
+interface OneShotConfig {
+  privateKey: string;    // Required
+  baseUrl?: string;      // Override API URL
+  rpcUrl?: string;       // Override RPC URL
+  debug?: boolean;       // Enable logging
+  logger?: (msg: string) => void;
+}
+```
+
+## Tool Options
+
+All methods accept these common options:
+
+```typescript
+interface ToolOptions {
+  maxCost?: number;      // Max USDC willing to pay
+  timeout?: number;      // Timeout in seconds
+  signal?: AbortSignal;  // Cancel before payment (see Cancellation section)
+  wait?: boolean;        // Wait for async jobs (default: true)
+  onStatusUpdate?: (status: string, requestId: string) => void;
+}
+```
+
+## Error Handling
+
+```typescript
+import {
+  ValidationError,
+  ToolError,
+  JobError,
+  JobTimeoutError,
+  ContentBlockedError,
+  EmergencyNumberError
+} from '@oneshot-agent/sdk';
+
+try {
+  await agent.voice({
+    objective: 'Make a call',
+    target_number: '+14155551234'
+  });
+} catch (error) {
+  if (error instanceof ContentBlockedError) {
+    // Content blocked by safety filters
+    console.log(`Blocked: ${error.message}`);
+    console.log(`Categories: ${error.categories.join(', ')}`);
+  } else if (error instanceof EmergencyNumberError) {
+    // Attempted to call/SMS emergency number
+    console.log(`Emergency number blocked: ${error.blockedNumber}`);
+  } else if (error instanceof ValidationError) {
+    console.log(`Invalid: ${error.field}`);
+  } else if (error instanceof ToolError) {
+    console.log(`API error: ${error.statusCode}`);
+  } else if (error instanceof JobTimeoutError) {
+    console.log(`Timeout: ${error.jobId}`);
+  }
+}
+```
+
+## Examples
+
+### Build Websites
+
+```typescript
+// Build a SaaS landing page
+const site = await agent.build({
+  type: 'saas',
+  product: {
+    name: 'TaskFlow',
+    description: 'AI-powered task management for remote teams. Automate workflows, track progress, and collaborate seamlessly.',
+    industry: 'Productivity',
+    pricing: 'Free tier, Pro $12/mo, Team $29/mo'
+  },
+  lead_capture: { enabled: true },
+  brand: {
+    primary_color: '#4F46E5',
+    tone: 'professional'
+  }
+});
+
+console.log('Website URL:', site.url);
+console.log('Leads go to:', site.lead_capture_email);
+
+// Update existing website
+const updated = await agent.updateBuild({
+  build_id: site.request_id,
+  product: {
+    name: 'TaskFlow 2.0',
+    description: 'Now with AI automation! Task management reimagined.',
+    pricing: 'Free tier, Pro $15/mo, Team $35/mo'
+  }
+});
+```
+
+Build types: `saas`, `portfolio`, `agency`, `personal`, `product`, `funnel`, `restaurant`, `event`
+
+### Voice Calls
+
+```typescript
+// Simple call
+const call = await agent.voice({
+  objective: 'Call to schedule a dentist appointment for next Tuesday',
+  target_number: '+14155551234',
+  caller_persona: 'A polite assistant scheduling an appointment',
+  context: 'Patient prefers morning appointments',
+  maxCost: 5
+});
+
+console.log('Transcript:', call.transcript);
+console.log('Summary:', call.summary);
+console.log('Success:', call.success_evaluation);
+
+// Conference call (multiple numbers)
+const conference = await agent.voice({
+  objective: 'Connect the buyer and seller to negotiate the final price',
+  target_number: ['+14155551234', '+14155555678'],
+  caller_persona: 'A professional meeting facilitator'
+});
+```
+
+### SMS
+
+```typescript
+// Single recipient
+await agent.sms({
+  message: 'Your appointment is confirmed for tomorrow at 10am',
+  to_number: '+14155551234'
+});
+
+// Multiple recipients (up to 10)
+await agent.sms({
+  message: 'Team meeting moved to 3pm',
+  to_number: ['+14155551234', '+14155555678', '+14155559012']
+});
+
+// Check SMS inbox
+const inbox = await agent.smsInboxList({ limit: 10 });
+for (const msg of inbox.messages) {
+  console.log(`From ${msg.from}: ${msg.body}`);
+}
+
+// Get specific message
+const msg = await agent.smsInboxGet('msg_abc123');
+```
+
+### Email with Attachments
+
+```typescript
+await agent.email({
+  to: ['alice@example.com', 'bob@example.com'],
+  subject: 'Report',
+  body: 'See attached.',
+  attachments: [{
+    filename: 'report.pdf',
+    content: base64Content,
+    content_type: 'application/pdf'
+  }]
+});
+```
+
+### People Search & Enrichment
+
+```typescript
+const results = await agent.peopleSearch({
+  job_titles: ['CEO', 'CTO'],
+  companies: ['Stripe'],
+  limit: 10
+});
+
+const profile = await agent.enrichProfile({
+  linkedin_url: results.results[0].linkedin_url
+});
+```
+
+### Commerce
+
+```typescript
+const order = await agent.commerceBuy({
+  product_url: 'https://amazon.com/dp/B07ZPC9QD4',
+  shipping_address: {
+    first_name: 'John',
+    last_name: 'Doe',
+    street: '123 Main St',
+    city: 'San Francisco',
+    state: 'CA',
+    zip_code: '94102',
+    country: 'US',
+    phone: '4155550100'
+  },
+  maxCost: 100
+});
+```
+
+### Notifications
+
+```typescript
+// List notifications
+const notifications = await agent.notifications({ unread: true, limit: 20 });
+for (const n of notifications.notifications) {
+  console.log(`[${n.type}] ${n.title}: ${n.message}`);
+}
+
+// Mark as read
+await agent.markNotificationRead('notification-uuid');
+```
+
+### Cancellation
+
+Use `AbortSignal` to cancel operations **before payment is made**. Once payment is signed, the operation will execute regardless of cancellation.
+
+```typescript
+const controller = new AbortController();
+
+// Cancel after 5 seconds if still in quote phase
+setTimeout(() => controller.abort(), 5000);
+
+try {
+  await agent.voice({
+    objective: 'Make a reservation',
+    target_number: '+14155551234',
+    signal: controller.signal
+  });
+} catch (error) {
+  if (error.message === 'Operation cancelled before payment') {
+    console.log('Cancelled before paying - no charge');
+  }
+}
+```
+
+**Important:** The signal can cancel:
+- Quote requests (before receiving price)
+- The decision phase (after quote, before payment)
+
+The signal **cannot** cancel:
+- Operations after payment is signed (call/SMS will still execute)
+- Server-side job execution
+
+## Environment Constants
+
+```typescript
+import { PROD_ENV } from '@oneshot-agent/sdk';
+
+PROD_ENV.chainId;     // 8453
+PROD_ENV.usdcAddress; // 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+```
+
+## Links
+
+- [Documentation](https://docs.oneshotagent.com)
+- [MCP Server](https://www.npmjs.com/package/@oneshot-agent/mcp-server) — Claude Desktop, Cursor, Claude Code
+- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 26 tools as LangChain BaseTool
+- [Python SDK (Core)](https://pypi.org/project/oneshot-python/) — HTTP client with x402 payments
+- [Pricing](https://docs.oneshotagent.com/pricing)
+- [GitHub](https://github.com/oneshot-agent/sdk)
+
+## License
+
+MIT
