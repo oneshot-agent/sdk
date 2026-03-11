@@ -8,7 +8,7 @@ export { CdpWalletProvider } from './providers/cdp';
 export { getSwapQuote, executeSwap } from './swap';
 export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 
-const SDK_VERSION = '0.9.0';
+const SDK_VERSION = '0.12.0';
 
 // ============================================================================
 // Environment Configuration
@@ -111,16 +111,30 @@ export interface PaymentInfo {
   context?: Record<string, unknown>;
 }
 
-export interface PaymentAuthorization {
-  from: string;
-  to: string;
-  value: string;
-  validAfter: number;
-  validBefore: number;
-  nonce: string;
-  signature: { v: number; r: string; s: string };
+export interface PaymentRequirements {
+  scheme: string;
   network: string;
-  token: string;
+  amount: string;
+  asset: string;
+  payTo: string;
+  maxTimeoutSeconds: number;
+  extra?: Record<string, unknown>;
+}
+
+export interface PaymentAuthorization {
+  x402Version: 2;
+  accepted: PaymentRequirements;
+  payload: {
+    signature: string;
+    authorization: {
+      from: string;
+      to: string;
+      value: string;
+      validAfter: string;
+      validBefore: string;
+      nonce: string;
+    };
+  };
 }
 
 export type LoggerFn = (message: string) => void;
@@ -1047,7 +1061,8 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo);
+    const accepted = this.parsePaymentRequired(quoteResp.headers.get('payment-required'));
+    const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
     const buyResp = await this.makeRequest('/v1/tools/commerce/buy', payload, auth, quoteData.context.quote_id, options.signal, 60000);
 
     if (buyResp.status !== 202) {
@@ -1162,7 +1177,8 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo);
+    const accepted = this.parsePaymentRequired(quoteResp.headers.get('payment-required'));
+    const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
     const callResp = await this.makeRequest('/v1/tools/voice/call', payload, auth, quoteData.context.quote_id, options.signal);
 
     if (callResp.status !== 202) {
@@ -1261,7 +1277,8 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo);
+    const accepted = this.parsePaymentRequired(quoteResp.headers.get('payment-required'));
+    const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
     const sendResp = await this.makeRequest('/v1/tools/sms/send', payload, auth, quoteData.context.quote_id, options.signal);
 
     if (sendResp.status !== 202) {
@@ -1353,7 +1370,8 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo);
+    const accepted = this.parsePaymentRequired(quoteResp.headers.get('payment-required'));
+    const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
     const buildResp = await this.makeRequest('/v1/tools/build', payload, auth, quoteData.context.quote_id, options.signal);
 
     if (buildResp.status !== 202) {
@@ -1439,7 +1457,8 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo);
+    const accepted = this.parsePaymentRequired(quoteResp.headers.get('payment-required'));
+    const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
     const execResp = await this.makeRequest('/v1/tools/browser', payload, auth, quoteData.context.quote_id, options.signal);
 
     if (execResp.status !== 202) {
@@ -1746,22 +1765,27 @@ export class OneShot {
 
     // Handle 402 Payment Required
     if (response.status === 402) {
+      // Parse x402 v2 PaymentRequired from PAYMENT-REQUIRED header
+      const paymentRequiredHeader = response.headers.get('payment-required');
+      const accepted = this.parsePaymentRequired(paymentRequiredHeader);
+
+      // Fallback: parse legacy body format for amount display
       const data = await response.json() as {
-        payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
+        payment_request?: { chain_id: number; token_address: string; amount: string; recipient: string };
       };
       const paymentInfo: PaymentInfo = {
         protocol: 'x402',
-        network: `eip155:${data.payment_request.chain_id}`,
-        payTo: data.payment_request.recipient,
-        amount: data.payment_request.amount,
+        network: accepted.network,
+        payTo: accepted.payTo,
+        amount: data.payment_request?.amount ?? ethers.formatUnits(accepted.amount, 6),
         currency: 'USD',
         facilitator_url: this.baseUrl,
-        token: { address: data.payment_request.token_address, symbol: 'USDC', decimals: 6 }
+        token: { address: accepted.asset, symbol: 'USDC', decimals: 6 }
       };
       this.log(`Payment required: ${paymentInfo.amount} USDC`);
 
       this.checkAbortBeforePayment(signal);
-      const auth = await this.signPaymentAuthorization(paymentInfo);
+      const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
       response = await this.makeRequest(endpoint, payload, auth, quoteId, signal);
     }
 
@@ -1961,7 +1985,15 @@ export class OneShot {
       ...this.headers()
     };
 
-    if (payment) headers['x-payment'] = JSON.stringify(payment);
+    if (payment) {
+      const paymentJson = JSON.stringify(payment);
+      const encoded = typeof Buffer !== 'undefined'
+        ? Buffer.from(paymentJson).toString('base64')
+        : btoa(paymentJson);
+      headers['payment-signature'] = encoded;
+      // Also send x-payment for identity extraction by legacy middleware
+      headers['x-payment'] = paymentJson;
+    }
     if (quoteId) headers['x-quote-id'] = quoteId;
 
     // Create timeout signal if specified
@@ -2014,18 +2046,54 @@ export class OneShot {
     this.log(`Swap complete: tx=${result.txHash}, USDC received=${ethers.formatUnits(result.usdcReceived, 6)}`);
   }
 
-  private async signPaymentAuthorization(paymentInfo: PaymentInfo): Promise<PaymentAuthorization> {
+  /** Parse the PAYMENT-REQUIRED header from a 402 response into the accepted requirements. */
+  private parsePaymentRequired(header: string | null): PaymentRequirements {
+    if (header) {
+      try {
+        const decoded = typeof Buffer !== 'undefined'
+          ? Buffer.from(header, 'base64').toString()
+          : atob(header);
+        const parsed = JSON.parse(decoded);
+        // x402 v2: { x402Version: 2, accepts: [...], resource: {...} }
+        if (parsed.accepts?.length > 0) {
+          return parsed.accepts[0] as PaymentRequirements;
+        }
+      } catch {
+        this.log('Failed to parse PAYMENT-REQUIRED header, using defaults');
+      }
+    }
+    // Fallback: construct from known production values
+    return {
+      scheme: 'exact',
+      network: `eip155:${CHAIN_ID}`,
+      amount: '0',
+      asset: USDC_ADDRESS,
+      payTo: '',
+      maxTimeoutSeconds: 300,
+      extra: { name: 'USD Coin', version: '2' },
+    };
+  }
+
+  private async signPaymentAuthorization(paymentInfo: PaymentInfo, accepted: PaymentRequirements): Promise<PaymentAuthorization> {
     // If paying with ETH, swap to USDC first
     await this.ensureUsdcBalance(paymentInfo);
 
     const now = Math.floor(Date.now() / 1000);
     const nonce = ethers.randomBytes(32);
     const value = ethers.parseUnits(paymentInfo.amount, paymentInfo.token.decimals);
+    const validAfter = now - 300; // Buffer for clock skew
+    const validBefore = now + 3600;
+    const nonceHex = ethers.hexlify(nonce);
 
+    // Use EIP-712 domain from the server's payment requirements
+    const domainName = (accepted.extra?.name as string) || 'USD Coin';
+    const domainVersion = (accepted.extra?.version as string) || '2';
+
+    // Sign EIP-3009 TransferWithAuthorization
     const signature = await this.provider.signTypedData(
       {
-        name: 'USD Coin',
-        version: '2',
+        name: domainName,
+        version: domainVersion,
         chainId: CHAIN_ID,
         verifyingContract: paymentInfo.token.address
       },
@@ -2043,24 +2111,27 @@ export class OneShot {
         from: this.provider.address,
         to: paymentInfo.payTo,
         value,
-        validAfter: now - 300, // Buffer for clock skew
-        validBefore: now + 3600,
-        nonce: ethers.hexlify(nonce)
+        validAfter,
+        validBefore,
+        nonce: nonceHex
       }
     );
 
-    const sig = ethers.Signature.from(signature);
-
+    // Return x402 PaymentPayload v2 format
     return {
-      from: this.provider.address,
-      to: paymentInfo.payTo,
-      value: value.toString(),
-      validAfter: now - 300,
-      validBefore: now + 3600,
-      nonce: ethers.hexlify(nonce),
-      signature: { v: sig.v, r: sig.r, s: sig.s },
-      network: `eip155:${CHAIN_ID}`,
-      token: paymentInfo.token.address
+      x402Version: 2,
+      accepted,
+      payload: {
+        signature,
+        authorization: {
+          from: this.provider.address,
+          to: paymentInfo.payTo,
+          value: value.toString(),
+          validAfter: validAfter.toString(),
+          validBefore: validBefore.toString(),
+          nonce: nonceHex,
+        },
+      },
     };
   }
 }
