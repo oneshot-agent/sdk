@@ -195,6 +195,7 @@ export interface PeopleSearchOptions extends ToolOptions {
   job_titles?: string[];
   keywords?: string[];
   companies?: string[];
+  company_domains?: string[];
   location?: string[];
   skills?: string[];
   seniority?: string[];
