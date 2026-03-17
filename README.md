@@ -55,7 +55,7 @@ const site = await agent.build({
     description: 'AI-powered task management for remote teams'
   }
 });
-console.log('Live at:', site.url);
+console.log('Live at:', site.production_url);
 
 // Research
 const report = await agent.research({ topic: 'AI agents', depth: 'deep' });
@@ -124,13 +124,26 @@ All methods accept these common options:
 
 ```typescript
 interface ToolOptions {
-  maxCost?: number;      // Max USDC willing to pay
+  maxCost?: number;      // Max USDC willing to pay (see supported tools below)
   timeout?: number;      // Timeout in seconds
   signal?: AbortSignal;  // Cancel before payment (see Cancellation section)
   wait?: boolean;        // Wait for async jobs (default: true)
   onStatusUpdate?: (status: string, requestId: string) => void;
 }
 ```
+
+### `maxCost` Support
+
+The `maxCost` option is a client-side guard — the SDK compares the quoted price against your limit and throws before signing any payment if it exceeds it. This is supported on tools with variable pricing:
+
+| Method | `maxCost` |
+|--------|:---------:|
+| `commerceBuy()` | Supported |
+| `voice()` | Supported |
+| `sms()` | Supported |
+| `build()` / `updateBuild()` | Supported |
+| `browser()` | Supported |
+| All other tools | Not applicable (fixed low-cost pricing) |
 
 ## Error Handling
 
@@ -188,8 +201,8 @@ const site = await agent.build({
   }
 });
 
-console.log('Website URL:', site.url);
-console.log('Leads go to:', site.lead_capture_email);
+console.log('Website URL:', site.production_url);
+console.log('Preview:', site.preview_url);
 
 // Update existing website
 const updated = await agent.updateBuild({

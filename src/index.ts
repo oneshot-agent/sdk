@@ -304,8 +304,6 @@ export interface WebReadOptions extends ToolOptions {
 }
 
 export interface WebReadResult {
-  request_id: string;
-  status: string;
   url: string;
   markdown: string;
   screenshot_url?: string;
@@ -380,8 +378,9 @@ export interface PeopleSearchResult {
   status: string;
   results: PersonResult[];
   total_found: number;
-  provider: string;
-  completed_at: string;
+  request_id?: string;
+  completed_at?: string;
+  filters?: Record<string, unknown>;
 }
 
 export interface ResearchResult {
@@ -397,22 +396,36 @@ export interface ResearchResult {
 }
 
 export interface EmailResult {
-  success: boolean;
-  message_id?: string;
-  job_id?: string;
+  status: string;
+  timeline?: Array<Record<string, unknown>>;
+  error?: string;
+  email?: {
+    id: string;
+    provider_message_id: string;
+    status: string;
+  };
+  domain?: {
+    domain: string;
+    status: string;
+    was_provisioned: boolean;
+  };
 }
 
 export interface EnrichProfileResult {
   status: string;
   profile: PersonResult;
-  provider: string;
+  request_id?: string;
+  completed_at?: string;
 }
 
 export interface FindEmailResult {
   status: string;
   email: string | null;
   found: boolean;
-  provider: string;
+  full_name?: string;
+  company_domain?: string;
+  request_id?: string;
+  completed_at?: string;
 }
 
 export interface AsyncJobResult {
@@ -420,12 +433,126 @@ export interface AsyncJobResult {
   status: string;
 }
 
+// Person Intelligence result types (Nyne-powered endpoints)
+
+/** Enrichment data nested inside deep research and enrichment responses. */
+export interface PersonEnrichment {
+  displayname?: string;
+  firstname?: string;
+  lastname?: string;
+  bio?: string;
+  location?: string;
+  altemails?: string[];
+  best_work_email?: string;
+  best_personal_email?: string;
+  fullphone?: Array<{ fullphone: string; type: string }>;
+  organizations?: Array<{
+    name?: string;
+    title?: string;
+    startDate?: string;
+    endDate?: string;
+    endDate_formatted?: { is_current: boolean };
+  }>;
+  schools_info?: Array<{ name?: string; degree?: string; title?: string }>;
+  social_profiles?: Record<string, {
+    url?: string;
+    username?: string;
+    followers?: number;
+  }>;
+  newsfeed?: Array<{
+    source?: string;
+    type?: string;
+    content?: string;
+    date_posted?: string;
+    engagement?: { likes?: number; replies?: number; shares?: number };
+  }>;
+}
+
+export interface DeepResearchPersonResult {
+  status: string;
+  result: {
+    enrichment: PersonEnrichment;
+    following?: Record<string, unknown>[];
+    articles?: Array<{
+      title?: string;
+      url?: string;
+      source?: string;
+      published_date?: string;
+      snippet?: string;
+    }>;
+    dossier?: Record<string, unknown>;
+  };
+  request_id: string;
+  completed_at: string;
+}
+
+export interface SocialProfilesResult {
+  status: string;
+  result: Record<string, {
+    url?: string;
+    username?: string;
+    followers?: number;
+    bio?: string;
+  }>;
+  request_id: string;
+  completed_at: string;
+}
+
+export interface ArticleSearchResult {
+  status: string;
+  result: Array<{
+    title?: string;
+    url?: string;
+    source?: string;
+    published_date?: string;
+    snippet?: string;
+  }>;
+  request_id: string;
+  completed_at: string;
+}
+
+export interface PersonNewsfeedResult {
+  status: string;
+  result: Array<{
+    platform?: string;
+    content?: string;
+    url?: string;
+    posted_at?: string;
+    likes?: number;
+    replies?: number;
+    shares?: number;
+  }>;
+  request_id: string;
+  completed_at: string;
+}
+
+export interface PersonInterestsResult {
+  status: string;
+  result: Record<string, unknown>;
+  request_id: string;
+  completed_at: string;
+}
+
+export interface PersonInteractionsResult {
+  status: string;
+  result: {
+    followers?: Array<Record<string, unknown>>;
+    following?: Array<Record<string, unknown>>;
+    replies?: Array<Record<string, unknown>>;
+  };
+  request_id: string;
+  completed_at: string;
+}
+
 export interface VerifyEmailResult {
   status: string;
   email: string;
+  valid: boolean;
   deliverable: boolean;
-  reason?: string;
-  provider: string;
+  catch_all: boolean;
+  disposable: boolean;
+  request_id?: string;
+  completed_at?: string;
 }
 
 export interface InboxEmail {
@@ -462,14 +589,32 @@ export interface CommerceQuote {
 }
 
 export interface CommerceBuyResult {
-  request_id: string;
   status: string;
-  product?: { title: string; total_charged: string };
+  order_id: string;
+  order_status: string;
+  tracking_url?: string;
+  provider: string;
+}
+
+export interface CommerceSearchProduct {
+  product_url: string;
+  title: string;
+  price: number;
+  currency: string;
+  image_url?: string;
+  vendor?: string;
+  rating?: number;
+  review_count?: number;
+  in_stock?: boolean;
+  description?: string;
 }
 
 export interface CommerceSearchResult {
-  request_id: string;
   status: string;
+  query: string;
+  provider: string;
+  products: CommerceSearchProduct[];
+  count: number;
 }
 
 export interface VoiceQuote {
@@ -490,7 +635,6 @@ export interface VoiceQuote {
 }
 
 export interface VoiceCallResult {
-  request_id: string;
   status: string;
   ended_reason?: string;
   duration_seconds?: number;
@@ -516,11 +660,17 @@ export interface SmsQuote {
 }
 
 export interface SmsSendResult {
-  request_id: string;
   status: string;
-  delivered?: number;
-  failed?: number;
-  total?: number;
+  sent: number;
+  failed: number;
+  total: number;
+  details: Array<{
+    to: string;
+    from?: string;
+    status: string;
+    message_sid?: string;
+    error?: string;
+  }>;
 }
 
 export interface SmsInboxMessage {
@@ -648,12 +798,16 @@ export interface BuildQuote {
 }
 
 export interface BuildResult {
-  request_id: string;
   status: string;
-  url?: string;
+  success: boolean;
+  production_url?: string;
   preview_url?: string;
-  lead_capture_email?: string;
   design_score?: number;
+  iterations?: number;
+  v0_chat_id?: string;
+  vercel_deployment_id?: string;
+  vercel_project_id?: string;
+  github_repo?: string;
   error?: string;
 }
 
@@ -685,13 +839,12 @@ export interface BrowserQuote {
 }
 
 export interface BrowserResult {
-  request_id: string;
-  status: string;
   output?: string | Record<string, unknown>;
   steps?: Array<{ number: number; goal: string; url: string }>;
   cost?: number;
   output_files?: string[];
   browser_task_id?: string;
+  session_id?: string;
 }
 
 export interface UpdateBuildOptions extends ToolOptions {
@@ -760,6 +913,14 @@ export interface ReceiptsListResult {
   receipts: Receipt[];
   count: number;
   has_more: boolean;
+}
+
+export interface UnifiedBalance {
+  on_chain_balance: string;
+  credits_balance: string;
+  currency: string;
+  address: string;
+  chain_id: number;
 }
 
 // ============================================================================
@@ -951,39 +1112,39 @@ export class OneShot {
     return this.tool('verify/email', { ...options });
   }
 
-  async deepResearchPerson(options: DeepResearchPersonOptions): Promise<any> {
+  async deepResearchPerson(options: DeepResearchPersonOptions): Promise<DeepResearchPersonResult> {
     if (!options.email && !options.social_media_url && !options.name) {
       throw new ValidationError('At least one of email, social_media_url, or name is required', 'identifier');
     }
     return this.tool('research/person', { ...options });
   }
 
-  async socialProfiles(options: SocialProfilesOptions): Promise<any> {
+  async socialProfiles(options: SocialProfilesOptions): Promise<SocialProfilesResult> {
     if (!options.email && !options.social_media_url) {
       throw new ValidationError('At least one of email or social_media_url is required', 'identifier');
     }
     return this.tool('research/social', { ...options });
   }
 
-  async articleSearch(options: ArticleSearchOptions): Promise<any> {
+  async articleSearch(options: ArticleSearchOptions): Promise<ArticleSearchResult> {
     this.validate(options.name, 'name');
     this.validate(options.company, 'company');
     return this.tool('research/articles', { ...options });
   }
 
-  async personNewsfeed(options: PersonNewsfeedOptions): Promise<any> {
+  async personNewsfeed(options: PersonNewsfeedOptions): Promise<PersonNewsfeedResult> {
     this.validate(options.social_media_url, 'social_media_url');
     return this.tool('research/newsfeed', { ...options });
   }
 
-  async personInterests(options: PersonInterestsOptions): Promise<any> {
+  async personInterests(options: PersonInterestsOptions): Promise<PersonInterestsResult> {
     if (!options.email && !options.phone && !options.social_media_url) {
       throw new ValidationError('At least one of email, phone, or social_media_url is required', 'identifier');
     }
     return this.tool('research/interests', { ...options });
   }
 
-  async personInteractions(options: PersonInteractionsOptions): Promise<any> {
+  async personInteractions(options: PersonInteractionsOptions): Promise<PersonInteractionsResult> {
     this.validate(options.social_media_url, 'social_media_url');
     return this.tool('research/interactions', { ...options });
   }
@@ -1061,7 +1222,7 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const accepted = this.parsePaymentRequired(quoteResp.headers.get('payment-required'));
+    const accepted = await this.getAcceptedRequirements(quoteResp, '/v1/tools/commerce/buy', payload, quoteData.context.quote_id, options.signal);
     const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
     const buyResp = await this.makeRequest('/v1/tools/commerce/buy', payload, auth, quoteData.context.quote_id, options.signal, 60000);
 
@@ -1069,13 +1230,13 @@ export class OneShot {
       throw new ToolError('Commerce buy failed', buyResp.status, await buyResp.text());
     }
 
-    const result = await buyResp.json() as CommerceBuyResult;
+    const result = await buyResp.json() as { request_id: string; status: string };
     this.log(`Order submitted: ${result.request_id}`);
 
     if (options.wait !== false && result.request_id) {
       return this.pollJob(result.request_id, options.timeout ?? 180, options.signal, options.onStatusUpdate);
     }
-    return result;
+    return result as unknown as CommerceBuyResult;
   }
 
   async commerceSearch(options: CommerceSearchOptions): Promise<CommerceSearchResult> {
@@ -1177,7 +1338,7 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const accepted = this.parsePaymentRequired(quoteResp.headers.get('payment-required'));
+    const accepted = await this.getAcceptedRequirements(quoteResp, '/v1/tools/voice/call', payload, quoteData.context.quote_id, options.signal);
     const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
     const callResp = await this.makeRequest('/v1/tools/voice/call', payload, auth, quoteData.context.quote_id, options.signal);
 
@@ -1277,7 +1438,7 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const accepted = this.parsePaymentRequired(quoteResp.headers.get('payment-required'));
+    const accepted = await this.getAcceptedRequirements(quoteResp, '/v1/tools/sms/send', payload, quoteData.context.quote_id, options.signal);
     const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
     const sendResp = await this.makeRequest('/v1/tools/sms/send', payload, auth, quoteData.context.quote_id, options.signal);
 
@@ -1291,7 +1452,7 @@ export class OneShot {
     if (options.wait !== false && result.request_id) {
       return this.pollJob(result.request_id, options.timeout ?? 60, options.signal, options.onStatusUpdate);
     }
-    return result as SmsSendResult;
+    return result as unknown as SmsSendResult;
   }
 
   /**
@@ -1370,7 +1531,7 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const accepted = this.parsePaymentRequired(quoteResp.headers.get('payment-required'));
+    const accepted = await this.getAcceptedRequirements(quoteResp, '/v1/tools/build', payload, quoteData.context.quote_id, options.signal);
     const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
     const buildResp = await this.makeRequest('/v1/tools/build', payload, auth, quoteData.context.quote_id, options.signal);
 
@@ -1384,7 +1545,7 @@ export class OneShot {
     if (options.wait !== false && result.request_id) {
       return this.pollJob(result.request_id, options.timeout ?? 600, options.signal, options.onStatusUpdate);
     }
-    return result as BuildResult;
+    return result as unknown as BuildResult;
   }
 
   /**
@@ -1457,7 +1618,7 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const accepted = this.parsePaymentRequired(quoteResp.headers.get('payment-required'));
+    const accepted = await this.getAcceptedRequirements(quoteResp, '/v1/tools/browser', payload, quoteData.context.quote_id, options.signal);
     const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
     const execResp = await this.makeRequest('/v1/tools/browser', payload, auth, quoteData.context.quote_id, options.signal);
 
@@ -1602,9 +1763,26 @@ export class OneShot {
     }
   }
 
-  async getBalance(tokenAddress: string): Promise<string> {
-    this.validate(tokenAddress, 'tokenAddress');
+  async getUnifiedBalance(): Promise<UnifiedBalance> {
+    const response = await fetch(`${this.baseUrl}/v1/tools/balance`, {
+      headers: this.headers()
+    });
 
+    if (!response.ok) {
+      throw new ToolError('Failed to fetch balance', response.status, await response.text());
+    }
+
+    return response.json() as Promise<UnifiedBalance>;
+  }
+
+  async getBalance(tokenAddress?: string): Promise<string> {
+    // Use unified API endpoint for USDC (default) balance
+    if (!tokenAddress || tokenAddress === this.usdcAddress) {
+      const unified = await this.getUnifiedBalance();
+      return unified.on_chain_balance;
+    }
+
+    // Custom token: keep existing RPC logic
     const contract = new ethers.Contract(
       tokenAddress,
       ['function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)'],
@@ -2072,6 +2250,27 @@ export class OneShot {
       maxTimeoutSeconds: 300,
       extra: { name: 'USD Coin', version: '2' },
     };
+  }
+
+  /**
+   * Get payment requirements for a quote-based endpoint.
+   * Quote-based routes don't include payment-required header on the initial 402.
+   * If missing, probe with quote ID (no payment) to trigger the x402 middleware's 402.
+   */
+  private async getAcceptedRequirements(
+    initialResp: Response,
+    endpoint: string,
+    payload: Record<string, unknown>,
+    quoteId: string,
+    signal?: AbortSignal
+  ): Promise<PaymentRequirements> {
+    const header = initialResp.headers.get('payment-required');
+    if (header) {
+      return this.parsePaymentRequired(header);
+    }
+    // Probe: send quote ID without payment to get x402 middleware's 402
+    const probeResp = await this.makeRequest(endpoint, payload, undefined, quoteId, signal);
+    return this.parsePaymentRequired(probeResp.headers.get('payment-required'));
   }
 
   private async signPaymentAuthorization(paymentInfo: PaymentInfo, accepted: PaymentRequirements): Promise<PaymentAuthorization> {
