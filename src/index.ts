@@ -8,7 +8,7 @@ export { CdpWalletProvider } from './providers/cdp';
 export { getSwapQuote, executeSwap } from './swap';
 export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 
-const SDK_VERSION = '0.12.0';
+const SDK_VERSION = '0.13.1';
 
 // ============================================================================
 // Environment Configuration
@@ -123,6 +123,8 @@ export interface PaymentRequirements {
 
 export interface PaymentAuthorization {
   x402Version: 2;
+  resource?: { url: string; description?: string; mimeType?: string };
+  extensions?: Record<string, unknown>;
   accepted: PaymentRequirements;
   payload: {
     signature: string;
@@ -187,8 +189,6 @@ export interface EmailToolOptions extends ToolOptions {
 export interface ResearchToolOptions extends ToolOptions {
   topic: string;
   depth?: 'deep' | 'quick';
-  max_sources?: number;
-  output_format?: 'report_markdown' | 'structured_json';
 }
 
 export interface PeopleSearchOptions extends ToolOptions {
@@ -824,8 +824,17 @@ export interface BrowserTaskOptions extends ToolOptions {
   allowed_domains?: string[];
   /** Reuse an existing browser session */
   session_id?: string;
+  /** Persistent browser profile ID for reusing cookies/localStorage across sessions */
+  profile_id?: string;
+  /** Domain-scoped credentials for auto-login, e.g. { "github.com": "user:token" } */
+  secrets?: Record<string, string>;
   /** Maximum browser steps (default: 50, max: 100) */
   max_steps?: number;
+}
+
+export interface BrowserProfile {
+  id: string;
+  name: string;
 }
 
 export interface BrowserQuote {
@@ -922,6 +931,130 @@ export interface UnifiedBalance {
   currency: string;
   address: string;
   chain_id: number;
+}
+
+// Compute types
+
+export interface ComputeSchedule {
+  /** Cron expression (UTC). Minimum interval: 15 minutes. */
+  cron: string;
+  /** USDC budget per run */
+  budget_per_run: number;
+  /** Maximum number of runs (optional — runs indefinitely if omitted) */
+  max_runs?: number;
+}
+
+export interface ComputeOptions extends ToolOptions {
+  /** Natural language objective for the orchestrator */
+  objective: string;
+  /** Additional parameters / constraints */
+  params?: Record<string, unknown>;
+  /** Suggested budget in USDC (server will estimate if omitted) */
+  budget_usdc?: number;
+  /** ISO deadline for completion */
+  deadline?: string;
+  /** Route to a specific Soul agent */
+  soul_slug?: string;
+  /** Route to a specific Soul service */
+  soul_service_slug?: string;
+  /** Make this a recurring goal */
+  schedule?: ComputeSchedule;
+}
+
+export interface ComputeQuote {
+  quote_id: string;
+  objective_summary: string;
+  estimated_phases: number;
+  estimated_tasks: number;
+  estimated_duration_days: number;
+  budget_breakdown: Record<string, string>;
+  total_budget: string;
+  expires_at: string;
+  schedule_cron?: string;
+  budget_per_run?: number;
+  max_runs?: number;
+  projected_runs?: number;
+}
+
+export interface ComputeGoalResult {
+  goal_id: string;
+  request_id: string;
+  receipt_id?: string;
+  status: string;
+  message: string;
+  goal: {
+    objective: string;
+    budget_usdc: string;
+    deadline?: string;
+    schedule_cron?: string;
+    budget_per_run?: number;
+    max_runs?: number;
+    next_run_at?: string;
+  };
+}
+
+export interface ComputeGoalStatus {
+  id: string;
+  status: string;
+  name: string;
+  objective: string;
+  current_phase: number | null;
+  plan: unknown;
+  budget: {
+    total: string;
+    spent: string;
+    reserved: string;
+    remaining: string;
+  } | null;
+  soul_agent_id: string | null;
+  deadline: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  last_wake_at: string | null;
+  next_wake_at: string | null;
+  created_at: string;
+  schedule?: {
+    cron: string;
+    budget_per_run: string;
+    max_runs: number | null;
+    run_count: number;
+    last_run_at: string | null;
+    next_run_at: string | null;
+  };
+}
+
+export interface ComputeTask {
+  id: string;
+  task_type: string;
+  tool: string | null;
+  description: string;
+  status: string;
+  phase: number | null;
+  sequence: number | null;
+  progress_pct: number | null;
+  progress_message: string | null;
+  result: unknown;
+  quoted_usdc: string | null;
+  actual_usdc: string | null;
+  run_number: number | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export interface ComputeBudgetStatus {
+  budgetId: string;
+  goalId: string;
+  totalBudgetUsdc: string;
+  spentUsdc: string;
+  reservedUsdc: string;
+  remainingUsdc: string;
+  spend_entries: Array<{
+    category: string;
+    amount_usdc: string;
+    description: string;
+    created_at: string;
+  }>;
 }
 
 // ============================================================================
@@ -1223,8 +1356,8 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const accepted = await this.getAcceptedRequirements(quoteResp, '/v1/tools/commerce/buy', payload, quoteData.context.quote_id, options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
+    const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, '/v1/tools/commerce/buy', payload, quoteData.context.quote_id, options.signal);
+    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
     const buyResp = await this.makeRequest('/v1/tools/commerce/buy', payload, auth, quoteData.context.quote_id, options.signal, 60000);
 
     if (buyResp.status !== 202) {
@@ -1281,7 +1414,7 @@ export class OneShot {
       throw new ValidationError('Objective must be at least 10 characters', 'objective');
     }
 
-    if (options.max_duration_minutes && (options.max_duration_minutes < 1 || options.max_duration_minutes > 30)) {
+    if (options.max_duration_minutes !== undefined && (options.max_duration_minutes < 1 || options.max_duration_minutes > 30)) {
       throw new ValidationError('max_duration_minutes must be between 1 and 30', 'max_duration_minutes');
     }
 
@@ -1339,8 +1472,8 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const accepted = await this.getAcceptedRequirements(quoteResp, '/v1/tools/voice/call', payload, quoteData.context.quote_id, options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
+    const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, '/v1/tools/voice/call', payload, quoteData.context.quote_id, options.signal);
+    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
     const callResp = await this.makeRequest('/v1/tools/voice/call', payload, auth, quoteData.context.quote_id, options.signal);
 
     if (callResp.status !== 202) {
@@ -1439,8 +1572,8 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const accepted = await this.getAcceptedRequirements(quoteResp, '/v1/tools/sms/send', payload, quoteData.context.quote_id, options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
+    const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, '/v1/tools/sms/send', payload, quoteData.context.quote_id, options.signal);
+    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
     const sendResp = await this.makeRequest('/v1/tools/sms/send', payload, auth, quoteData.context.quote_id, options.signal);
 
     if (sendResp.status !== 202) {
@@ -1532,8 +1665,8 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const accepted = await this.getAcceptedRequirements(quoteResp, '/v1/tools/build', payload, quoteData.context.quote_id, options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
+    const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, '/v1/tools/build', payload, quoteData.context.quote_id, options.signal);
+    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
     const buildResp = await this.makeRequest('/v1/tools/build', payload, auth, quoteData.context.quote_id, options.signal);
 
     if (buildResp.status !== 202) {
@@ -1568,7 +1701,7 @@ export class OneShot {
       throw new ValidationError('Task must be at least 10 characters', 'task');
     }
 
-    if (options.max_steps && (options.max_steps < 1 || options.max_steps > 100)) {
+    if (options.max_steps !== undefined && (options.max_steps < 1 || options.max_steps > 100)) {
       throw new ValidationError('max_steps must be between 1 and 100', 'max_steps');
     }
 
@@ -1583,6 +1716,8 @@ export class OneShot {
     if (options.start_url) payload.start_url = options.start_url;
     if (options.allowed_domains) payload.allowed_domains = options.allowed_domains;
     if (options.session_id) payload.session_id = options.session_id;
+    if (options.profile_id) payload.profile_id = options.profile_id;
+    if (options.secrets) payload.secrets = options.secrets;
     if (options.max_steps) payload.max_steps = options.max_steps;
 
     // Browser uses quote-to-pay flow (402 -> payment -> 202)
@@ -1619,8 +1754,8 @@ export class OneShot {
     };
 
     this.checkAbortBeforePayment(options.signal);
-    const accepted = await this.getAcceptedRequirements(quoteResp, '/v1/tools/browser', payload, quoteData.context.quote_id, options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
+    const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, '/v1/tools/browser', payload, quoteData.context.quote_id, options.signal);
+    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
     const execResp = await this.makeRequest('/v1/tools/browser', payload, auth, quoteData.context.quote_id, options.signal);
 
     if (execResp.status !== 202) {
@@ -1634,6 +1769,74 @@ export class OneShot {
       return this.pollJob(result.request_id, options.timeout ?? 300, options.signal, options.onStatusUpdate);
     }
     return result as BrowserResult;
+  }
+
+  /**
+   * Create a persistent browser profile for reusing cookies/localStorage across sessions
+   *
+   * @example
+   * ```typescript
+   * const profile = await agent.createBrowserProfile('linkedin-session');
+   * console.log(profile.id); // Use this in browser({ profile_id: ... })
+   * ```
+   */
+  async createBrowserProfile(name: string): Promise<BrowserProfile> {
+    this.validate(name, 'name');
+
+    const response = await fetch(`${this.baseUrl}/v1/tools/browser/profiles`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.headers() },
+      body: JSON.stringify({ name }),
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to create browser profile', response.status, await response.text());
+    }
+    return response.json() as Promise<BrowserProfile>;
+  }
+
+  /**
+   * List all browser profiles
+   *
+   * @example
+   * ```typescript
+   * const profiles = await agent.listBrowserProfiles();
+   * for (const p of profiles) {
+   *   console.log(`${p.name} (${p.id})`);
+   * }
+   * ```
+   */
+  async listBrowserProfiles(): Promise<BrowserProfile[]> {
+    const response = await fetch(`${this.baseUrl}/v1/tools/browser/profiles`, {
+      headers: this.headers(),
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to list browser profiles', response.status, await response.text());
+    }
+    const data = await response.json() as { profiles: BrowserProfile[] };
+    return data.profiles;
+  }
+
+  /**
+   * Delete a browser profile
+   *
+   * @example
+   * ```typescript
+   * await agent.deleteBrowserProfile('profile-id-here');
+   * ```
+   */
+  async deleteBrowserProfile(profileId: string): Promise<void> {
+    this.validate(profileId, 'profileId');
+
+    const response = await fetch(`${this.baseUrl}/v1/tools/browser/profiles/${profileId}`, {
+      method: 'DELETE',
+      headers: this.headers(),
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to delete browser profile', response.status, await response.text());
+    }
   }
 
   /**
@@ -1799,6 +2002,313 @@ export class OneShot {
   }
 
   // ---------------------------------------------------------------------------
+  // Compute methods
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Create a compute goal — the orchestrator will plan, execute, and iterate autonomously.
+   *
+   * Uses the quote-then-pay flow: first call gets a 402 with a budget estimate,
+   * second call (with payment) creates the goal.
+   *
+   * @example
+   * ```typescript
+   * const goal = await agent.compute({
+   *   objective: 'Research the top 10 AI startups and build a comparison website',
+   *   budget_usdc: 5.00
+   * });
+   * console.log(goal.goal_id);
+   *
+   * // Check progress
+   * const status = await agent.getComputeGoal(goal.goal_id);
+   * console.log(status.status, status.budget);
+   * ```
+   */
+  async compute(options: ComputeOptions): Promise<ComputeGoalResult> {
+    this.validate(options.objective, 'objective');
+
+    const payload: Record<string, unknown> = {
+      objective: options.objective,
+    };
+
+    if (options.params) payload.params = options.params;
+    if (options.budget_usdc) payload.budget_usdc = options.budget_usdc;
+    if (options.deadline) payload.deadline = options.deadline;
+    if (options.soul_slug) payload.soul_slug = options.soul_slug;
+    if (options.soul_service_slug) payload.soul_service_slug = options.soul_service_slug;
+    if (options.schedule) payload.schedule = options.schedule;
+
+    // First call: get quote (402)
+    const quoteResp = await this.makeRequest('/v1/compute', payload, undefined, undefined, options.signal);
+
+    if (quoteResp.status === 400) {
+      const errorData = await quoteResp.json() as { error: string; message: string };
+      if (errorData.error === 'content_blocked') {
+        throw new ContentBlockedError(errorData.message, []);
+      }
+      throw new ValidationError(errorData.message || 'Invalid request', 'request');
+    }
+
+    if (quoteResp.status !== 402) {
+      throw new ToolError('Expected 402 for compute quote', quoteResp.status, await quoteResp.text());
+    }
+
+    const quoteData = await quoteResp.json() as {
+      context: ComputeQuote;
+      payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
+    };
+
+    this.log(`Compute quote: $${quoteData.context.total_budget} — ${quoteData.context.objective_summary}`);
+
+    if (options.maxCost && parseFloat(quoteData.context.total_budget) > options.maxCost) {
+      throw new OneShotError(`Quote $${quoteData.context.total_budget} exceeds maxCost $${options.maxCost}`);
+    }
+
+    const paymentInfo: PaymentInfo = {
+      protocol: 'x402',
+      network: `eip155:${quoteData.payment_request.chain_id}`,
+      payTo: quoteData.payment_request.recipient,
+      amount: quoteData.payment_request.amount,
+      currency: 'USD',
+      facilitator_url: this.baseUrl,
+      token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
+    };
+
+    this.checkAbortBeforePayment(options.signal);
+    const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, '/v1/compute', payload, quoteData.context.quote_id, options.signal);
+    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
+    const createResp = await this.makeRequest('/v1/compute', payload, auth, quoteData.context.quote_id, options.signal);
+
+    if (createResp.status !== 202) {
+      throw new ToolError('Compute goal creation failed', createResp.status, await createResp.text());
+    }
+
+    return createResp.json() as Promise<ComputeGoalResult>;
+  }
+
+  /**
+   * Get the status of a compute goal
+   *
+   * @example
+   * ```typescript
+   * const status = await agent.getComputeGoal('goal_01HX...');
+   * console.log(status.status, status.budget?.remaining);
+   * ```
+   */
+  async getComputeGoal(goalId: string): Promise<ComputeGoalStatus> {
+    this.validate(goalId, 'goalId');
+
+    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}`, {
+      headers: this.headers()
+    });
+
+    if (response.status === 404) {
+      throw new ToolError('Goal not found', 404, 'Goal not found');
+    }
+    if (!response.ok) {
+      throw new ToolError('Failed to get compute goal', response.status, await response.text());
+    }
+
+    const json = await response.json() as { data: ComputeGoalStatus };
+    return json.data;
+  }
+
+  /**
+   * List tasks under a compute goal
+   *
+   * @example
+   * ```typescript
+   * const tasks = await agent.getComputeTasks('goal_01HX...');
+   * for (const t of tasks) {
+   *   console.log(`${t.tool}: ${t.status} (${t.progress_pct ?? 0}%)`);
+   * }
+   * ```
+   */
+  async getComputeTasks(goalId: string): Promise<ComputeTask[]> {
+    this.validate(goalId, 'goalId');
+
+    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/tasks`, {
+      headers: this.headers()
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to get compute tasks', response.status, await response.text());
+    }
+
+    const json = await response.json() as { data: ComputeTask[] };
+    return json.data;
+  }
+
+  /**
+   * Get budget status for a compute goal
+   *
+   * @example
+   * ```typescript
+   * const budget = await agent.getComputeBudget('goal_01HX...');
+   * console.log(`Spent: $${budget.spentUsdc} / $${budget.totalBudgetUsdc}`);
+   * ```
+   */
+  async getComputeBudget(goalId: string): Promise<ComputeBudgetStatus> {
+    this.validate(goalId, 'goalId');
+
+    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/budget`, {
+      headers: this.headers()
+    });
+
+    if (response.status === 404) {
+      throw new ToolError('Budget not found', 404, 'Budget not found for this goal');
+    }
+    if (!response.ok) {
+      throw new ToolError('Failed to get compute budget', response.status, await response.text());
+    }
+
+    const json = await response.json() as { data: ComputeBudgetStatus };
+    return json.data;
+  }
+
+  /**
+   * Cancel a compute goal. Remaining budget will be credited.
+   *
+   * @example
+   * ```typescript
+   * const result = await agent.cancelComputeGoal('goal_01HX...');
+   * console.log(`Cancelled. Remaining: $${result.remaining_budget}`);
+   * ```
+   */
+  async cancelComputeGoal(goalId: string, reason?: string): Promise<{ goal_id: string; status: string; remaining_budget: string }> {
+    this.validate(goalId, 'goalId');
+
+    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.headers() },
+      body: JSON.stringify({ reason })
+    });
+
+    if (response.status === 404) {
+      throw new ToolError('Goal not found', 404, 'Goal not found');
+    }
+    if (!response.ok) {
+      throw new ToolError('Failed to cancel compute goal', response.status, await response.text());
+    }
+
+    const json = await response.json() as { data: { goal_id: string; status: string; remaining_budget: string } };
+    return json.data;
+  }
+
+  /**
+   * Respond to a human-in-the-loop approval task
+   *
+   * @example
+   * ```typescript
+   * await agent.respondToComputeTask('goal_01HX...', {
+   *   task_id: 'task_01HX...',
+   *   approved: true,
+   *   response: 'Looks good, proceed'
+   * });
+   * ```
+   */
+  async respondToComputeTask(goalId: string, input: { task_id: string; response?: string; approved?: boolean }): Promise<{ task_id: string; goal_id: string; task_status: string; orchestrator_action: string }> {
+    this.validate(goalId, 'goalId');
+    this.validate(input.task_id, 'task_id');
+
+    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.headers() },
+      body: JSON.stringify(input)
+    });
+
+    if (response.status === 404) {
+      throw new ToolError('Goal or task not found', 404, await response.text());
+    }
+    if (!response.ok) {
+      throw new ToolError('Failed to respond to compute task', response.status, await response.text());
+    }
+
+    const json = await response.json() as { data: { task_id: string; goal_id: string; task_status: string; orchestrator_action: string } };
+    return json.data;
+  }
+
+  /**
+   * Pause a recurring compute goal
+   *
+   * @example
+   * ```typescript
+   * await agent.pauseComputeGoal('goal_01HX...');
+   * ```
+   */
+  async pauseComputeGoal(goalId: string, reason?: string): Promise<{ goal_id: string; status: string; run_count: number }> {
+    this.validate(goalId, 'goalId');
+
+    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/pause`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.headers() },
+      body: JSON.stringify({ reason })
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to pause compute goal', response.status, await response.text());
+    }
+
+    const json = await response.json() as { data: { goal_id: string; status: string; run_count: number } };
+    return json.data;
+  }
+
+  /**
+   * Resume a paused recurring compute goal
+   *
+   * @example
+   * ```typescript
+   * const result = await agent.resumeComputeGoal('goal_01HX...');
+   * console.log(`Resumed. Next run: ${result.next_run_at}`);
+   * ```
+   */
+  async resumeComputeGoal(goalId: string): Promise<{ goal_id: string; status: string; next_run_at: string; run_count: number }> {
+    this.validate(goalId, 'goalId');
+
+    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.headers() },
+      body: JSON.stringify({})
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to resume compute goal', response.status, await response.text());
+    }
+
+    const json = await response.json() as { data: { goal_id: string; status: string; next_run_at: string; run_count: number } };
+    return json.data;
+  }
+
+  /**
+   * Top up budget for a recurring compute goal
+   *
+   * @example
+   * ```typescript
+   * const result = await agent.fundComputeGoal('goal_01HX...', 10.00);
+   * console.log(`New total: $${result.total_budget}`);
+   * ```
+   */
+  async fundComputeGoal(goalId: string, amount: number): Promise<{ goal_id: string; topped_up: number; total_budget: string; remaining: string }> {
+    this.validate(goalId, 'goalId');
+    if (!amount || amount <= 0) {
+      throw new ValidationError('amount must be a positive number', 'amount');
+    }
+
+    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/fund`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.headers() },
+      body: JSON.stringify({ amount })
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to fund compute goal', response.status, await response.text());
+    }
+
+    const json = await response.json() as { data: { goal_id: string; topped_up: number; total_budget: string; remaining: string } };
+    return json.data;
+  }
+
+  // ---------------------------------------------------------------------------
   // Analytics methods
   // ---------------------------------------------------------------------------
 
@@ -1946,7 +2456,7 @@ export class OneShot {
     if (response.status === 402) {
       // Parse x402 v2 PaymentRequired from PAYMENT-REQUIRED header
       const paymentRequiredHeader = response.headers.get('payment-required');
-      const accepted = this.parsePaymentRequired(paymentRequiredHeader);
+      const { accepted, resource, extensions } = this.parsePaymentRequired(paymentRequiredHeader);
 
       // Fallback: parse legacy body format for amount display
       const data = await response.json() as {
@@ -1964,7 +2474,7 @@ export class OneShot {
       this.log(`Payment required: ${paymentInfo.amount} USDC`);
 
       this.checkAbortBeforePayment(signal);
-      const auth = await this.signPaymentAuthorization(paymentInfo, accepted);
+      const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
       response = await this.makeRequest(endpoint, payload, auth, quoteId, signal);
     }
 
@@ -2170,8 +2680,6 @@ export class OneShot {
         ? Buffer.from(paymentJson).toString('base64')
         : btoa(paymentJson);
       headers['payment-signature'] = encoded;
-      // Also send x-payment for identity extraction by legacy middleware
-      headers['x-payment'] = paymentJson;
     }
     if (quoteId) headers['x-quote-id'] = quoteId;
 
@@ -2225,17 +2733,25 @@ export class OneShot {
     this.log(`Swap complete: tx=${result.txHash}, USDC received=${ethers.formatUnits(result.usdcReceived, 6)}`);
   }
 
-  /** Parse the PAYMENT-REQUIRED header from a 402 response into the accepted requirements. */
-  private parsePaymentRequired(header: string | null): PaymentRequirements {
+  /** Parse the PAYMENT-REQUIRED header from a 402 response into the accepted requirements and Bazaar metadata. */
+  private parsePaymentRequired(header: string | null): {
+    accepted: PaymentRequirements;
+    resource?: { url: string; description?: string; mimeType?: string };
+    extensions?: Record<string, unknown>;
+  } {
     if (header) {
       try {
         const decoded = typeof Buffer !== 'undefined'
           ? Buffer.from(header, 'base64').toString()
           : atob(header);
         const parsed = JSON.parse(decoded);
-        // x402 v2: { x402Version: 2, accepts: [...], resource: {...} }
+        // x402 v2: { x402Version: 2, accepts: [...], resource: {...}, extensions: {...} }
         if (parsed.accepts?.length > 0) {
-          return parsed.accepts[0] as PaymentRequirements;
+          return {
+            accepted: parsed.accepts[0] as PaymentRequirements,
+            resource: parsed.resource,
+            extensions: parsed.extensions,
+          };
         }
       } catch {
         this.log('Failed to parse PAYMENT-REQUIRED header, using defaults');
@@ -2243,13 +2759,15 @@ export class OneShot {
     }
     // Fallback: construct from known production values
     return {
-      scheme: 'exact',
-      network: `eip155:${CHAIN_ID}`,
-      amount: '0',
-      asset: USDC_ADDRESS,
-      payTo: '',
-      maxTimeoutSeconds: 300,
-      extra: { name: 'USD Coin', version: '2' },
+      accepted: {
+        scheme: 'exact',
+        network: `eip155:${CHAIN_ID}`,
+        amount: '0',
+        asset: USDC_ADDRESS,
+        payTo: '',
+        maxTimeoutSeconds: 300,
+        extra: { name: 'USD Coin', version: '2' },
+      },
     };
   }
 
@@ -2264,7 +2782,11 @@ export class OneShot {
     payload: Record<string, unknown>,
     quoteId: string,
     signal?: AbortSignal
-  ): Promise<PaymentRequirements> {
+  ): Promise<{
+    accepted: PaymentRequirements;
+    resource?: { url: string; description?: string; mimeType?: string };
+    extensions?: Record<string, unknown>;
+  }> {
     const header = initialResp.headers.get('payment-required');
     if (header) {
       return this.parsePaymentRequired(header);
@@ -2274,7 +2796,12 @@ export class OneShot {
     return this.parsePaymentRequired(probeResp.headers.get('payment-required'));
   }
 
-  private async signPaymentAuthorization(paymentInfo: PaymentInfo, accepted: PaymentRequirements): Promise<PaymentAuthorization> {
+  private async signPaymentAuthorization(
+    paymentInfo: PaymentInfo,
+    accepted: PaymentRequirements,
+    resource?: { url: string; description?: string; mimeType?: string },
+    extensions?: Record<string, unknown>,
+  ): Promise<PaymentAuthorization> {
     // If paying with ETH, swap to USDC first
     await this.ensureUsdcBalance(paymentInfo);
 
@@ -2317,9 +2844,11 @@ export class OneShot {
       }
     );
 
-    // Return x402 PaymentPayload v2 format
+    // Return x402 PaymentPayload v2 format (including resource + extensions for Bazaar discovery)
     return {
       x402Version: 2,
+      ...(resource ? { resource } : {}),
+      ...(extensions ? { extensions } : {}),
       accepted,
       payload: {
         signature,
