@@ -599,7 +599,6 @@ export interface CommerceBuyResult {
   order_id: string;
   order_status: string;
   tracking_url?: string;
-  provider: string;
 }
 
 export interface CommerceSearchProduct {
@@ -618,7 +617,6 @@ export interface CommerceSearchProduct {
 export interface CommerceSearchResult {
   status: string;
   query: string;
-  provider: string;
   products: CommerceSearchProduct[];
   count: number;
 }
