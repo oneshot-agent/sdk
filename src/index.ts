@@ -373,6 +373,11 @@ export interface PersonResult {
   skills?: string[];
   experience?: Experience[];
   education?: Education[];
+  // Normalized fields (present regardless of which provider answered)
+  fullphone?: Array<{ fullphone: string }>;
+  altemails?: string[];
+  best_work_email?: string | null;
+  best_personal_email?: string | null;
 }
 
 export interface PeopleSearchResult {
