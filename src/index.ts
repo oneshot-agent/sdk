@@ -2804,7 +2804,30 @@ export class OneShot {
     accepted: PaymentRequirements,
     resource?: { url: string; description?: string; mimeType?: string },
     extensions?: Record<string, unknown>,
-  ): Promise<PaymentAuthorization> {
+  ): Promise<PaymentAuthorization | undefined> {
+    // Credits may cover the full cost — send a zero-cost authorization so the server
+    // always receives a payment-signature header (avoids 402 from x402 SDK).
+    if (parseFloat(paymentInfo.amount) === 0) {
+      this.log('Credits cover full cost — sending zero-cost authorization');
+      return {
+        x402Version: 2,
+        ...(resource ? { resource } : {}),
+        ...(extensions ? { extensions } : {}),
+        accepted,
+        payload: {
+          signature: '0x',
+          authorization: {
+            from: this.provider.address,
+            to: paymentInfo.payTo,
+            value: '0',
+            validAfter: '0',
+            validBefore: '0',
+            nonce: '0x' + '00'.repeat(32),
+          },
+        },
+      };
+    }
+
     // If paying with ETH, swap to USDC first
     await this.ensureUsdcBalance(paymentInfo);
 
