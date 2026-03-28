@@ -77,11 +77,17 @@ agent.chainId;     // 8453
 
 | Method | Description |
 |--------|-------------|
+| **Communication** | |
 | `email()` | Send emails with attachments |
 | `voice()` | Make phone calls |
 | `sms()` | Send SMS messages |
+| `inboxList()` | List inbound emails |
+| `inboxGet()` | Get email by ID |
 | `smsInboxList()` | List inbound SMS |
 | `smsInboxGet()` | Get SMS by ID |
+| `notifications()` | List agent notifications |
+| `markNotificationRead()` | Mark notification as read |
+| **Research & People** | |
 | `research()` | Deep web research |
 | `peopleSearch()` | Search people by criteria |
 | `enrichProfile()` | Enrich from LinkedIn/email |
@@ -93,18 +99,36 @@ agent.chainId;     // 8453
 | `personNewsfeed()` | Recent social posts with engagement |
 | `personInterests()` | Analyze interests across categories |
 | `personInteractions()` | Map followers, following, replies |
+| **Web & Commerce** | |
 | `webSearch()` | Search the web |
 | `webRead()` | Read any URL as markdown + screenshot |
-| `browser()` | Autonomous browser — navigate, click, extract |
 | `commerceBuy()` | Purchase products |
 | `commerceSearch()` | Search products |
+| **Browser** | |
+| `browser()` | Autonomous browser — navigate, click, extract |
+| `createBrowserProfile()` | Create a persistent browser profile |
+| `listBrowserProfiles()` | List saved browser profiles |
+| `deleteBrowserProfile()` | Delete a browser profile |
+| **Build** | |
 | `build()` | Build and deploy production websites |
 | `updateBuild()` | Update an existing website |
-| `inboxList()` | List inbound emails |
-| `inboxGet()` | Get email by ID |
-| `notifications()` | List agent notifications |
-| `markNotificationRead()` | Mark notification as read |
+| **Compute (Agentic Goals)** | |
+| `compute()` | Launch autonomous multi-step goal |
+| `getComputeGoal()` | Get goal status and progress |
+| `getComputeTasks()` | List tasks for a goal |
+| `getComputeBudget()` | Check remaining budget for a goal |
+| `respondToComputeTask()` | Provide input to a pending task |
+| `pauseComputeGoal()` | Pause a running goal |
+| `resumeComputeGoal()` | Resume a paused goal |
+| `cancelComputeGoal()` | Cancel a goal |
+| `fundComputeGoal()` | Add funds to a goal's budget |
+| **Analytics & Balance** | |
 | `getBalance()` | Check token balance |
+| `getUnifiedBalance()` | Get balance across all chains |
+| `spendBreakdown()` | Spending breakdown by tool/period |
+| `rocs()` | Return on compute stats |
+| `receiptsList()` | List payment receipts |
+| `tagReceiptValue()` | Tag a receipt with business value |
 
 ## Configuration
 
