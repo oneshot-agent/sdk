@@ -171,6 +171,18 @@ export interface ToolOptions {
   wait?: boolean;
   /** Optional value tag for RoCS tracking — stored in the receipt at creation time */
   valueTag?: { type: string; amount?: number; label?: string };
+  /**
+   * Apollo phone-reveal opt-in. Apollo's phone numbers arrive asynchronously
+   * via a webhook minutes AFTER the initial enrichment completes. By default,
+   * the SDK returns as soon as the worker writes status=completed (phones=null,
+   * phones_pending=true). Set `waitForPhones: true` to keep polling at a slower
+   * cadence (every 5s) until phones land or `phoneTimeoutSec` expires (default
+   * 360s = 6 min — Apollo says "several minutes"). Only meaningful for tools
+   * that hit Apollo internally (research/person, enrich/profile, etc.). For
+   * other tools the flag is a no-op.
+   */
+  waitForPhones?: boolean;
+  phoneTimeoutSec?: number;
 }
 
 export interface EmailToolOptions extends ToolOptions {
@@ -2447,7 +2459,7 @@ export class OneShot {
     options: ToolOptions & Record<string, unknown>,
     quoteId?: string
   ): Promise<T> {
-    const { signal, onStatusUpdate, wait = true, ...payload } = options;
+    const { signal, onStatusUpdate, wait = true, waitForPhones, phoneTimeoutSec, ...payload } = options;
 
     if (signal?.aborted) {
       throw new OneShotError('Operation cancelled');
@@ -2493,7 +2505,13 @@ export class OneShot {
       if (!wait) {
         return { request_id: result.request_id, status: result.status } as T;
       }
-      return this.pollJob(result.request_id as string, options.timeout, signal, onStatusUpdate);
+      return this.pollJob(
+        result.request_id as string,
+        options.timeout,
+        signal,
+        onStatusUpdate,
+        waitForPhones ? { waitForPhones, phoneTimeoutSec } : undefined,
+      );
     }
 
     return (result.data ?? result) as T;
@@ -2503,15 +2521,105 @@ export class OneShot {
     requestId: string,
     timeoutSec?: number,
     signal?: AbortSignal,
-    onStatusUpdate?: StatusUpdateFn
+    onStatusUpdate?: StatusUpdateFn,
+    phoneOpts?: { waitForPhones?: boolean; phoneTimeoutSec?: number }
   ): Promise<T> {
     // Try WebSocket push first, fall back to HTTP polling
+    let result: T;
     try {
-      return await this.waitViaWebSocket<T>(requestId, timeoutSec, signal, onStatusUpdate);
+      result = await this.waitViaWebSocket<T>(requestId, timeoutSec, signal, onStatusUpdate);
     } catch {
       this.log('WebSocket unavailable, falling back to HTTP polling');
-      return this.pollJobHttp<T>(requestId, timeoutSec, signal, onStatusUpdate);
+      result = await this.pollJobHttp<T>(requestId, timeoutSec, signal, onStatusUpdate);
     }
+
+    // Optional second phase: keep polling for Apollo phone-reveal callbacks.
+    // Only kicks in when the caller explicitly opts in AND the result still
+    // has phones_pending=true (set by the worker when Apollo enrichment is
+    // pending an async webhook). This is opt-in so existing callers see no
+    // behavior change — the WebSocket/HTTP polls return as soon as the worker
+    // sets status=completed, with phones=null.
+    //
+    // Pass the existing result as the initial fallback: if the polling GETs
+    // hit a transient error before any successful refresh, we return what we
+    // already have (with phones_pending=true still set so consumers know).
+    if (phoneOpts?.waitForPhones && this._isPhonesPending(result)) {
+      return this._pollForPhones<T>(
+        requestId,
+        phoneOpts.phoneTimeoutSec ?? 360,
+        signal,
+        result,
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Detects whether a job result is still waiting for Apollo's async phone
+   * reveal. The worker sets `result.phones_pending=true` when an enrichment
+   * was Apollo-sourced and Apollo's webhook URL is configured. The webhook
+   * handler flips it to false (or removes it) once phones arrive.
+   *
+   * Tolerates two shapes: the unwrapped result `{phones_pending}` and the
+   * deep_research_person wrapper `{result: {phones_pending}}`.
+   */
+  private _isPhonesPending(result: unknown): boolean {
+    if (!result || typeof result !== 'object') return false;
+    const r = result as Record<string, unknown>;
+    if (r.phones_pending === true) return true;
+    const inner = r.result as Record<string, unknown> | undefined;
+    if (inner && typeof inner === 'object' && inner.phones_pending === true) return true;
+    return false;
+  }
+
+  /**
+   * Slow poll loop that waits for Apollo phone-reveal callbacks to arrive
+   * via the webhook handler (which UPDATEs jobs.result_data.result.phones).
+   * Polls GET /v1/requests/{id} every 5s — Apollo says "several minutes" so
+   * a tight loop wastes API calls. Returns the latest snapshot whether or
+   * not phones arrived (consumer can re-check `phones_pending`).
+   */
+  private async _pollForPhones<T>(
+    requestId: string,
+    timeoutSec: number,
+    signal?: AbortSignal,
+    initialResult?: T
+  ): Promise<T> {
+    const deadline = Date.now() + timeoutSec * 1000;
+    const interval = 5000;
+    // Seed with the snapshot the caller already has so a transient first-poll
+    // failure can still return the sync data (with phones_pending=true).
+    let lastResult: T | undefined = initialResult;
+
+    while (Date.now() < deadline) {
+      if (signal?.aborted) throw new OneShotError('Operation cancelled');
+      try {
+        const resp = await fetch(`${this.baseUrl}/v1/requests/${requestId}`, {
+          headers: this.headers(),
+          signal,
+        });
+        if (!resp.ok) {
+          // Soft-fail on transient errors during the phone wait — return
+          // whatever we last had so consumers don't lose the sync result.
+          if (lastResult !== undefined) return lastResult;
+          throw new ToolError('Failed to check job status', resp.status, await resp.text());
+        }
+        const job = await resp.json() as Record<string, unknown>;
+        lastResult = (job.result ?? job) as T;
+        if (!this._isPhonesPending(lastResult)) {
+          return lastResult;
+        }
+      } catch (err) {
+        if (err instanceof OneShotError) throw err;
+        if (lastResult !== undefined) return lastResult;
+        throw err;
+      }
+      await this.sleep(interval, signal);
+    }
+
+    // Timeout — return the last snapshot. phones_pending will still be true
+    // so the consumer knows phones never arrived.
+    return lastResult as T;
   }
 
   private waitViaWebSocket<T>(
