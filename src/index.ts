@@ -309,6 +309,7 @@ export interface WebSearchResult {
   query: string;
   results: Array<{ url: string; title: string; description: string }>;
   result_count: number;
+  cost?: number;
 }
 
 export interface WebReadOptions extends ToolOptions {
@@ -323,6 +324,7 @@ export interface WebReadResult {
   screenshot_url?: string;
   metadata?: { title: string; description: string; statusCode?: number };
   truncated?: boolean;
+  cost?: number;
 }
 
 export interface VoiceCallOptions extends ToolOptions {
@@ -400,6 +402,7 @@ export interface PeopleSearchResult {
   request_id?: string;
   completed_at?: string;
   filters?: Record<string, unknown>;
+  cost?: number;
 }
 
 export interface ResearchResult {
@@ -413,6 +416,7 @@ export interface ResearchResult {
   report_path: string;
   completed_at: string;
   report_gcs_uri: string;
+  cost?: number;
 }
 
 export interface EmailResult {
@@ -430,6 +434,7 @@ export interface EmailResult {
     status: string;
     was_provisioned: boolean;
   };
+  cost?: number;
 }
 
 export interface EnrichProfileResult {
@@ -437,6 +442,7 @@ export interface EnrichProfileResult {
   profile: PersonResult;
   request_id?: string;
   completed_at?: string;
+  cost?: number;
 }
 
 export interface FindEmailResult {
@@ -447,6 +453,7 @@ export interface FindEmailResult {
   company_domain?: string;
   request_id?: string;
   completed_at?: string;
+  cost?: number;
 }
 
 export interface AsyncJobResult {
@@ -505,6 +512,7 @@ export interface DeepResearchPersonResult {
   };
   request_id: string;
   completed_at: string;
+  cost?: number;
 }
 
 export interface SocialProfilesResult {
@@ -517,6 +525,7 @@ export interface SocialProfilesResult {
   }>;
   request_id: string;
   completed_at: string;
+  cost?: number;
 }
 
 export interface ArticleSearchResult {
@@ -530,6 +539,7 @@ export interface ArticleSearchResult {
   }>;
   request_id: string;
   completed_at: string;
+  cost?: number;
 }
 
 export interface PersonNewsfeedResult {
@@ -545,6 +555,7 @@ export interface PersonNewsfeedResult {
   }>;
   request_id: string;
   completed_at: string;
+  cost?: number;
 }
 
 export interface PersonInterestsResult {
@@ -552,6 +563,7 @@ export interface PersonInterestsResult {
   result: Record<string, unknown>;
   request_id: string;
   completed_at: string;
+  cost?: number;
 }
 
 export interface PersonInteractionsResult {
@@ -563,6 +575,7 @@ export interface PersonInteractionsResult {
   };
   request_id: string;
   completed_at: string;
+  cost?: number;
 }
 
 export interface VerifyEmailResult {
@@ -574,6 +587,7 @@ export interface VerifyEmailResult {
   disposable: boolean;
   request_id?: string;
   completed_at?: string;
+  cost?: number;
 }
 
 export interface InboxEmail {
@@ -615,6 +629,7 @@ export interface CommerceBuyResult {
   order_id: string;
   order_status: string;
   tracking_url?: string;
+  cost?: number;
 }
 
 export interface CommerceSearchProduct {
@@ -636,6 +651,7 @@ export interface CommerceSearchResult {
   query: string;
   products: CommerceSearchProduct[];
   count: number;
+  cost?: number;
 }
 
 export interface VoiceQuote {
@@ -694,6 +710,7 @@ export interface SmsSendResult {
     message_sid?: string;
     error?: string;
   }>;
+  cost?: number;
 }
 
 export interface SmsInboxMessage {
@@ -833,6 +850,7 @@ export interface BuildResult {
   vercel_project_id?: string;
   github_repo?: string;
   error?: string;
+  cost?: number;
 }
 
 // Browser types
@@ -1006,6 +1024,7 @@ export interface ComputeGoalResult {
   receipt_id?: string;
   status: string;
   message: string;
+  cost?: number;
   goal: {
     objective: string;
     budget_usdc: string;
