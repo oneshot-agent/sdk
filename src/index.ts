@@ -317,6 +317,7 @@ export interface WebReadOptions extends ToolOptions {
 }
 
 export interface WebReadResult {
+  request_id?: string;
   url: string;
   markdown: string;
   screenshot_url?: string;
@@ -402,6 +403,7 @@ export interface PeopleSearchResult {
 }
 
 export interface ResearchResult {
+  request_id?: string;
   report_content: string;
   sources: Array<{ url: string; title?: string }>;
   sources_count: number;
@@ -414,6 +416,7 @@ export interface ResearchResult {
 }
 
 export interface EmailResult {
+  request_id?: string;
   status: string;
   timeline?: Array<Record<string, unknown>>;
   error?: string;
@@ -607,6 +610,7 @@ export interface CommerceQuote {
 }
 
 export interface CommerceBuyResult {
+  request_id?: string;
   status: string;
   order_id: string;
   order_status: string;
@@ -627,6 +631,7 @@ export interface CommerceSearchProduct {
 }
 
 export interface CommerceSearchResult {
+  request_id?: string;
   status: string;
   query: string;
   products: CommerceSearchProduct[];
@@ -651,6 +656,7 @@ export interface VoiceQuote {
 }
 
 export interface VoiceCallResult {
+  request_id?: string;
   status: string;
   ended_reason?: string;
   duration_seconds?: number;
@@ -676,6 +682,7 @@ export interface SmsQuote {
 }
 
 export interface SmsSendResult {
+  request_id?: string;
   status: string;
   sent: number;
   failed: number;
@@ -814,6 +821,7 @@ export interface BuildQuote {
 }
 
 export interface BuildResult {
+  request_id?: string;
   status: string;
   success: boolean;
   production_url?: string;
@@ -864,6 +872,7 @@ export interface BrowserQuote {
 }
 
 export interface BrowserResult {
+  request_id?: string;
   output?: string | Record<string, unknown>;
   steps?: Array<{ number: number; goal: string; url: string }>;
   cost?: number;
@@ -2672,7 +2681,11 @@ export class OneShot {
           if (msg.status === 'completed') {
             this.log('Job completed (WebSocket)');
             cleanup();
-            resolve((msg.result ?? msg) as T);
+            const result = (msg.result ?? msg) as Record<string, unknown>;
+            if (msg.request_id && typeof result === 'object' && result !== null && !('request_id' in result)) {
+              result.request_id = msg.request_id;
+            }
+            resolve(result as T);
           } else if (msg.status === 'failed') {
             cleanup();
             reject(new JobError(`Job failed: ${msg.error ?? 'Unknown'}`, requestId, String(msg.error ?? 'Unknown')));
@@ -2728,7 +2741,12 @@ export class OneShot {
 
         if (job.status === 'completed') {
           this.log('Job completed');
-          return (job.result ?? job) as T;
+          const result = (job.result ?? job) as Record<string, unknown>;
+          // Propagate request_id into the result so callers always have it
+          if (job.request_id && typeof result === 'object' && result !== null && !('request_id' in result)) {
+            result.request_id = job.request_id;
+          }
+          return result as T;
         }
 
         if (job.status === 'failed') {
