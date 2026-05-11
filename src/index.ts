@@ -163,6 +163,25 @@ export interface OneShotConfig {
   slippage?: number;
 }
 
+/**
+ * Structured decision context for a tool call. Machine-readable metadata
+ * that explains WHY this tool was called — consumed by auditor agents
+ * and programmatic oversight. Open schema: known fields are typed,
+ * extra keys are allowed.
+ */
+export interface DecisionContext {
+  /** Goal or objective this tool call serves */
+  goal?: string;
+  /** Compute goal ID if linked to an orchestrated goal */
+  goalId?: string;
+  /** Alternative tools/approaches that were considered */
+  alternatives?: string[];
+  /** Confidence in this being the right tool choice (0-1) */
+  confidence?: number;
+  /** Any additional context */
+  [key: string]: unknown;
+}
+
 export interface ToolOptions {
   maxCost?: number;
   timeout?: number;
@@ -171,6 +190,18 @@ export interface ToolOptions {
   wait?: boolean;
   /** Optional value tag for RoCS tracking — stored in the receipt at creation time */
   valueTag?: { type: string; amount?: number; label?: string };
+  /**
+   * Short human-readable reason for this tool call. Stored on the receipt
+   * for debugging and audit. Max 1000 chars. The SDK warns (does not error)
+   * if a paid tool is called without a memo.
+   */
+  memo?: string;
+  /**
+   * Structured decision context — goal linkage, alternatives considered,
+   * confidence score. Machine-readable counterpart to memo. Stored alongside
+   * the receipt for programmatic auditing by supervisor agents.
+   */
+  decisionContext?: DecisionContext;
   /**
    * Apollo phone-reveal opt-in. Apollo's phone numbers arrive asynchronously
    * via a webhook minutes AFTER the initial enrichment completes. By default,
@@ -309,6 +340,7 @@ export interface WebSearchResult {
   query: string;
   results: Array<{ url: string; title: string; description: string }>;
   result_count: number;
+  memo?: string;
   cost?: number;
 }
 
@@ -324,6 +356,7 @@ export interface WebReadResult {
   screenshot_url?: string;
   metadata?: { title: string; description: string; statusCode?: number };
   truncated?: boolean;
+  memo?: string;
   cost?: number;
 }
 
@@ -402,6 +435,7 @@ export interface PeopleSearchResult {
   request_id?: string;
   completed_at?: string;
   filters?: Record<string, unknown>;
+  memo?: string;
   cost?: number;
 }
 
@@ -416,6 +450,7 @@ export interface ResearchResult {
   report_path: string;
   completed_at: string;
   report_gcs_uri: string;
+  memo?: string;
   cost?: number;
 }
 
@@ -434,6 +469,7 @@ export interface EmailResult {
     status: string;
     was_provisioned: boolean;
   };
+  memo?: string;
   cost?: number;
 }
 
@@ -442,6 +478,7 @@ export interface EnrichProfileResult {
   profile: PersonResult;
   request_id?: string;
   completed_at?: string;
+  memo?: string;
   cost?: number;
 }
 
@@ -453,6 +490,7 @@ export interface FindEmailResult {
   company_domain?: string;
   request_id?: string;
   completed_at?: string;
+  memo?: string;
   cost?: number;
 }
 
@@ -512,6 +550,7 @@ export interface DeepResearchPersonResult {
   };
   request_id: string;
   completed_at: string;
+  memo?: string;
   cost?: number;
 }
 
@@ -525,6 +564,7 @@ export interface SocialProfilesResult {
   }>;
   request_id: string;
   completed_at: string;
+  memo?: string;
   cost?: number;
 }
 
@@ -539,6 +579,7 @@ export interface ArticleSearchResult {
   }>;
   request_id: string;
   completed_at: string;
+  memo?: string;
   cost?: number;
 }
 
@@ -555,6 +596,7 @@ export interface PersonNewsfeedResult {
   }>;
   request_id: string;
   completed_at: string;
+  memo?: string;
   cost?: number;
 }
 
@@ -563,6 +605,7 @@ export interface PersonInterestsResult {
   result: Record<string, unknown>;
   request_id: string;
   completed_at: string;
+  memo?: string;
   cost?: number;
 }
 
@@ -575,6 +618,7 @@ export interface PersonInteractionsResult {
   };
   request_id: string;
   completed_at: string;
+  memo?: string;
   cost?: number;
 }
 
@@ -587,6 +631,7 @@ export interface VerifyEmailResult {
   disposable: boolean;
   request_id?: string;
   completed_at?: string;
+  memo?: string;
   cost?: number;
 }
 
@@ -629,6 +674,7 @@ export interface CommerceBuyResult {
   order_id: string;
   order_status: string;
   tracking_url?: string;
+  memo?: string;
   cost?: number;
 }
 
@@ -651,6 +697,7 @@ export interface CommerceSearchResult {
   query: string;
   products: CommerceSearchProduct[];
   count: number;
+  memo?: string;
   cost?: number;
 }
 
@@ -680,6 +727,7 @@ export interface VoiceCallResult {
   summary?: string;
   success_evaluation?: string;
   structured_data?: Record<string, unknown>;
+  memo?: string;
   cost?: number;
   credit_issued?: number;
 }
@@ -710,6 +758,7 @@ export interface SmsSendResult {
     message_sid?: string;
     error?: string;
   }>;
+  memo?: string;
   cost?: number;
 }
 
@@ -850,6 +899,7 @@ export interface BuildResult {
   vercel_project_id?: string;
   github_repo?: string;
   error?: string;
+  memo?: string;
   cost?: number;
 }
 
@@ -893,6 +943,7 @@ export interface BrowserResult {
   request_id?: string;
   output?: string | Record<string, unknown>;
   steps?: Array<{ number: number; goal: string; url: string }>;
+  memo?: string;
   cost?: number;
   output_files?: string[];
   browser_task_id?: string;
@@ -1024,6 +1075,7 @@ export interface ComputeGoalResult {
   receipt_id?: string;
   status: string;
   message: string;
+  memo?: string;
   cost?: number;
   goal: {
     objective: string;
@@ -2488,6 +2540,30 @@ export class OneShot {
     quoteId?: string
   ): Promise<T> {
     const { signal, onStatusUpdate, wait = true, waitForPhones, phoneTimeoutSec, ...payload } = options;
+
+    // Validate memo
+    if (payload.memo !== undefined) {
+      if (typeof payload.memo !== 'string' || payload.memo.trim().length === 0) {
+        delete payload.memo; // Drop invalid memo silently
+      } else if (payload.memo.length > 1000) {
+        payload.memo = payload.memo.slice(0, 1000);
+        this.log('Memo truncated to 1000 chars');
+      }
+    } else if (!endpoint.includes('/inbox') && !endpoint.includes('/notifications') && !endpoint.includes('/balance')) {
+      this.log('No memo provided — consider adding a reason for audit trail');
+    }
+
+    // Validate decisionContext
+    if (payload.decisionContext !== undefined) {
+      if (typeof payload.decisionContext !== 'object' || payload.decisionContext === null) {
+        delete payload.decisionContext;
+      } else {
+        const dc = payload.decisionContext as DecisionContext;
+        if (dc.confidence !== undefined && (typeof dc.confidence !== 'number' || dc.confidence < 0 || dc.confidence > 1)) {
+          delete dc.confidence;
+        }
+      }
+    }
 
     if (signal?.aborted) {
       throw new OneShotError('Operation cancelled');
