@@ -2734,23 +2734,49 @@ export class OneShot {
   ): Promise<T> {
     return new Promise((resolve, reject) => {
       const maxWaitMs = (timeoutSec ?? 120) * 1000;
+      // Cap WS timeout to 60% of caller timeout so HTTP fallback has real time to work.
+      // Floor at 10s (below that, skip WS entirely). This prevents the WS timeout
+      // from racing with Cloud Run / load balancer timeouts.
+      const wsTimeoutMs = Math.max(Math.floor(maxWaitMs * 0.6), 10_000);
+      if (wsTimeoutMs >= maxWaitMs) {
+        // Timeout too short for WS + HTTP — reject immediately to force HTTP path
+        return reject(new Error('Timeout too short for WebSocket path'));
+      }
       const wsUrl = this.baseUrl.replace(/^http/, 'ws') +
         `/v1/requests/subscribe?wallet=${encodeURIComponent(this.provider.address)}`;
 
       let ws: WebSocket;
+      let settled = false;
+      let receivedAnyMessage = false;
+
       try {
         ws = new WebSocket(wsUrl);
       } catch {
         return reject(new Error('WebSocket not available'));
       }
 
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+
+      // Overall WS timeout — bail to HTTP fallback with time to spare
       const timeout = setTimeout(() => {
-        ws.close();
-        reject(new JobTimeoutError(requestId, maxWaitMs));
-      }, maxWaitMs);
+        settle(() => {
+          ws.close();
+          reject(new Error('WebSocket timeout — falling back to HTTP'));
+        });
+      }, wsTimeoutMs);
+
+      // First-message deadline: if no relevant message arrives within 15s of
+      // subscribing, the WS connection is likely silent (load balancer proxying
+      // without forwarding, scale-from-zero, etc). Bail fast to HTTP.
+      let firstMessageTimer: ReturnType<typeof setTimeout> | null = null;
 
       const cleanup = () => {
         clearTimeout(timeout);
+        if (firstMessageTimer) clearTimeout(firstMessageTimer);
         if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
           ws.close();
         }
@@ -2758,16 +2784,31 @@ export class OneShot {
 
       if (signal) {
         signal.addEventListener('abort', () => {
-          cleanup();
-          reject(new OneShotError('Operation cancelled'));
+          settle(() => {
+            cleanup();
+            reject(new OneShotError('Operation cancelled'));
+          });
         }, { once: true });
       }
 
       ws.onopen = () => {
         ws.send(JSON.stringify({ subscribe: [requestId] }));
+        // Start first-message deadline after subscribing
+        firstMessageTimer = setTimeout(() => {
+          if (!receivedAnyMessage) {
+            settle(() => {
+              this.log('WebSocket silent after subscribe — falling back to HTTP');
+              cleanup();
+              reject(new Error('WebSocket silent — no messages received'));
+            });
+          }
+        }, 15_000);
       };
 
       ws.onmessage = (event) => {
+        receivedAnyMessage = true;
+        if (firstMessageTimer) { clearTimeout(firstMessageTimer); firstMessageTimer = null; }
+
         try {
           const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
 
@@ -2775,15 +2816,19 @@ export class OneShot {
 
           if (msg.status === 'completed') {
             this.log('Job completed (WebSocket)');
-            cleanup();
-            const result = (msg.result ?? msg) as Record<string, unknown>;
-            if (msg.request_id && typeof result === 'object' && result !== null && !('request_id' in result)) {
-              result.request_id = msg.request_id;
-            }
-            resolve(result as T);
+            settle(() => {
+              cleanup();
+              const result = (msg.result ?? msg) as Record<string, unknown>;
+              if (msg.request_id && typeof result === 'object' && result !== null && !('request_id' in result)) {
+                result.request_id = msg.request_id;
+              }
+              resolve(result as T);
+            });
           } else if (msg.status === 'failed') {
-            cleanup();
-            reject(new JobError(`Job failed: ${msg.error ?? 'Unknown'}`, requestId, String(msg.error ?? 'Unknown')));
+            settle(() => {
+              cleanup();
+              reject(new JobError(`Job failed: ${msg.error ?? 'Unknown'}`, requestId, String(msg.error ?? 'Unknown')));
+            });
           } else {
             onStatusUpdate?.(msg.status, requestId);
           }
@@ -2793,16 +2838,20 @@ export class OneShot {
       };
 
       ws.onerror = () => {
-        cleanup();
-        reject(new Error('WebSocket error'));
+        settle(() => {
+          cleanup();
+          reject(new Error('WebSocket error'));
+        });
       };
 
-      ws.onclose = (event) => {
-        // If closed before we got a result, reject so HTTP fallback kicks in
-        if (event.code !== 1000) {
+      ws.onclose = () => {
+        // Any close before we got a result — reject so HTTP fallback kicks in.
+        // Previously we only rejected on non-1000 codes, but a clean close
+        // without a result is equally fatal for the poll loop.
+        settle(() => {
           cleanup();
-          reject(new Error('WebSocket closed unexpectedly'));
-        }
+          reject(new Error('WebSocket closed before result'));
+        });
       };
     });
   }
