@@ -305,6 +305,23 @@ await agent.email({
 });
 ```
 
+### Custom Sender (name, mailbox, domain)
+
+```typescript
+// Renders as: From: Jane Doe <jane@acme.com>
+await agent.email({
+  to: 'user@example.com',
+  subject: 'Hello',
+  body: 'Sent from a custom sender.',
+  from_name: 'Jane Doe',    // display name (optional)
+  from_mailbox: 'jane',     // local-part, defaults to "agent"
+  from_domain: 'acme.com'   // defaults to "oneshotagent.com"
+});
+```
+
+`from_domain` must be a domain you've provisioned through OneShot. Defaults
+produce `agent@oneshotagent.com`.
+
 ### People Search & Enrichment
 
 ```typescript

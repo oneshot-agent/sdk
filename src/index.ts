@@ -221,6 +221,10 @@ export interface EmailToolOptions extends ToolOptions {
   subject: string;
   body: string;
   from_domain?: string;
+  /** Sender mailbox / local-part. Defaults to `agent` (i.e. agent@from_domain). */
+  from_mailbox?: string;
+  /** Display name shown to the recipient, e.g. "Jane Doe" → "Jane Doe <jane@domain>". */
+  from_name?: string;
   attachments?: Array<{
     filename?: string;
     content?: string;
@@ -1284,7 +1288,7 @@ export class OneShot {
     this.validate(options.subject, 'subject');
     this.validate(options.body, 'body');
 
-    const fromAddress = `agent@${options.from_domain ?? 'oneshotagent.com'}`;
+    const fromAddress = `${options.from_mailbox ?? 'agent'}@${options.from_domain ?? 'oneshotagent.com'}`;
 
     const quote = await this.tool<{ total_cost: string; quote_id: string }>('email/quote', {
       from_address: fromAddress,
@@ -1304,6 +1308,10 @@ export class OneShot {
       onStatusUpdate: options.onStatusUpdate,
       wait: options.wait
     };
+
+    if (options.from_name) {
+      payload.from_name = options.from_name;
+    }
 
     if (options.attachments?.length) {
       payload.attachments = options.attachments;
