@@ -8,7 +8,7 @@ export { CdpWalletProvider } from './providers/cdp';
 export { getSwapQuote, executeSwap } from './swap';
 export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 
-const SDK_VERSION = '0.13.1';
+const SDK_VERSION = '0.16.2';
 
 // ============================================================================
 // Environment Configuration
@@ -1294,10 +1294,23 @@ export class OneShot {
       from_address: fromAddress,
       to_address: options.to,
       subject: options.subject,
-      body: options.body
+      body: options.body,
+      // Forward maxCost so the server-side X-Max-Cost-USDC header is set on
+      // the quote fetch (executeToolRequest destructures + threads it).
+      maxCost: options.maxCost,
     });
 
     this.log(`Email quote: $${quote.total_cost}`);
+
+    // Local fast-fail — matches the per-tool check on commerce/voice/sms/build/
+    // browser/compute. If the server-side header guard fired we'd never reach
+    // here; this catches the case where the server's enforcement is bypassed
+    // (e.g. a future API revision without the header check) or skipped (cap
+    // un-set so the server returned a 200 with the quote and the caller still
+    // wants the local guard to apply).
+    if (options.maxCost && parseFloat(quote.total_cost) > options.maxCost) {
+      throw new OneShotError(`Quote $${quote.total_cost} exceeds maxCost $${options.maxCost}`);
+    }
 
     const payload: Record<string, unknown> = {
       from_address: fromAddress,
@@ -1432,7 +1445,7 @@ export class OneShot {
     };
 
     // Commerce quotes can take up to 90s due to Rye API polling
-    const quoteResp = await this.makeRequest('/v1/tools/commerce/buy', payload, undefined, undefined, options.signal, 120000);
+    const quoteResp = await this.makeRequest('/v1/tools/commerce/buy', payload, undefined, undefined, options.signal, 120000, this.maxCostHeader(options.maxCost));
     if (quoteResp.status !== 402) {
       throw new ToolError('Expected 402 for quote', quoteResp.status, await quoteResp.text());
     }
@@ -1534,7 +1547,7 @@ export class OneShot {
     if (options.max_duration_minutes) payload.max_duration_minutes = options.max_duration_minutes;
 
     // Voice uses quote-to-pay flow (402 -> payment -> 202)
-    const quoteResp = await this.makeRequest('/v1/tools/voice/call', payload, undefined, undefined, options.signal);
+    const quoteResp = await this.makeRequest('/v1/tools/voice/call', payload, undefined, undefined, options.signal, undefined, this.maxCostHeader(options.maxCost));
 
     // Handle error responses before expecting 402
     if (quoteResp.status === 400) {
@@ -1635,7 +1648,7 @@ export class OneShot {
     };
 
     // SMS uses quote-to-pay flow (402 -> payment -> 202)
-    const quoteResp = await this.makeRequest('/v1/tools/sms/send', payload, undefined, undefined, options.signal);
+    const quoteResp = await this.makeRequest('/v1/tools/sms/send', payload, undefined, undefined, options.signal, undefined, this.maxCostHeader(options.maxCost));
 
     // Handle error responses before expecting 402
     if (quoteResp.status === 400) {
@@ -1734,7 +1747,7 @@ export class OneShot {
     if (options.build_id) payload.build_id = options.build_id;
 
     // Build uses quote-to-pay flow (402 -> payment -> 202)
-    const quoteResp = await this.makeRequest('/v1/tools/build', payload, undefined, undefined, options.signal);
+    const quoteResp = await this.makeRequest('/v1/tools/build', payload, undefined, undefined, options.signal, undefined, this.maxCostHeader(options.maxCost));
 
     if (quoteResp.status === 400) {
       const errorData = await quoteResp.json() as { error: string; message: string; details?: unknown };
@@ -1824,7 +1837,7 @@ export class OneShot {
     if (options.max_steps) payload.max_steps = options.max_steps;
 
     // Browser uses quote-to-pay flow (402 -> payment -> 202)
-    const quoteResp = await this.makeRequest('/v1/tools/browser', payload, undefined, undefined, options.signal);
+    const quoteResp = await this.makeRequest('/v1/tools/browser', payload, undefined, undefined, options.signal, undefined, this.maxCostHeader(options.maxCost));
 
     if (quoteResp.status === 400) {
       const errorData = await quoteResp.json() as { error: string; message: string };
@@ -2142,7 +2155,7 @@ export class OneShot {
     if (options.schedule) payload.schedule = options.schedule;
 
     // First call: get quote (402)
-    const quoteResp = await this.makeRequest('/v1/compute', payload, undefined, undefined, options.signal);
+    const quoteResp = await this.makeRequest('/v1/compute', payload, undefined, undefined, options.signal, undefined, this.maxCostHeader(options.maxCost));
 
     if (quoteResp.status === 400) {
       const errorData = await quoteResp.json() as { error: string; message: string };
@@ -2542,12 +2555,25 @@ export class OneShot {
     };
   }
 
+  /**
+   * Header that asks the API to reject the request when the computed quote
+   * exceeds the caller-supplied cap (commit 8f328a7). The SDK still does its
+   * own local `quote.total > maxCost` check after the 402 returns — this is
+   * a server-side enforcement layer so non-SDK callers (MCP server, custom
+   * integrations) can't ignore the cap.
+   */
+  private maxCostHeader(maxCost?: number): Record<string, string> | undefined {
+    if (!maxCost || maxCost <= 0) return undefined;
+    return { 'X-Max-Cost-USDC': maxCost.toString() };
+  }
+
   private async executeToolRequest<T>(
     endpoint: string,
     options: ToolOptions & Record<string, unknown>,
     quoteId?: string
   ): Promise<T> {
-    const { signal, onStatusUpdate, wait = true, waitForPhones, phoneTimeoutSec, ...payload } = options;
+    const { signal, onStatusUpdate, wait = true, waitForPhones, phoneTimeoutSec, maxCost, ...payload } = options;
+    const extraHeaders = this.maxCostHeader(maxCost as number | undefined);
 
     // Validate memo
     if (payload.memo !== undefined) {
@@ -2577,7 +2603,7 @@ export class OneShot {
       throw new OneShotError('Operation cancelled');
     }
 
-    let response = await this.makeRequest(endpoint, payload, undefined, quoteId, signal);
+    let response = await this.makeRequest(endpoint, payload, undefined, quoteId, signal, undefined, extraHeaders);
 
     // Handle 402 Payment Required
     if (response.status === 402) {
@@ -2602,7 +2628,7 @@ export class OneShot {
 
       this.checkAbortBeforePayment(signal);
       const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
-      response = await this.makeRequest(endpoint, payload, auth, quoteId, signal);
+      response = await this.makeRequest(endpoint, payload, auth, quoteId, signal, undefined, extraHeaders);
     }
 
     if (!response.ok) {
@@ -2948,11 +2974,13 @@ export class OneShot {
     payment?: PaymentAuthorization,
     quoteId?: string,
     signal?: AbortSignal,
-    timeoutMs?: number
+    timeoutMs?: number,
+    extraHeaders?: Record<string, string>
   ): Promise<Response> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      ...this.headers()
+      ...this.headers(),
+      ...(extraHeaders ?? {})
     };
 
     if (payment) {
