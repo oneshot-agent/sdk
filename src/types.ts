@@ -393,6 +393,29 @@ export interface EmailResult {
   cost?: number;
 }
 
+export interface DomainPoolEntry {
+  domain: string;
+  pool_status: 'active' | 'warming' | 'paused' | 'removed';
+  provisioning_status: string;
+  warmup_provider: string | null;
+  warmup_score: number | null;
+  warmup_started_at: string | null;
+  daily_send_limit: number;
+  daily_sent_count: number;
+  daily_sent_date: string | null;
+  last_used_at: string | null;
+}
+
+export interface DomainPoolListResult {
+  agent_id: string;
+  domains: DomainPoolEntry[];
+}
+
+export interface DomainPoolStatusResult {
+  domain: string;
+  pool_status: 'active' | 'paused';
+}
+
 export interface EnrichProfileResult {
   status: string;
   profile: PersonResult;
@@ -625,8 +648,13 @@ export interface VoiceQuote {
   quote_id: string;
   target_numbers: string[];
   conference_mode: boolean;
-  objective_summary: string;
-  talking_points: string[];
+  /** @deprecated The API stopped emitting a paraphrased objective summary
+   *  when the voice prompt pipeline switched to verbatim assembly. Field
+   *  retained for type-back-compat; will be removed in the next major. */
+  objective_summary?: string;
+  /** @deprecated See objective_summary — the LLM rewrite that produced these
+   *  bullets is gone. The full objective is in the call's system prompt. */
+  talking_points?: string[];
   success_criteria: string[];
   estimated_duration_minutes: number;
   complexity_score: number;

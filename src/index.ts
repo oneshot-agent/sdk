@@ -62,6 +62,7 @@ import type {
   Receipt, ReceiptsListResult, UnifiedBalance, ComputeSchedule, ComputeOptions,
   ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeTask,
   ComputeBudgetStatus,
+  DomainPoolEntry, DomainPoolListResult, DomainPoolStatusResult,
 } from './types';
 
 
@@ -197,10 +198,19 @@ export class OneShot {
     this.validate(options.subject, 'subject');
     this.validate(options.body, 'body');
 
-    const fromAddress = `${options.from_mailbox ?? 'agent'}@${options.from_domain ?? 'oneshotagent.com'}`;
+    // Rotation mode: when the caller passes neither from_domain nor
+    // from_mailbox, omit from_address entirely so the server picks from
+    // the agent's domain pool. The chosen address comes back on the
+    // quote response (`quote.from_address`) and we replay it on /send.
+    // When the caller pins either knob, we keep legacy behavior: build
+    // `${mailbox ?? 'agent'}@${domain ?? 'oneshotagent.com'}`.
+    const useRotation = !options.from_domain && !options.from_mailbox;
+    const fromAddress = useRotation
+      ? undefined
+      : `${options.from_mailbox ?? 'agent'}@${options.from_domain ?? 'oneshotagent.com'}`;
 
-    const quote = await this.tool<{ total_cost: string; quote_id: string }>('email/quote', {
-      from_address: fromAddress,
+    const quote = await this.tool<{ total_cost: string; quote_id: string; from_address?: string }>('email/quote', {
+      ...(fromAddress ? { from_address: fromAddress } : {}),
       to_address: options.to,
       subject: options.subject,
       body: options.body,
@@ -221,8 +231,13 @@ export class OneShot {
       throw new OneShotError(`Quote $${quote.total_cost} exceeds maxCost $${options.maxCost}`);
     }
 
+    const resolvedFromAddress = fromAddress ?? quote.from_address;
+
     const payload: Record<string, unknown> = {
-      from_address: fromAddress,
+      // Server replays the locked address from the quote when from_address
+      // is absent, but sending it anyway is harmless and forward-compatible
+      // with future SDK versions that talk directly to /send without quoting.
+      ...(resolvedFromAddress ? { from_address: resolvedFromAddress } : {}),
       to_address: options.to,
       subject: options.subject,
       body: options.body,
@@ -240,6 +255,43 @@ export class OneShot {
     }
 
     return this.executeToolRequest<EmailResult>('/v1/tools/email/send', payload, quote.quote_id);
+  }
+
+  /** List the caller's domain pool with warmup and rotation metadata. */
+  async listDomains(): Promise<DomainPoolListResult> {
+    const response = await fetch(`${this.baseUrl}/v1/tools/email/domains`, {
+      headers: this.headers(),
+    });
+    if (!response.ok) {
+      throw new ToolError('Failed to list domains', response.status, await response.text());
+    }
+    return response.json() as Promise<DomainPoolListResult>;
+  }
+
+  /** Take a domain out of rotation without releasing it. */
+  async pauseDomain(domain: string): Promise<DomainPoolStatusResult> {
+    this.validate(domain, 'domain');
+    const response = await fetch(`${this.baseUrl}/v1/tools/email/domains/${encodeURIComponent(domain)}/pause`, {
+      method: 'POST',
+      headers: this.headers(),
+    });
+    if (!response.ok) {
+      throw new ToolError('Failed to pause domain', response.status, await response.text());
+    }
+    return response.json() as Promise<DomainPoolStatusResult>;
+  }
+
+  /** Put a paused domain back into rotation. */
+  async resumeDomain(domain: string): Promise<DomainPoolStatusResult> {
+    this.validate(domain, 'domain');
+    const response = await fetch(`${this.baseUrl}/v1/tools/email/domains/${encodeURIComponent(domain)}/resume`, {
+      method: 'POST',
+      headers: this.headers(),
+    });
+    if (!response.ok) {
+      throw new ToolError('Failed to resume domain', response.status, await response.text());
+    }
+    return response.json() as Promise<DomainPoolStatusResult>;
   }
 
   async research(options: ResearchToolOptions): Promise<ResearchResult> {
@@ -480,7 +532,6 @@ export class OneShot {
     };
 
     this.log(`Voice quote: $${quoteData.context.total} for ${quoteData.context.estimated_duration_minutes}min call`);
-    this.log(`Objective summary: ${quoteData.context.objective_summary}`);
 
     if (options.maxCost && parseFloat(quoteData.context.total) > options.maxCost) {
       throw new OneShotError(`Quote $${quoteData.context.total} exceeds maxCost $${options.maxCost}`);
