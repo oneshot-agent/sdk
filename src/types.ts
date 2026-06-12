@@ -130,6 +130,15 @@ export interface ToolOptions {
    */
   waitForPhones?: boolean;
   phoneTimeoutSec?: number;
+  /**
+   * Client-supplied idempotency key sent as the `Idempotency-Key` header.
+   * If a call times out client-side, retrying with the same key (and the
+   * same request intent) returns the original job instead of charging and
+   * executing again. Replay window: 24h; reusing a key with a different
+   * body is rejected with 422. Currently honored by email.send — other
+   * tools ignore the header until their routes opt in server-side.
+   */
+  idempotencyKey?: string;
 }
 
 export interface EmailToolOptions extends ToolOptions {

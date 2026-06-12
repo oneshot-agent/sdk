@@ -254,6 +254,11 @@ export class OneShot {
       payload.attachments = options.attachments;
     }
 
+    if (options.idempotencyKey) {
+      // Only the send call carries the key — the quote call has no side effects.
+      payload.idempotencyKey = options.idempotencyKey;
+    }
+
     return this.executeToolRequest<EmailResult>('/v1/tools/email/send', payload, quote.quote_id);
   }
 
@@ -1554,13 +1559,26 @@ export class OneShot {
     return { 'X-Max-Cost-USDC': maxCost.toString() };
   }
 
+  /**
+   * Idempotency-Key header, sent on both legs (pre-402 and paid retry) so
+   * the server can replay a cached result instead of double-charging and
+   * double-executing on a client retry.
+   */
+  private idempotencyHeader(idempotencyKey?: string): Record<string, string> | undefined {
+    if (!idempotencyKey) return undefined;
+    return { 'Idempotency-Key': idempotencyKey };
+  }
+
   private async executeToolRequest<T>(
     endpoint: string,
     options: ToolOptions & Record<string, unknown>,
     quoteId?: string
   ): Promise<T> {
-    const { signal, onStatusUpdate, wait = true, waitForPhones, phoneTimeoutSec, maxCost, ...payload } = options;
-    const extraHeaders = this.maxCostHeader(maxCost as number | undefined);
+    const { signal, onStatusUpdate, wait = true, waitForPhones, phoneTimeoutSec, idempotencyKey, maxCost, ...payload } = options;
+    const extraHeaders = {
+      ...this.maxCostHeader(maxCost as number | undefined),
+      ...this.idempotencyHeader(idempotencyKey as string | undefined),
+    };
 
     // Validate memo
     if (payload.memo !== undefined) {
