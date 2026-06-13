@@ -142,9 +142,17 @@ export interface ToolOptions {
 }
 
 export interface EmailToolOptions extends ToolOptions {
-  to: string | string[];
-  subject: string;
+  /** Required unless reply_to_email_id is set (defaults to the inbound sender). */
+  to?: string | string[];
+  /** Required unless reply_to_email_id is set (defaults to "Re: <original subject>"). */
+  subject?: string;
   body: string;
+  /**
+   * Reply within a thread: id of an inbound email (from inbox()/inboxGet()).
+   * The server resolves In-Reply-To/References headers and thread_id, and
+   * derives to/subject when omitted.
+   */
+  reply_to_email_id?: string;
   from_domain?: string;
   /** Sender mailbox / local-part. Defaults to `agent` (i.e. agent@from_domain). */
   from_mailbox?: string;

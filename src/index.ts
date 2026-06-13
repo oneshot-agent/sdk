@@ -194,8 +194,11 @@ export class OneShot {
   }
 
   async email(options: EmailToolOptions): Promise<EmailResult> {
-    this.validate(options.to, 'to');
-    this.validate(options.subject, 'subject');
+    // to/subject are server-derived when replying to an inbound email.
+    if (!options.reply_to_email_id) {
+      this.validate(options.to, 'to');
+      this.validate(options.subject, 'subject');
+    }
     this.validate(options.body, 'body');
 
     // Rotation mode: when the caller passes neither from_domain nor
@@ -211,8 +214,9 @@ export class OneShot {
 
     const quote = await this.tool<{ total_cost: string; quote_id: string; from_address?: string }>('email/quote', {
       ...(fromAddress ? { from_address: fromAddress } : {}),
-      to_address: options.to,
-      subject: options.subject,
+      ...(options.to !== undefined ? { to_address: options.to } : {}),
+      ...(options.subject !== undefined ? { subject: options.subject } : {}),
+      ...(options.reply_to_email_id ? { reply_to_email_id: options.reply_to_email_id } : {}),
       body: options.body,
       // Forward maxCost so the server-side X-Max-Cost-USDC header is set on
       // the quote fetch (executeToolRequest destructures + threads it).
@@ -238,8 +242,9 @@ export class OneShot {
       // is absent, but sending it anyway is harmless and forward-compatible
       // with future SDK versions that talk directly to /send without quoting.
       ...(resolvedFromAddress ? { from_address: resolvedFromAddress } : {}),
-      to_address: options.to,
-      subject: options.subject,
+      ...(options.to !== undefined ? { to_address: options.to } : {}),
+      ...(options.subject !== undefined ? { subject: options.subject } : {}),
+      ...(options.reply_to_email_id ? { reply_to_email_id: options.reply_to_email_id } : {}),
       body: options.body,
       signal: options.signal,
       onStatusUpdate: options.onStatusUpdate,
