@@ -231,9 +231,7 @@ export class OneShot {
     // (e.g. a future API revision without the header check) or skipped (cap
     // un-set so the server returned a 200 with the quote and the caller still
     // wants the local guard to apply).
-    if (options.maxCost && parseFloat(quote.total_cost) > options.maxCost) {
-      throw new OneShotError(`Quote $${quote.total_cost} exceeds maxCost $${options.maxCost}`);
-    }
+    this.assertWithinMaxCost(quote.total_cost, options.maxCost);
 
     const resolvedFromAddress = fromAddress ?? quote.from_address;
 
@@ -371,12 +369,11 @@ export class OneShot {
   }
 
   async inboxList(options: InboxListOptions = {}): Promise<InboxListResult> {
-    const params = new URLSearchParams();
-    if (options.since) params.set('since', options.since);
-    if (options.limit) params.set('limit', String(options.limit));
-    if (options.include_body) params.set('include_body', 'true');
-
-    const qs = params.toString();
+    const qs = this.buildQuery({
+      since: options.since || undefined,
+      limit: options.limit || undefined,
+      include_body: options.include_body ? 'true' : undefined,
+    });
     const response = await fetch(`${this.baseUrl}/v1/tools/inbox${qs ? `?${qs}` : ''}`, {
       headers: this.headers()
     });
@@ -416,36 +413,17 @@ export class OneShot {
     };
 
     // Commerce quotes can take up to 90s due to Rye API polling
-    const quoteResp = await this.makeRequest('/v1/tools/commerce/buy', payload, undefined, undefined, options.signal, 120000, this.maxCostHeader(options.maxCost));
-    if (quoteResp.status !== 402) {
-      throw new ToolError('Expected 402 for quote', quoteResp.status, await quoteResp.text());
-    }
-
-    const quoteData = await quoteResp.json() as {
-      context: CommerceQuote;
-      payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
-    };
-
-    this.log(`Commerce quote: $${quoteData.context.total} for "${quoteData.context.product_title}"`);
-
-    if (options.maxCost && parseFloat(quoteData.context.total) > options.maxCost) {
-      throw new OneShotError(`Quote $${quoteData.context.total} exceeds maxCost $${options.maxCost}`);
-    }
-
-    const paymentInfo: PaymentInfo = {
-      protocol: 'x402',
-      network: `eip155:${quoteData.payment_request.chain_id}`,
-      payTo: quoteData.payment_request.recipient,
-      amount: quoteData.payment_request.amount,
-      currency: 'USD',
-      facilitator_url: this.baseUrl,
-      token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
-    };
-
-    this.checkAbortBeforePayment(options.signal);
-    const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, '/v1/tools/commerce/buy', payload, quoteData.context.quote_id, options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
-    const buyResp = await this.makeRequest('/v1/tools/commerce/buy', payload, auth, quoteData.context.quote_id, options.signal, 60000);
+    const { execResp: buyResp } = await this.runQuoteToPay<CommerceQuote>({
+      endpoint: '/v1/tools/commerce/buy',
+      payload,
+      signal: options.signal,
+      maxCost: options.maxCost,
+      quoteTimeoutMs: 120000,
+      execTimeoutMs: 60000,
+      expectMsg: 'Expected 402 for quote',
+      totalOf: (ctx) => ctx.total,
+      onQuote: (ctx) => this.log(`Commerce quote: $${ctx.total} for "${ctx.product_title}"`),
+    });
 
     if (buyResp.status !== 202) {
       throw new ToolError('Commerce buy failed', buyResp.status, await buyResp.text());
@@ -517,50 +495,25 @@ export class OneShot {
     if (options.context) payload.context = options.context;
     if (options.max_duration_minutes) payload.max_duration_minutes = options.max_duration_minutes;
 
-    // Voice uses quote-to-pay flow (402 -> payment -> 202)
-    const quoteResp = await this.makeRequest('/v1/tools/voice/call', payload, undefined, undefined, options.signal, undefined, this.maxCostHeader(options.maxCost));
-
-    // Handle error responses before expecting 402
-    if (quoteResp.status === 400) {
-      const errorData = await quoteResp.json() as { error: string; message: string; categories?: string[]; blocked_number?: string };
-      if (errorData.error === 'content_blocked') {
-        throw new ContentBlockedError(errorData.message, errorData.categories || []);
-      }
-      if (errorData.error === 'emergency_number_blocked') {
-        throw new EmergencyNumberError(errorData.message, errorData.blocked_number || '');
-      }
-      throw new ValidationError(errorData.message || 'Invalid request', 'request');
-    }
-
-    if (quoteResp.status !== 402) {
-      throw new ToolError('Expected 402 for quote', quoteResp.status, await quoteResp.text());
-    }
-
-    const quoteData = await quoteResp.json() as {
-      context: VoiceQuote;
-      payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
-    };
-
-    this.log(`Voice quote: $${quoteData.context.total} for ${quoteData.context.estimated_duration_minutes}min call`);
-
-    if (options.maxCost && parseFloat(quoteData.context.total) > options.maxCost) {
-      throw new OneShotError(`Quote $${quoteData.context.total} exceeds maxCost $${options.maxCost}`);
-    }
-
-    const paymentInfo: PaymentInfo = {
-      protocol: 'x402',
-      network: `eip155:${quoteData.payment_request.chain_id}`,
-      payTo: quoteData.payment_request.recipient,
-      amount: quoteData.payment_request.amount,
-      currency: 'USD',
-      facilitator_url: this.baseUrl,
-      token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
-    };
-
-    this.checkAbortBeforePayment(options.signal);
-    const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, '/v1/tools/voice/call', payload, quoteData.context.quote_id, options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
-    const callResp = await this.makeRequest('/v1/tools/voice/call', payload, auth, quoteData.context.quote_id, options.signal);
+    const { execResp: callResp } = await this.runQuoteToPay<VoiceQuote>({
+      endpoint: '/v1/tools/voice/call',
+      payload,
+      signal: options.signal,
+      maxCost: options.maxCost,
+      expectMsg: 'Expected 402 for quote',
+      totalOf: (ctx) => ctx.total,
+      onQuote: (ctx) => this.log(`Voice quote: $${ctx.total} for ${ctx.estimated_duration_minutes}min call`),
+      on400: async (resp) => {
+        const errorData = await resp.json() as { error: string; message: string; categories?: string[]; blocked_number?: string };
+        if (errorData.error === 'content_blocked') {
+          throw new ContentBlockedError(errorData.message, errorData.categories || []);
+        }
+        if (errorData.error === 'emergency_number_blocked') {
+          throw new EmergencyNumberError(errorData.message, errorData.blocked_number || '');
+        }
+        throw new ValidationError(errorData.message || 'Invalid request', 'request');
+      },
+    });
 
     if (callResp.status !== 202) {
       throw new ToolError('Voice call initiation failed', callResp.status, await callResp.text());
@@ -618,49 +571,25 @@ export class OneShot {
     };
 
     // SMS uses quote-to-pay flow (402 -> payment -> 202)
-    const quoteResp = await this.makeRequest('/v1/tools/sms/send', payload, undefined, undefined, options.signal, undefined, this.maxCostHeader(options.maxCost));
-
-    // Handle error responses before expecting 402
-    if (quoteResp.status === 400) {
-      const errorData = await quoteResp.json() as { error: string; message: string; categories?: string[]; blocked_number?: string };
-      if (errorData.error === 'content_blocked') {
-        throw new ContentBlockedError(errorData.message, errorData.categories || []);
-      }
-      if (errorData.error === 'emergency_number_blocked') {
-        throw new EmergencyNumberError(errorData.message, errorData.blocked_number || '');
-      }
-      throw new ValidationError(errorData.message || 'Invalid request', 'request');
-    }
-
-    if (quoteResp.status !== 402) {
-      throw new ToolError('Expected 402 for quote', quoteResp.status, await quoteResp.text());
-    }
-
-    const quoteData = await quoteResp.json() as {
-      context: SmsQuote;
-      payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
-    };
-
-    this.log(`SMS quote: $${quoteData.context.total} for ${quoteData.context.segment_count} segment(s) to ${recipientCount} recipient(s)`);
-
-    if (options.maxCost && parseFloat(quoteData.context.total) > options.maxCost) {
-      throw new OneShotError(`Quote $${quoteData.context.total} exceeds maxCost $${options.maxCost}`);
-    }
-
-    const paymentInfo: PaymentInfo = {
-      protocol: 'x402',
-      network: `eip155:${quoteData.payment_request.chain_id}`,
-      payTo: quoteData.payment_request.recipient,
-      amount: quoteData.payment_request.amount,
-      currency: 'USD',
-      facilitator_url: this.baseUrl,
-      token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
-    };
-
-    this.checkAbortBeforePayment(options.signal);
-    const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, '/v1/tools/sms/send', payload, quoteData.context.quote_id, options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
-    const sendResp = await this.makeRequest('/v1/tools/sms/send', payload, auth, quoteData.context.quote_id, options.signal);
+    const { execResp: sendResp } = await this.runQuoteToPay<SmsQuote>({
+      endpoint: '/v1/tools/sms/send',
+      payload,
+      signal: options.signal,
+      maxCost: options.maxCost,
+      expectMsg: 'Expected 402 for quote',
+      totalOf: (ctx) => ctx.total,
+      onQuote: (ctx) => this.log(`SMS quote: $${ctx.total} for ${ctx.segment_count} segment(s) to ${recipientCount} recipient(s)`),
+      on400: async (resp) => {
+        const errorData = await resp.json() as { error: string; message: string; categories?: string[]; blocked_number?: string };
+        if (errorData.error === 'content_blocked') {
+          throw new ContentBlockedError(errorData.message, errorData.categories || []);
+        }
+        if (errorData.error === 'emergency_number_blocked') {
+          throw new EmergencyNumberError(errorData.message, errorData.blocked_number || '');
+        }
+        throw new ValidationError(errorData.message || 'Invalid request', 'request');
+      },
+    });
 
     if (sendResp.status !== 202) {
       throw new ToolError('SMS send failed', sendResp.status, await sendResp.text());
@@ -716,44 +645,22 @@ export class OneShot {
     if (options.domain) payload.domain = options.domain;
     if (options.build_id) payload.build_id = options.build_id;
 
-    // Build uses quote-to-pay flow (402 -> payment -> 202)
-    const quoteResp = await this.makeRequest('/v1/tools/build', payload, undefined, undefined, options.signal, undefined, this.maxCostHeader(options.maxCost));
-
-    if (quoteResp.status === 400) {
-      const errorData = await quoteResp.json() as { error: string; message: string; details?: unknown };
-      throw new ValidationError(errorData.message || 'Invalid request', 'request');
-    }
-
-    if (quoteResp.status !== 402) {
-      throw new ToolError('Expected 402 for quote', quoteResp.status, await quoteResp.text());
-    }
-
-    const quoteData = await quoteResp.json() as {
-      context: BuildQuote;
-      payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
-    };
-
-    this.log(`Build quote: $${quoteData.context.pricing.total} for "${quoteData.context.product_name}"`);
-    this.log(`Type: ${quoteData.context.analysis.inferred_type}, Sections: ${quoteData.context.analysis.estimated_sections}`);
-
-    if (options.maxCost && parseFloat(quoteData.context.pricing.total) > options.maxCost) {
-      throw new OneShotError(`Quote $${quoteData.context.pricing.total} exceeds maxCost $${options.maxCost}`);
-    }
-
-    const paymentInfo: PaymentInfo = {
-      protocol: 'x402',
-      network: `eip155:${quoteData.payment_request.chain_id}`,
-      payTo: quoteData.payment_request.recipient,
-      amount: quoteData.payment_request.amount,
-      currency: 'USD',
-      facilitator_url: this.baseUrl,
-      token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
-    };
-
-    this.checkAbortBeforePayment(options.signal);
-    const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, '/v1/tools/build', payload, quoteData.context.quote_id, options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
-    const buildResp = await this.makeRequest('/v1/tools/build', payload, auth, quoteData.context.quote_id, options.signal);
+    const { execResp: buildResp } = await this.runQuoteToPay<BuildQuote>({
+      endpoint: '/v1/tools/build',
+      payload,
+      signal: options.signal,
+      maxCost: options.maxCost,
+      expectMsg: 'Expected 402 for quote',
+      totalOf: (ctx) => ctx.pricing.total,
+      onQuote: (ctx) => {
+        this.log(`Build quote: $${ctx.pricing.total} for "${ctx.product_name}"`);
+        this.log(`Type: ${ctx.analysis.inferred_type}, Sections: ${ctx.analysis.estimated_sections}`);
+      },
+      on400: async (resp) => {
+        const errorData = await resp.json() as { error: string; message: string; details?: unknown };
+        throw new ValidationError(errorData.message || 'Invalid request', 'request');
+      },
+    });
 
     if (buildResp.status !== 202) {
       throw new ToolError('Build initiation failed', buildResp.status, await buildResp.text());
@@ -806,43 +713,19 @@ export class OneShot {
     if (options.secrets) payload.secrets = options.secrets;
     if (options.max_steps) payload.max_steps = options.max_steps;
 
-    // Browser uses quote-to-pay flow (402 -> payment -> 202)
-    const quoteResp = await this.makeRequest('/v1/tools/browser', payload, undefined, undefined, options.signal, undefined, this.maxCostHeader(options.maxCost));
-
-    if (quoteResp.status === 400) {
-      const errorData = await quoteResp.json() as { error: string; message: string };
-      throw new ValidationError(errorData.message || 'Invalid request', 'request');
-    }
-
-    if (quoteResp.status !== 402) {
-      throw new ToolError('Expected 402 for quote', quoteResp.status, await quoteResp.text());
-    }
-
-    const quoteData = await quoteResp.json() as {
-      context: BrowserQuote;
-      payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
-    };
-
-    this.log(`Browser quote: $${quoteData.context.estimated_cost} for ~${quoteData.context.estimated_steps} steps`);
-
-    if (options.maxCost && parseFloat(quoteData.context.estimated_cost) > options.maxCost) {
-      throw new OneShotError(`Quote $${quoteData.context.estimated_cost} exceeds maxCost $${options.maxCost}`);
-    }
-
-    const paymentInfo: PaymentInfo = {
-      protocol: 'x402',
-      network: `eip155:${quoteData.payment_request.chain_id}`,
-      payTo: quoteData.payment_request.recipient,
-      amount: quoteData.payment_request.amount,
-      currency: 'USD',
-      facilitator_url: this.baseUrl,
-      token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
-    };
-
-    this.checkAbortBeforePayment(options.signal);
-    const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, '/v1/tools/browser', payload, quoteData.context.quote_id, options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
-    const execResp = await this.makeRequest('/v1/tools/browser', payload, auth, quoteData.context.quote_id, options.signal);
+    const { execResp } = await this.runQuoteToPay<BrowserQuote>({
+      endpoint: '/v1/tools/browser',
+      payload,
+      signal: options.signal,
+      maxCost: options.maxCost,
+      expectMsg: 'Expected 402 for quote',
+      totalOf: (ctx) => ctx.estimated_cost,
+      onQuote: (ctx) => this.log(`Browser quote: $${ctx.estimated_cost} for ~${ctx.estimated_steps} steps`),
+      on400: async (resp) => {
+        const errorData = await resp.json() as { error: string; message: string };
+        throw new ValidationError(errorData.message || 'Invalid request', 'request');
+      },
+    });
 
     if (execResp.status !== 202) {
       throw new ToolError('Browser task initiation failed', execResp.status, await execResp.text());
@@ -871,7 +754,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/tools/browser/profiles`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.headers() },
+      headers: this.jsonHeaders(),
       body: JSON.stringify({ name }),
     });
 
@@ -960,12 +843,11 @@ export class OneShot {
    * ```
    */
   async smsInboxList(options: SmsInboxOptions = {}): Promise<SmsInboxResult> {
-    const params = new URLSearchParams();
-    if (options.since) params.set('since', options.since);
-    if (options.limit) params.set('limit', String(options.limit));
-    if (options.from) params.set('from', options.from);
-
-    const qs = params.toString();
+    const qs = this.buildQuery({
+      since: options.since || undefined,
+      limit: options.limit || undefined,
+      from: options.from || undefined,
+    });
     const response = await fetch(`${this.baseUrl}/v1/tools/sms/inbox${qs ? `?${qs}` : ''}`, {
       headers: this.headers()
     });
@@ -1014,11 +896,10 @@ export class OneShot {
    * ```
    */
   async notifications(options: NotificationsListOptions = {}): Promise<NotificationsResult> {
-    const params = new URLSearchParams();
-    if (options.unread) params.set('unread', 'true');
-    if (options.limit) params.set('limit', String(options.limit));
-
-    const qs = params.toString();
+    const qs = this.buildQuery({
+      unread: options.unread ? 'true' : undefined,
+      limit: options.limit || undefined,
+    });
     const response = await fetch(`${this.baseUrl}/v1/tools/notifications${qs ? `?${qs}` : ''}`, {
       headers: this.headers()
     });
@@ -1124,46 +1005,24 @@ export class OneShot {
     if (options.soul_service_slug) payload.soul_service_slug = options.soul_service_slug;
     if (options.schedule) payload.schedule = options.schedule;
 
-    // First call: get quote (402)
-    const quoteResp = await this.makeRequest('/v1/compute', payload, undefined, undefined, options.signal, undefined, this.maxCostHeader(options.maxCost));
-
-    if (quoteResp.status === 400) {
-      const errorData = await quoteResp.json() as { error: string; message: string };
-      if (errorData.error === 'content_blocked') {
-        throw new ContentBlockedError(errorData.message, []);
-      }
-      throw new ValidationError(errorData.message || 'Invalid request', 'request');
-    }
-
-    if (quoteResp.status !== 402) {
-      throw new ToolError('Expected 402 for compute quote', quoteResp.status, await quoteResp.text());
-    }
-
-    const quoteData = await quoteResp.json() as {
-      context: ComputeQuote;
-      payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
-    };
-
-    this.log(`Compute quote: $${quoteData.context.total_budget} — ${quoteData.context.objective_summary}`);
-
-    if (options.maxCost && parseFloat(quoteData.context.total_budget) > options.maxCost) {
-      throw new OneShotError(`Quote $${quoteData.context.total_budget} exceeds maxCost $${options.maxCost}`);
-    }
-
-    const paymentInfo: PaymentInfo = {
-      protocol: 'x402',
-      network: `eip155:${quoteData.payment_request.chain_id}`,
-      payTo: quoteData.payment_request.recipient,
-      amount: quoteData.payment_request.amount,
-      currency: 'USD',
-      facilitator_url: this.baseUrl,
-      token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
-    };
-
-    this.checkAbortBeforePayment(options.signal);
-    const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, '/v1/compute', payload, quoteData.context.quote_id, options.signal);
-    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
-    const createResp = await this.makeRequest('/v1/compute', payload, auth, quoteData.context.quote_id, options.signal);
+    // Compute returns the goal directly on 202 — no job polling, unlike the
+    // other paid tools.
+    const { execResp: createResp } = await this.runQuoteToPay<ComputeQuote>({
+      endpoint: '/v1/compute',
+      payload,
+      signal: options.signal,
+      maxCost: options.maxCost,
+      expectMsg: 'Expected 402 for compute quote',
+      totalOf: (ctx) => ctx.total_budget,
+      onQuote: (ctx) => this.log(`Compute quote: $${ctx.total_budget} — ${ctx.objective_summary}`),
+      on400: async (resp) => {
+        const errorData = await resp.json() as { error: string; message: string };
+        if (errorData.error === 'content_blocked') {
+          throw new ContentBlockedError(errorData.message, []);
+        }
+        throw new ValidationError(errorData.message || 'Invalid request', 'request');
+      },
+    });
 
     if (createResp.status !== 202) {
       throw new ToolError('Compute goal creation failed', createResp.status, await createResp.text());
@@ -1266,7 +1125,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/cancel`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.headers() },
+      headers: this.jsonHeaders(),
       body: JSON.stringify({ reason })
     });
 
@@ -1299,7 +1158,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/respond`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.headers() },
+      headers: this.jsonHeaders(),
       body: JSON.stringify(input)
     });
 
@@ -1327,7 +1186,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/pause`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.headers() },
+      headers: this.jsonHeaders(),
       body: JSON.stringify({ reason })
     });
 
@@ -1353,7 +1212,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/resume`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.headers() },
+      headers: this.jsonHeaders(),
       body: JSON.stringify({})
     });
 
@@ -1438,10 +1297,7 @@ export class OneShot {
    * ```
    */
   async spendBreakdown(options?: { period?: number }): Promise<SpendBreakdown> {
-    const params = new URLSearchParams();
-    if (options?.period) params.set('period', String(options.period));
-
-    const qs = params.toString();
+    const qs = this.buildQuery({ period: options?.period || undefined });
     const response = await fetch(`${this.baseUrl}/v1/analytics/spend/breakdown${qs ? `?${qs}` : ''}`, {
       headers: this.headers()
     });
@@ -1462,10 +1318,7 @@ export class OneShot {
    * ```
    */
   async rocs(options?: { period?: number }): Promise<RoCSResult> {
-    const params = new URLSearchParams();
-    if (options?.period) params.set('period', String(options.period));
-
-    const qs = params.toString();
+    const qs = this.buildQuery({ period: options?.period || undefined });
     const response = await fetch(`${this.baseUrl}/v1/analytics/rocs${qs ? `?${qs}` : ''}`, {
       headers: this.headers()
     });
@@ -1488,12 +1341,11 @@ export class OneShot {
    * ```
    */
   async receiptsList(options?: { period?: number; category?: string; limit?: number }): Promise<ReceiptsListResult> {
-    const params = new URLSearchParams();
-    if (options?.period) params.set('period', String(options.period));
-    if (options?.category) params.set('category', options.category);
-    if (options?.limit) params.set('limit', String(options.limit));
-
-    const qs = params.toString();
+    const qs = this.buildQuery({
+      period: options?.period || undefined,
+      category: options?.category || undefined,
+      limit: options?.limit || undefined,
+    });
     const response = await fetch(`${this.baseUrl}/v1/analytics/receipts${qs ? `?${qs}` : ''}`, {
       headers: this.headers()
     });
@@ -1550,6 +1402,28 @@ export class OneShot {
       'X-Agent-ID': this.provider.address,
       'X-OneShot-SDK-Version': SDK_VERSION
     };
+  }
+
+  /** Auth headers plus Content-Type for JSON-body requests. */
+  private jsonHeaders(): Record<string, string> {
+    return { 'Content-Type': 'application/json', ...this.headers() };
+  }
+
+  /** Build a query string, skipping null/undefined values. Pass falsy-but-valid
+   *  values (0, '') as undefined at the call site to match prior `if (x)` guards. */
+  private buildQuery(params: Record<string, string | number | boolean | undefined | null>): string {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v != null) qs.set(k, String(v));
+    }
+    return qs.toString();
+  }
+
+  /** Local fast-fail guard: throw when a quote total exceeds the caller's cap. */
+  private assertWithinMaxCost(total: string, maxCost?: number): void {
+    if (maxCost && parseFloat(total) > maxCost) {
+      throw new OneShotError(`Quote $${total} exceeds maxCost $${maxCost}`);
+    }
   }
 
   /**
@@ -1663,6 +1537,68 @@ export class OneShot {
     }
 
     return (result.data ?? result) as T;
+  }
+
+  /**
+   * Shared x402 quote-to-pay flow for paid tools. Fetches the 402 quote, runs
+   * any per-tool 400 handling, enforces maxCost, signs the payment auth, and
+   * POSTs the paid request. Returns the parsed quote context plus the raw paid
+   * Response — the caller owns the post-202 handling (poll a job vs. return the
+   * body directly), since that differs per tool.
+   */
+  private async runQuoteToPay<Q extends { quote_id: string }>(cfg: {
+    endpoint: string;
+    payload: Record<string, unknown>;
+    signal?: AbortSignal;
+    maxCost?: number;
+    quoteTimeoutMs?: number;
+    execTimeoutMs?: number;
+    expectMsg: string;
+    totalOf: (ctx: Q) => string;
+    onQuote: (ctx: Q) => void;
+    on400?: (resp: Response) => Promise<void>;
+  }): Promise<{ context: Q; execResp: Response }> {
+    const quoteResp = await this.makeRequest(
+      cfg.endpoint, cfg.payload, undefined, undefined,
+      cfg.signal, cfg.quoteTimeoutMs, this.maxCostHeader(cfg.maxCost),
+    );
+
+    if (quoteResp.status === 400 && cfg.on400) {
+      await cfg.on400(quoteResp);
+    }
+
+    if (quoteResp.status !== 402) {
+      throw new ToolError(cfg.expectMsg, quoteResp.status, await quoteResp.text());
+    }
+
+    const quoteData = await quoteResp.json() as {
+      context: Q;
+      payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
+    };
+
+    cfg.onQuote(quoteData.context);
+    this.assertWithinMaxCost(cfg.totalOf(quoteData.context), cfg.maxCost);
+
+    const paymentInfo: PaymentInfo = {
+      protocol: 'x402',
+      network: `eip155:${quoteData.payment_request.chain_id}`,
+      payTo: quoteData.payment_request.recipient,
+      amount: quoteData.payment_request.amount,
+      currency: 'USD',
+      facilitator_url: this.baseUrl,
+      token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 }
+    };
+
+    this.checkAbortBeforePayment(cfg.signal);
+    const { accepted, resource, extensions } = await this.getAcceptedRequirements(
+      quoteResp, cfg.endpoint, cfg.payload, quoteData.context.quote_id, cfg.signal,
+    );
+    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
+    const execResp = await this.makeRequest(
+      cfg.endpoint, cfg.payload, auth, quoteData.context.quote_id, cfg.signal, cfg.execTimeoutMs,
+    );
+
+    return { context: quoteData.context, execResp };
   }
 
   private async pollJob<T>(
