@@ -486,9 +486,6 @@ export class OneShot {
     const payload: Record<string, unknown> = {
       objective: options.objective,
       target_number: options.target_number,
-      signal: options.signal,
-      onStatusUpdate: options.onStatusUpdate,
-      wait: options.wait
     };
 
     if (options.caller_persona) payload.caller_persona = options.caller_persona;
@@ -565,9 +562,6 @@ export class OneShot {
     const payload: Record<string, unknown> = {
       message: options.message,
       to_number: options.to_number,
-      signal: options.signal,
-      onStatusUpdate: options.onStatusUpdate,
-      wait: options.wait
     };
 
     // SMS uses quote-to-pay flow (402 -> payment -> 202)
@@ -632,9 +626,6 @@ export class OneShot {
     const payload: Record<string, unknown> = {
       type: options.type ?? 'saas',
       product: options.product,
-      signal: options.signal,
-      onStatusUpdate: options.onStatusUpdate,
-      wait: options.wait
     };
 
     if (options.source_url) payload.source_url = options.source_url;
@@ -650,6 +641,8 @@ export class OneShot {
       payload,
       signal: options.signal,
       maxCost: options.maxCost,
+      // Build analysis can be slow server-side; bound the quote leg client-side.
+      quoteTimeoutMs: 120000,
       expectMsg: 'Expected 402 for quote',
       totalOf: (ctx) => ctx.pricing.total,
       onQuote: (ctx) => {
@@ -700,9 +693,6 @@ export class OneShot {
 
     const payload: Record<string, unknown> = {
       task: options.task,
-      signal: options.signal,
-      onStatusUpdate: options.onStatusUpdate,
-      wait: options.wait
     };
 
     if (options.output_schema) payload.output_schema = options.output_schema;
@@ -718,6 +708,8 @@ export class OneShot {
       payload,
       signal: options.signal,
       maxCost: options.maxCost,
+      // Browser analysis can be slow server-side; bound the quote leg client-side.
+      quoteTimeoutMs: 120000,
       expectMsg: 'Expected 402 for quote',
       totalOf: (ctx) => ctx.estimated_cost,
       onQuote: (ctx) => this.log(`Browser quote: $${ctx.estimated_cost} for ~${ctx.estimated_steps} steps`),
@@ -1608,13 +1600,20 @@ export class OneShot {
     onStatusUpdate?: StatusUpdateFn,
     phoneOpts?: { waitForPhones?: boolean; phoneTimeoutSec?: number }
   ): Promise<T> {
-    // Try WebSocket push first, fall back to HTTP polling
+    // Try WebSocket push first, fall back to HTTP polling. Both phases share a
+    // single deadline so the combined wait never exceeds the caller's timeout —
+    // previously the WS cap (≤180s) plus a fresh full HTTP timeout could total
+    // up to ~1.6× timeoutSec (e.g. ~480s for a 300s request).
+    const deadline = timeoutSec != null ? Date.now() + timeoutSec * 1000 : undefined;
     let result: T;
     try {
       result = await this.waitViaWebSocket<T>(requestId, timeoutSec, signal, onStatusUpdate);
     } catch {
       this.log('WebSocket unavailable, falling back to HTTP polling');
-      result = await this.pollJobHttp<T>(requestId, timeoutSec, signal, onStatusUpdate);
+      const remainingSec = deadline != null
+        ? Math.max(1, Math.ceil((deadline - Date.now()) / 1000))
+        : undefined;
+      result = await this.pollJobHttp<T>(requestId, remainingSec, signal, onStatusUpdate);
     }
 
     // Optional second phase: keep polling for the async phone-reveal webhook.
