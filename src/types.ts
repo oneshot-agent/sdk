@@ -414,7 +414,6 @@ export interface DomainPoolEntry {
   domain: string;
   pool_status: 'active' | 'warming' | 'paused' | 'removed';
   provisioning_status: string;
-  warmup_provider: string | null;
   warmup_score: number | null;
   warmup_started_at: string | null;
   daily_send_limit: number;
