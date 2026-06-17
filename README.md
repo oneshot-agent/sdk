@@ -200,9 +200,36 @@ try {
     console.log(`API error: ${error.statusCode}`);
   } else if (error instanceof JobTimeoutError) {
     console.log(`Timeout: ${error.jobId}`);
+  } else if (error instanceof JobError) {
+    // An async job failed. `error.code` is a STABLE, machine-readable code —
+    // branch on it rather than parsing `error.message`.
+    switch (error.code) {
+      case 'insufficient_funds':
+        console.log('Fund your wallet — do not blind-retry');
+        break;
+      case 'invalid_input':
+        console.log('Fix the request — retrying as-is will not help');
+        break;
+      case 'rate_limited':
+      case 'provider_unavailable':
+      case 'internal_error':
+        console.log('Transient — safe to retry');
+        break;
+      default:
+        console.log(`Job failed (${error.code}): ${error.message}`);
+    }
   }
 }
 ```
+
+### Job error codes
+
+When a `JobError` is thrown, `error.code` is one of:
+`insufficient_funds`, `payment_failed`, `invalid_input`, `content_blocked`,
+`rate_limited`, `provider_unavailable`, `provider_auth`, `enrichment_exhausted`,
+`checkout_failed`, `internal_error`. See the
+[Check Job Status](https://docs.oneshotagent.com/api-reference/status#error-codes)
+reference for the full meaning and recommended reaction for each.
 
 ## Examples
 

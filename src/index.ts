@@ -1807,7 +1807,7 @@ export class OneShot {
           } else if (msg.status === 'failed') {
             settle(() => {
               cleanup();
-              reject(new JobError(`Job failed: ${msg.error ?? 'Unknown'}`, requestId, String(msg.error ?? 'Unknown')));
+              reject(new JobError(`Job failed: ${msg.error ?? 'Unknown'}`, requestId, String(msg.error ?? 'Unknown'), msg.error_code as string | undefined));
             });
           } else {
             onStatusUpdate?.(msg.status, requestId);
@@ -1874,7 +1874,7 @@ export class OneShot {
         }
 
         if (job.status === 'failed') {
-          throw new JobError(`Job failed: ${job.error ?? 'Unknown'}`, requestId, String(job.error ?? 'Unknown'));
+          throw new JobError(`Job failed: ${job.error ?? 'Unknown'}`, requestId, String(job.error ?? 'Unknown'), job.error_code as string | undefined);
         }
 
         onStatusUpdate?.(job.status as string, requestId);
