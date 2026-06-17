@@ -396,6 +396,14 @@ export interface EmailResult {
   status: string;
   timeline?: Array<Record<string, unknown>>;
   error?: string;
+  /**
+   * Non-blocking advisory from the server. Values:
+   * - `pool_exhausted` — rotation fell back to shared infra (pool capped/warming)
+   * - `pinned_domain_warming` — a pinned sender's domain is still warming (low warmup score)
+   * - `pinned_over_limit` — a pinned sender's domain is over its daily_send_limit
+   * The send still proceeds; read this to back off / defer.
+   */
+  warning?: string;
   email?: {
     id: string;
     provider_message_id: string;

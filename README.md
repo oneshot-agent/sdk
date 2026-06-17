@@ -87,6 +87,10 @@ agent.chainId;     // 8453
 | `smsInboxGet()` | Get SMS by ID |
 | `notifications()` | List agent notifications |
 | `markNotificationRead()` | Mark notification as read |
+| **Domain Pool** | |
+| `listDomains()` | List your sending domains with warmup/rotation state |
+| `pauseDomain()` | Take a domain out of rotation |
+| `resumeDomain()` | Put a paused domain back into rotation |
 | **Research & People** | |
 | `research()` | Deep web research |
 | `peopleSearch()` | Search people by criteria |
@@ -348,6 +352,57 @@ await agent.email({
 
 `from_domain` must be a domain you've provisioned through OneShot. Defaults
 produce `agent@oneshotagent.com`.
+
+### Domain Pool & Warmup
+
+OneShot runs a per-agent **domain pool** with server-side warmup so your cold
+email lands in the inbox. Understanding pin-vs-rotate is the key concept:
+
+- **Rotate (recommended for cold outreach):** omit both `from_domain` and
+  `from_mailbox`. The server picks a warmed, under-cap domain from your pool,
+  applies warmup-score and daily-limit gates, and returns the chosen address on
+  the quote (`quote.from_address`). This is the only mode that gets warmup
+  protection.
+- **Pin:** set `from_domain` (and/or `from_mailbox`) to force an exact sender.
+  Rotation is bypassed — **and so are the warmup-score and daily-limit gates.**
+  Pinning a still-warming or over-cap domain will hurt deliverability; the send
+  still goes out, but the response carries a non-blocking `warning` (see below).
+
+**Reputation is per-domain**, shared by every mailbox on it. Running multiple
+mailboxes on one domain (`jane@`, `sales@`, …) does **not** improve
+deliverability or raise capacity — they share the same warmup score and the same
+`daily_send_limit`.
+
+**Provisioning:** a domain enters your pool the first time you reference it in a
+send/quote (auto-provisioned, then `provisioning → verified → warming → active`
+once its warmup score crosses the activation threshold). There is no separate
+provisioning call today. New domains start in `warming` and aren't rotation-
+eligible until they graduate.
+
+**The `warning` field** (non-blocking — the send still happens; read it to defer):
+
+| `warning` | Meaning |
+|-----------|---------|
+| `pool_exhausted` | Rotation found no eligible domain (all capped/warming) and fell back to the shared infra domain. |
+| `pinned_domain_warming` | Your pinned domain is still warming (low warmup score) — poor deliverability likely. |
+| `pinned_over_limit` | Your pinned domain is over its `daily_send_limit` for today. |
+
+There is no hard error for hitting a limit — clients should branch on `warning`
+and defer rather than expecting a 4xx.
+
+```typescript
+// Inspect and manage the pool
+const { domains } = await agent.listDomains();
+// each: { domain, pool_status, warmup_score, daily_send_limit, daily_sent_count, ... }
+
+await agent.pauseDomain('acme.com');   // take out of rotation
+await agent.resumeDomain('acme.com');  // put back (only from 'paused')
+
+const res = await agent.email({ to: 'lead@example.com', subject: 'Hi', body: '…' });
+if (res.warning) {
+  // e.g. 'pinned_domain_warming' — back off and let warmup finish
+}
+```
 
 ### People Search & Enrichment
 
