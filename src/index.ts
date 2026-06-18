@@ -18,7 +18,8 @@ export { getSwapQuote, executeSwap } from './swap';
 export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
-const SDK_VERSION = '0.16.2';
+// Keep in sync with package.json `version`. Guarded by version.test.ts.
+const SDK_VERSION = '0.19.1';
 
 // ============================================================================
 // Environment Configuration
