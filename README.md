@@ -359,10 +359,12 @@ OneShot runs a per-agent **domain pool** with server-side warmup so your cold
 email lands in the inbox. Understanding pin-vs-rotate is the key concept:
 
 - **Rotate (recommended for cold outreach):** omit both `from_domain` and
-  `from_mailbox`. The server picks a warmed, under-cap domain from your pool,
-  applies warmup-score and daily-limit gates, and returns the chosen address on
-  the quote (`quote.from_address`). This is the only mode that gets warmup
-  protection.
+  `from_mailbox`. The server picks a warmed, under-cap domain **from your own
+  pool**, applies warmup-score and daily-limit gates, and returns the chosen
+  address on the quote (`quote.from_address`). This is the only mode that gets
+  warmup protection. If you own no eligible domain, the quote returns
+  **`400 no_sending_domain`** — there is **no shared fallback sender**; you must
+  provision/own a domain to send.
 - **Pin:** set `from_domain` (and/or `from_mailbox`) to force an exact sender.
   Rotation is bypassed — **and so are the warmup-score and daily-limit gates.**
   Pinning a still-warming or over-cap domain will hurt deliverability; the send
@@ -383,12 +385,12 @@ eligible until they graduate.
 
 | `warning` | Meaning |
 |-----------|---------|
-| `pool_exhausted` | Rotation found no eligible domain (all capped/warming) and fell back to the shared infra domain. |
 | `pinned_domain_warming` | Your pinned domain is still warming (low warmup score) — poor deliverability likely. |
 | `pinned_over_limit` | Your pinned domain is over its `daily_send_limit` for today. |
 
-There is no hard error for hitting a limit — clients should branch on `warning`
-and defer rather than expecting a 4xx.
+Pinned sends are never blocked by warmup/limit — branch on `warning` and defer.
+(The one hard error is `400 no_sending_domain` on an **un-pinned** send when you
+own no eligible domain — provision or pin one.)
 
 ```typescript
 // Inspect and manage the pool

@@ -398,10 +398,11 @@ export interface EmailResult {
   error?: string;
   /**
    * Non-blocking advisory from the server. Values:
-   * - `pool_exhausted` — rotation fell back to shared infra (pool capped/warming)
    * - `pinned_domain_warming` — a pinned sender's domain is still warming (low warmup score)
    * - `pinned_over_limit` — a pinned sender's domain is over its daily_send_limit
-   * The send still proceeds; read this to back off / defer.
+   * The send still proceeds; read this to back off / defer. (Note: an un-pinned
+   * send with no eligible owned domain is a hard `400 no_sending_domain`, not a
+   * warning — there is no shared fallback sender.)
    */
   warning?: string;
   email?: {
