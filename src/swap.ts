@@ -51,6 +51,12 @@ const SWAP_ROUTER_ABI = [
 // WETH/USDC pool fee tier: 0.05% (500) is the deepest liquidity on Base
 const POOL_FEE = 500;
 
+function validateSlippage(slippage: number): void {
+  if (!Number.isFinite(slippage) || slippage < 0) {
+    throw new Error('Slippage must be a nonnegative finite number');
+  }
+}
+
 // ============================================================================
 // Quote
 // ============================================================================
@@ -82,6 +88,7 @@ export async function getSwapQuote(
   chainId: number,
   slippage: number = 0.01,
 ): Promise<SwapQuote> {
+  validateSlippage(slippage);
   const addresses = getAddresses(chainId);
   const amountOut = ethers.parseUnits(usdcAmount, 6); // USDC has 6 decimals
 
@@ -148,6 +155,8 @@ export async function executeSwap(
   chainId: number,
   slippage: number = 0.01,
 ): Promise<SwapResult> {
+  validateSlippage(slippage);
+
   if (!walletProvider.sendTransaction) {
     throw new Error('Wallet provider does not support sendTransaction — required for ETH→USDC swap');
   }
