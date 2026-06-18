@@ -18,6 +18,25 @@ npx -y @oneshot-agent/mcp-server
 
 See the [MCP Server documentation](https://docs.oneshotagent.com/sdk/mcp) for setup instructions.
 
+### Teach your coding agent to use OneShot
+
+Install the OneShot [Agent Skills](https://skills.sh) into Claude Code, Cursor, Codex, and
+[70+ other agents](https://github.com/vercel-labs/skills#supported-agents) so they know how to
+call the SDK and MCP tools:
+
+```bash
+# All OneShot skills
+npx skills add oneshot-agent/agent-skills
+
+# Or just what you need (e.g. setup + email)
+npx skills add oneshot-agent/agent-skills --skill oneshot --skill oneshot-email
+```
+
+Skills available: `oneshot` (setup/auth), `oneshot-email`, `oneshot-messaging`,
+`oneshot-research`, `oneshot-enrichment`, `oneshot-commerce`, `oneshot-browser`,
+`oneshot-build`, `oneshot-compute`, `soul-markets`. Source:
+[oneshot-agent/agent-skills](https://github.com/oneshot-agent/agent-skills).
+
 ## Quick Start
 
 ```typescript
