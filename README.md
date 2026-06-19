@@ -150,8 +150,8 @@ agent.chainId;     // 8453
 | `getUnifiedBalance()` | Get balance across all chains |
 | `spendBreakdown()` | Spending breakdown by tool/period |
 | `rocs()` | Return on compute stats |
-| `receiptsList()` | List payment receipts |
-| `tagReceiptValue()` | Tag a receipt with business value |
+| `receiptsList()` | List payment receipts (`limit`/`offset` or `since`/`until` window) |
+| `tagReceiptValue()` | Tag a receipt with business value (by `receipt_id` or `request_id`) |
 
 ## Configuration
 

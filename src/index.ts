@@ -19,7 +19,7 @@ export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.20.0';
+const SDK_VERSION = '0.21.0';
 
 // ============================================================================
 // Environment Configuration
@@ -1337,19 +1337,37 @@ export class OneShot {
   /**
    * List receipts with optional filtering
    *
+   * Paginate with `limit`/`offset`, or page through an explicit time window with
+   * `since`/`until` (ISO string or Date) — useful for reaching receipts older than
+   * the server's 100-row cap when tagging value weeks after the originating call.
+   *
    * @example
    * ```typescript
    * const result = await agent.receiptsList({ period: 7, category: 'communication' });
    * for (const r of result.receipts) {
    *   console.log(`${r.subcategory}: $${r.amount_usdc}`);
    * }
+   *
+   * // Reach an older receipt by time window:
+   * const old = await agent.receiptsList({ since: '2026-05-01', until: '2026-05-31', limit: 100 });
    * ```
    */
-  async receiptsList(options?: { period?: number; category?: string; limit?: number }): Promise<ReceiptsListResult> {
+  async receiptsList(options?: {
+    period?: number;
+    category?: string;
+    limit?: number;
+    offset?: number;
+    since?: string | Date;
+    until?: string | Date;
+  }): Promise<ReceiptsListResult> {
+    const toIso = (d?: string | Date) => (d instanceof Date ? d.toISOString() : d) || undefined;
     const qs = this.buildQuery({
       period: options?.period || undefined,
       category: options?.category || undefined,
       limit: options?.limit || undefined,
+      offset: options?.offset || undefined,
+      since: toIso(options?.since),
+      until: toIso(options?.until),
     });
     const response = await fetch(`${this.baseUrl}/v1/analytics/receipts${qs ? `?${qs}` : ''}`, {
       headers: this.headers()
@@ -1362,18 +1380,32 @@ export class OneShot {
   }
 
   /**
-   * Tag a receipt with a value for RoCS computation
+   * Tag a receipt with a value for RoCS computation.
+   *
+   * Pass either the `rcpt_…` receipt id (from `result.receipt_id` or `receiptsList`)
+   * or — equivalently — the `request_id` returned by the originating tool call
+   * (`result.request_id`, which the API resolves via `Receipt.job_id`). The latter
+   * lets you annotate without a prior `receiptsList` lookup.
    *
    * @example
    * ```typescript
+   * // By receipt id:
    * await agent.tagReceiptValue('rcpt_01HX...', { type: 'revenue', amount: 5.00, label: 'Sale from lead' });
+   *
+   * // By the request_id you already kept from the call:
+   * const r = await agent.verifyEmail({ email: 'x@y.com' });
+   * await agent.tagReceiptValue({ requestId: r.request_id }, { type: 'lead', amount: 1 });
    * ```
    */
-  async tagReceiptValue(receiptId: string, valueTag: { type: string; amount?: number; label?: string }): Promise<void> {
-    this.validate(receiptId, 'receiptId');
+  async tagReceiptValue(
+    ref: string | { receiptId?: string; requestId?: string },
+    valueTag: { type: string; amount?: number; label?: string },
+  ): Promise<void> {
+    const id = typeof ref === 'string' ? ref : (ref.receiptId ?? ref.requestId);
+    this.validate(id, 'receiptId/requestId');
     this.validate(valueTag.type, 'valueTag.type');
 
-    const response = await fetch(`${this.baseUrl}/v1/analytics/receipts/${receiptId}/value`, {
+    const response = await fetch(`${this.baseUrl}/v1/analytics/receipts/${id}/value`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',

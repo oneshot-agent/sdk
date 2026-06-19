@@ -308,6 +308,8 @@ export interface WebReadOptions extends ToolOptions {
 
 export interface WebReadResult {
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   url: string;
   markdown: string;
   screenshot_url?: string;
@@ -390,6 +392,8 @@ export interface PeopleSearchResult {
   results: PersonResult[];
   total_found: number;
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   completed_at?: string;
   filters?: Record<string, unknown>;
   memo?: string;
@@ -398,6 +402,8 @@ export interface PeopleSearchResult {
 
 export interface ResearchResult {
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   report_content: string;
   sources: Array<{ url: string; title?: string }>;
   sources_count: number;
@@ -413,6 +419,8 @@ export interface ResearchResult {
 
 export interface EmailResult {
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   status: string;
   timeline?: Array<Record<string, unknown>>;
   error?: string;
@@ -465,6 +473,8 @@ export interface EnrichProfileResult {
   status: string;
   profile: PersonResult;
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   completed_at?: string;
   memo?: string;
   cost?: number;
@@ -488,6 +498,8 @@ export interface CompanySearchResult {
   results: CompanyResult[];
   total_found: number;
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   completed_at?: string;
   filters?: Record<string, unknown>;
   memo?: string;
@@ -498,6 +510,8 @@ export interface EnrichCompanyResult {
   status: string;
   company: CompanyResult;
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   completed_at?: string;
   memo?: string;
   cost?: number;
@@ -510,6 +524,8 @@ export interface FindEmailResult {
   full_name?: string;
   company_domain?: string;
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   completed_at?: string;
   memo?: string;
   cost?: number;
@@ -651,6 +667,8 @@ export interface VerifyEmailResult {
   catch_all: boolean;
   disposable: boolean;
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   completed_at?: string;
   memo?: string;
   cost?: number;
@@ -691,6 +709,8 @@ export interface CommerceQuote {
 
 export interface CommerceBuyResult {
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   status: string;
   order_id: string;
   order_status: string;
@@ -714,6 +734,8 @@ export interface CommerceSearchProduct {
 
 export interface CommerceSearchResult {
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   status: string;
   query: string;
   products: CommerceSearchProduct[];
@@ -746,6 +768,8 @@ export interface VoiceQuote {
 
 export interface VoiceCallResult {
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   status: string;
   ended_reason?: string;
   duration_seconds?: number;
@@ -773,6 +797,8 @@ export interface SmsQuote {
 
 export interface SmsSendResult {
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   status: string;
   sent: number;
   failed: number;
@@ -914,6 +940,8 @@ export interface BuildQuote {
 
 export interface BuildResult {
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   status: string;
   success: boolean;
   production_url?: string;
@@ -967,6 +995,8 @@ export interface BrowserQuote {
 
 export interface BrowserResult {
   request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
   output?: string | Record<string, unknown>;
   steps?: Array<{ number: number; goal: string; url: string }>;
   memo?: string;
