@@ -19,7 +19,7 @@ export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.21.0';
+const SDK_VERSION = '0.22.0';
 
 // ============================================================================
 // Environment Configuration
@@ -60,7 +60,7 @@ import type {
   SmsInboxResult, Notification, NotificationsListOptions, NotificationsResult,
   BuildProduct, BuildLeadCapture, BuildBrand, BuildImages, BuildOptions,
   BuildQuote, BuildResult, BrowserTaskOptions, BrowserProfile, BrowserQuote,
-  BrowserResult, UpdateBuildOptions, SpendCategory, SpendBreakdown, RoCSResult,
+  BrowserResult, UpdateBuildOptions, SpendCategory, SpendBreakdown, RoCSResult, RoCSByGoalResult,
   Receipt, ReceiptsListResult, UnifiedBalance, ComputeSchedule, ComputeOptions,
   ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeTask,
   ComputeBudgetStatus,
@@ -1380,12 +1380,16 @@ export class OneShot {
   }
 
   /**
-   * Tag a receipt with a value for RoCS computation.
+   * Tag value for RoCS computation.
    *
-   * Pass either the `rcpt_…` receipt id (from `result.receipt_id` or `receiptsList`)
-   * or — equivalently — the `request_id` returned by the originating tool call
-   * (`result.request_id`, which the API resolves via `Receipt.job_id`). The latter
-   * lets you annotate without a prior `receiptsList` lookup.
+   * Three ways to address the value:
+   * - `rcpt_…` receipt id (from `result.receipt_id` or `receiptsList`), or
+   * - the `request_id` returned by the originating tool call (`result.request_id`,
+   *   resolved server-side via `Receipt.job_id`) — annotate without a list lookup, or
+   * - a `goalId` correlation key — attributes a whole *cadence* outcome (the email,
+   *   the follow-ups, the find/verify/enrich calls that share `decisionContext.goalId`)
+   *   in one call. The value is recorded once in the outcome ledger, so it can't
+   *   double-count across the cadence's receipts. Read it back with `rocsByGoal()`.
    *
    * @example
    * ```typescript
@@ -1395,22 +1399,36 @@ export class OneShot {
    * // By the request_id you already kept from the call:
    * const r = await agent.verifyEmail({ email: 'x@y.com' });
    * await agent.tagReceiptValue({ requestId: r.request_id }, { type: 'lead', amount: 1 });
+   *
+   * // By cadence correlation key — one call attributes a closed deal to the whole sequence:
+   * await agent.tagReceiptValue({ goalId: 'goal_q2_acme' }, { type: 'revenue', amount: 5000, label: 'Closed deal' });
    * ```
    */
   async tagReceiptValue(
-    ref: string | { receiptId?: string; requestId?: string },
+    ref: string | { receiptId?: string; requestId?: string; goalId?: string },
     valueTag: { type: string; amount?: number; label?: string },
   ): Promise<void> {
-    const id = typeof ref === 'string' ? ref : (ref.receiptId ?? ref.requestId);
-    this.validate(id, 'receiptId/requestId');
     this.validate(valueTag.type, 'valueTag.type');
+
+    // Cadence-level: route to the outcome ledger by correlation key.
+    if (typeof ref === 'object' && ref.goalId && !ref.receiptId && !ref.requestId) {
+      const response = await fetch(`${this.baseUrl}/v1/analytics/outcomes`, {
+        method: 'POST',
+        headers: this.jsonHeaders(),
+        body: JSON.stringify({ goal_id: ref.goalId, ...valueTag }),
+      });
+      if (!response.ok) {
+        throw new ToolError('Failed to record outcome value', response.status, await response.text());
+      }
+      return;
+    }
+
+    const id = typeof ref === 'string' ? ref : (ref.receiptId ?? ref.requestId);
+    this.validate(id, 'receiptId/requestId/goalId');
 
     const response = await fetch(`${this.baseUrl}/v1/analytics/receipts/${id}/value`, {
       method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        ...this.headers()
-      },
+      headers: this.jsonHeaders(),
       body: JSON.stringify(valueTag)
     });
 
@@ -1420,6 +1438,35 @@ export class OneShot {
     if (!response.ok) {
       throw new ToolError('Failed to tag receipt value', response.status, await response.text());
     }
+  }
+
+  /**
+   * Per-cadence RoCS rollup — spend (from receipts) vs. value (from outcomes)
+   * grouped by `decisionContext.goalId`. Answers "what did this cadence cost vs.
+   * earn" in one query. `value` counts judge-confirmed outcomes; `pending_value`
+   * surfaces self-reported outcomes not yet confirmed.
+   *
+   * @example
+   * ```typescript
+   * const { goals } = await agent.rocsByGoal({ period: 30 });
+   * for (const g of goals) {
+   *   console.log(`${g.goal_id}: spent $${g.spend}, earned $${g.value} (RoCS ${g.rocs}x)`);
+   * }
+   *
+   * // Just this cadence:
+   * const { goals: [deal] } = await agent.rocsByGoal({ goalId: 'goal_q2_acme' });
+   * ```
+   */
+  async rocsByGoal(options?: { period?: number; goalId?: string }): Promise<RoCSByGoalResult> {
+    const qs = this.buildQuery({ period: options?.period || undefined, goal_id: options?.goalId || undefined });
+    const response = await fetch(`${this.baseUrl}/v1/analytics/rocs/by-goal${qs ? `?${qs}` : ''}`, {
+      headers: this.headers()
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to get RoCS by goal', response.status, await response.text());
+    }
+    return response.json() as Promise<RoCSByGoalResult>;
   }
 
   // ---------------------------------------------------------------------------

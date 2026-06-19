@@ -1073,6 +1073,33 @@ export interface ReceiptsListResult {
   has_more: boolean;
 }
 
+/** A GTM outcome's value, recorded against a cadence correlation key (goalId). */
+export interface ValueOutcome {
+  outcome_id: string;
+  goal_id: string;
+  type: string;
+  amount: number;
+  label?: string | null;
+  status: 'pending' | 'confirmed' | 'rejected';
+  created_at: string;
+  updated_at: string;
+  confirmed_at: string | null;
+}
+
+/** Per-cadence RoCS rollup: spend (receipts) vs. value (outcomes) grouped by goalId. */
+export interface RoCSByGoalResult {
+  goals: Array<{
+    goal_id: string;
+    spend: string;
+    value: string;
+    pending_value: string;
+    rocs: number;
+    receipt_count: number;
+    outcomes: ValueOutcome[];
+  }>;
+  period_days: number;
+}
+
 export interface UnifiedBalance {
   on_chain_balance: string;
   credits_balance: string;
