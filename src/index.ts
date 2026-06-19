@@ -19,7 +19,7 @@ export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.19.2';
+const SDK_VERSION = '0.20.0';
 
 // ============================================================================
 // Environment Configuration
@@ -44,6 +44,7 @@ import type {
   LoggerFn, StatusUpdateFn, OneShotConfig, DecisionContext, ToolOptions,
   EmailToolOptions, ResearchToolOptions, PeopleSearchOptions,
   EnrichProfileOptions, FindEmailOptions, VerifyEmailOptions,
+  CompanySearchOptions, CompanySearchResult, EnrichCompanyOptions, EnrichCompanyResult,
   DeepResearchPersonOptions, SocialProfilesOptions, ArticleSearchOptions,
   PersonNewsfeedOptions, PersonInterestsOptions, PersonInteractionsOptions,
   InboxListOptions, ShippingAddress, CommerceBuyOptions, CommerceSearchOptions,
@@ -317,6 +318,17 @@ export class OneShot {
       throw new ValidationError('At least one of linkedin_url, email, or name is required', 'identifier');
     }
     return this.tool('enrich/profile', { ...options });
+  }
+
+  async companySearch(options: CompanySearchOptions = {}): Promise<CompanySearchResult> {
+    return this.tool('research/company', { ...options, limit: options.limit ?? 10 });
+  }
+
+  async enrichCompany(options: EnrichCompanyOptions): Promise<EnrichCompanyResult> {
+    if (!options.domain && !options.name && !options.linkedin_url && !options.ticker) {
+      throw new ValidationError('At least one of domain, name, linkedin_url, or ticker is required', 'identifier');
+    }
+    return this.tool('enrich/company', { ...options });
   }
 
   async findEmail(options: FindEmailOptions): Promise<FindEmailResult> {

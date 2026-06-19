@@ -191,6 +191,26 @@ export interface EnrichProfileOptions extends ToolOptions {
   company_domain?: string;
 }
 
+export interface CompanySearchOptions extends ToolOptions {
+  name?: string;
+  domain?: string;
+  industry?: string[];
+  location?: string[];
+  size?: string;
+  min_employee_count?: number;
+  max_employee_count?: number;
+  funding_stage?: string;
+  tags?: string[];
+  limit?: number;
+}
+
+export interface EnrichCompanyOptions extends ToolOptions {
+  domain?: string;
+  name?: string;
+  linkedin_url?: string;
+  ticker?: string;
+}
+
 export interface FindEmailOptions extends ToolOptions {
   full_name?: string;
   first_name?: string;
@@ -444,6 +464,39 @@ export interface DomainPoolStatusResult {
 export interface EnrichProfileResult {
   status: string;
   profile: PersonResult;
+  request_id?: string;
+  completed_at?: string;
+  memo?: string;
+  cost?: number;
+}
+
+export interface CompanyResult {
+  name?: string;
+  domain?: string;
+  industry?: string;
+  location?: string;
+  size?: string;
+  employee_count?: number;
+  funding_stage?: string;
+  description?: string;
+  linkedin_url?: string;
+  [key: string]: unknown;
+}
+
+export interface CompanySearchResult {
+  status: string;
+  results: CompanyResult[];
+  total_found: number;
+  request_id?: string;
+  completed_at?: string;
+  filters?: Record<string, unknown>;
+  memo?: string;
+  cost?: number;
+}
+
+export interface EnrichCompanyResult {
+  status: string;
+  company: CompanyResult;
   request_id?: string;
   completed_at?: string;
   memo?: string;
