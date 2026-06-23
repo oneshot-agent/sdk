@@ -447,11 +447,21 @@ export interface EmailResult {
   cost?: number;
 }
 
+/** Reputation health, orthogonal to rotation eligibility. */
+export type DomainWarmupState = 'warming' | 'warmed' | 'degraded';
+/** Why a domain is out of rotation (null when active). 'low_reputation' auto-recovers; 'manual' needs a resume. */
+export type DomainPauseReason = 'warming' | 'low_reputation' | 'manual' | null;
+
 export interface DomainPoolEntry {
   domain: string;
-  pool_status: 'active' | 'warming' | 'paused' | 'removed';
+  /** Rotation eligibility — the selector only picks `active`. */
+  pool_status: 'active' | 'paused' | 'removed';
+  /** Reputation health — a domain can be `paused` AND still `warming`/recovering. */
+  warmup_state: DomainWarmupState;
+  pause_reason: DomainPauseReason;
   provisioning_status: string;
   warmup_score: number | null;
+  warmup_score_updated_at: string | null;
   warmup_started_at: string | null;
   daily_send_limit: number;
   daily_sent_count: number;
@@ -467,6 +477,8 @@ export interface DomainPoolListResult {
 export interface DomainPoolStatusResult {
   domain: string;
   pool_status: 'active' | 'paused';
+  warmup_state: DomainWarmupState;
+  pause_reason: DomainPauseReason;
 }
 
 export interface EnrichProfileResult {
