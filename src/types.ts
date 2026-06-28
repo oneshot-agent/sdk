@@ -154,13 +154,7 @@ export interface EmailToolOptions extends ToolOptions {
    */
   reply_to_email_id?: string;
   from_domain?: string;
-  /**
-   * Sender mailbox / local-part. Defaults to `agent` (i.e. agent@from_domain).
-   * A custom local-part may be rejected with `mailbox_not_provisioned` if it
-   * isn't a provisioned mailbox on that domain — discover the addresses you can
-   * send from via the email "list domains" tool (`sendable_from`; `["*"]` there
-   * means any local-part is allowed on that domain).
-   */
+  /** Sender mailbox / local-part. Defaults to `agent` (i.e. agent@from_domain). */
   from_mailbox?: string;
   /** Display name shown to the recipient, e.g. "Jane Doe" → "Jane Doe <jane@domain>". */
   from_name?: string;
