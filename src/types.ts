@@ -154,7 +154,12 @@ export interface EmailToolOptions extends ToolOptions {
    */
   reply_to_email_id?: string;
   from_domain?: string;
-  /** Sender mailbox / local-part. Defaults to `agent` (i.e. agent@from_domain). */
+  /**
+   * Sender mailbox / local-part. Defaults to `agent` (i.e. agent@from_domain).
+   * You may use any local-part — a new address is auto-provisioned on first use
+   * (and starts unwarmed, building reputation over time). See the email
+   * "list domains" tool for each domain's `default_from` and existing `addresses`.
+   */
   from_mailbox?: string;
   /** Display name shown to the recipient, e.g. "Jane Doe" → "Jane Doe <jane@domain>". */
   from_name?: string;
