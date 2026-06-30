@@ -457,8 +457,29 @@ export type DomainWarmupState = 'warming' | 'warmed' | 'degraded';
 /** Why a domain is out of rotation (null when active). 'low_reputation' auto-recovers; 'manual' needs a resume. */
 export type DomainPauseReason = 'warming' | 'low_reputation' | 'manual' | null;
 
+/** A mailbox already provisioned on a domain (from `/email/domains` `addresses[]`). */
+export interface DomainAddressEntry {
+  /** Full email address, lowercased — e.g. `sales@yourdomain.com`. */
+  address: string;
+  /** Mailbox provisioning state. Only `active` counts as already-provisioned (free to send from). */
+  status: 'active' | 'provisioning' | 'failed';
+  /** Per-address reputation health (each provisioned address is warmed individually). */
+  warmup_state: DomainWarmupState;
+}
+
 export interface DomainPoolEntry {
   domain: string;
+  /**
+   * Canonical sending address for this domain (e.g. `agent@yourdomain.com`).
+   * Always free to send from — no provisioning fee.
+   */
+  default_from: string;
+  /**
+   * Mailboxes already provisioned on this domain. Empty = none yet; you can still
+   * send from any address — a new one is provisioned (and billed
+   * `mailbox_provisioning_fee`) on first use.
+   */
+  addresses: DomainAddressEntry[];
   /** Rotation eligibility — the selector only picks `active`. */
   pool_status: 'active' | 'paused' | 'removed';
   /** Reputation health — a domain can be `paused` AND still `warming`/recovering. */

@@ -214,7 +214,9 @@ export class OneShot {
       ? undefined
       : `${options.from_mailbox ?? 'agent'}@${options.from_domain ?? 'oneshotagent.com'}`;
 
-    const quote = await this.tool<{ total_cost: string; quote_id: string; from_address?: string }>('email/quote', {
+    // `mailbox_provisioning_fee` (>0) means `from_address` is a new address that
+    // provisions a mailbox on first send — a one-time fee folded into `total_cost`.
+    const quote = await this.tool<{ total_cost: string; quote_id: string; from_address?: string; mailbox_provisioning_fee?: number }>('email/quote', {
       ...(fromAddress ? { from_address: fromAddress } : {}),
       ...(options.to !== undefined ? { to_address: options.to } : {}),
       ...(options.subject !== undefined ? { subject: options.subject } : {}),
