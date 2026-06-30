@@ -470,8 +470,9 @@ export interface DomainAddressEntry {
 export interface DomainPoolEntry {
   domain: string;
   /**
-   * Canonical sending address for this domain (e.g. `agent@yourdomain.com`).
-   * Always free to send from — no provisioning fee.
+   * Canonical sending address for this domain (e.g. `agent@yourdomain.com`) — the
+   * default mailbox when you don't pick one. Like any address, the first send from
+   * it incurs the one-time `mailbox_provisioning_fee`; free once it's `active`.
    */
   default_from: string;
   /**
