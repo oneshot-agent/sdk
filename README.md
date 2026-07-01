@@ -372,6 +372,14 @@ await agent.email({
 `from_domain` must be a domain you've provisioned through OneShot. Defaults
 produce `agent@oneshotagent.com`.
 
+**Dedicated mailboxes:** pass `mailbox_mode: 'mailbox'` when **first provisioning
+a new `from_domain`** to give each address a real dedicated mailbox (better
+deliverability + per-address warmup) instead of the default `relay` (header-only)
+send; it adds a one-time `mailbox_provisioning_fee` to the quote. It only applies
+at first setup — an already-provisioned domain keeps the mode it was created with,
+and requesting `mailbox` on an existing relay domain returns
+`400 mailbox_mode_conflict`.
+
 ### Domain Pool & Warmup
 
 OneShot runs a per-agent **domain pool** with server-side warmup so your cold

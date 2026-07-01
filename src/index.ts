@@ -19,7 +19,7 @@ export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.22.0';
+const SDK_VERSION = '0.23.0';
 
 // ============================================================================
 // Environment Configuration
@@ -221,6 +221,7 @@ export class OneShot {
       ...(options.to !== undefined ? { to_address: options.to } : {}),
       ...(options.subject !== undefined ? { subject: options.subject } : {}),
       ...(options.reply_to_email_id ? { reply_to_email_id: options.reply_to_email_id } : {}),
+      ...(options.mailbox_mode ? { mailbox_mode: options.mailbox_mode } : {}),
       body: options.body,
       // Forward maxCost so the server-side X-Max-Cost-USDC header is set on
       // the quote fetch (executeToolRequest destructures + threads it).
@@ -247,6 +248,10 @@ export class OneShot {
       ...(options.to !== undefined ? { to_address: options.to } : {}),
       ...(options.subject !== undefined ? { subject: options.subject } : {}),
       ...(options.reply_to_email_id ? { reply_to_email_id: options.reply_to_email_id } : {}),
+      // Re-passed on /send so a new-domain mailbox quote still provisions a real
+      // mailbox even though the domain row doesn't exist yet (server also falls back
+      // to 'mailbox' when a provisioning fee was paid on the quote).
+      ...(options.mailbox_mode ? { mailbox_mode: options.mailbox_mode } : {}),
       body: options.body,
       signal: options.signal,
       onStatusUpdate: options.onStatusUpdate,

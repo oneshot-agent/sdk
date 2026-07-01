@@ -161,6 +161,16 @@ export interface EmailToolOptions extends ToolOptions {
    * "list domains" tool for each domain's `default_from` and existing `addresses`.
    */
   from_mailbox?: string;
+  /**
+   * How this domain sends (provider-neutral):
+   *  - `'relay'` (default) — header/relay send; any from-address works with nothing
+   *    provisioned per address (no mailbox fee).
+   *  - `'mailbox'` — a real per-address mailbox; each new from-address provisions +
+   *    warms a dedicated mailbox (one-time `mailbox_provisioning_fee` on the quote).
+   * Only honored when the domain is first set up — an already-provisioned domain
+   * keeps the mode it was created with. Use `'mailbox'` on a new `from_domain`.
+   */
+  mailbox_mode?: 'relay' | 'mailbox';
   /** Display name shown to the recipient, e.g. "Jane Doe" → "Jane Doe <jane@domain>". */
   from_name?: string;
   attachments?: Array<{
