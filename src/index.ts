@@ -19,7 +19,7 @@ export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.23.0';
+const SDK_VERSION = '0.25.0';
 
 // ============================================================================
 // Environment Configuration
@@ -395,7 +395,7 @@ export class OneShot {
       include_body: options.include_body ? 'true' : undefined,
     });
     const response = await fetch(`${this.baseUrl}/v1/tools/inbox${qs ? `?${qs}` : ''}`, {
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
@@ -408,7 +408,7 @@ export class OneShot {
     this.validate(emailId, 'emailId');
 
     const response = await fetch(`${this.baseUrl}/v1/tools/inbox/${emailId}`, {
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (response.status === 404) {
@@ -766,7 +766,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/tools/browser/profiles`, {
       method: 'POST',
-      headers: this.jsonHeaders(),
+      headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders()) },
       body: JSON.stringify({ name }),
     });
 
@@ -789,7 +789,7 @@ export class OneShot {
    */
   async listBrowserProfiles(): Promise<BrowserProfile[]> {
     const response = await fetch(`${this.baseUrl}/v1/tools/browser/profiles`, {
-      headers: this.headers(),
+      headers: await this.signedReadHeaders(),
     });
 
     if (!response.ok) {
@@ -812,7 +812,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/tools/browser/profiles/${profileId}`, {
       method: 'DELETE',
-      headers: this.headers(),
+      headers: await this.signedReadHeaders(),
     });
 
     if (!response.ok) {
@@ -861,7 +861,7 @@ export class OneShot {
       from: options.from || undefined,
     });
     const response = await fetch(`${this.baseUrl}/v1/tools/sms/inbox${qs ? `?${qs}` : ''}`, {
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
@@ -883,7 +883,7 @@ export class OneShot {
     this.validate(messageId, 'messageId');
 
     const response = await fetch(`${this.baseUrl}/v1/tools/sms/inbox/${messageId}`, {
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (response.status === 404) {
@@ -913,7 +913,7 @@ export class OneShot {
       limit: options.limit || undefined,
     });
     const response = await fetch(`${this.baseUrl}/v1/tools/notifications${qs ? `?${qs}` : ''}`, {
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
@@ -935,7 +935,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/tools/notifications/${notificationId}/read`, {
       method: 'PATCH',
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (response.status === 404) {
@@ -948,7 +948,7 @@ export class OneShot {
 
   async getUnifiedBalance(): Promise<UnifiedBalance> {
     const response = await fetch(`${this.baseUrl}/v1/tools/balance`, {
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
@@ -1498,6 +1498,42 @@ export class OneShot {
   /** Auth headers plus Content-Type for JSON-body requests. */
   private jsonHeaders(): Record<string, string> {
     return { 'Content-Type': 'application/json', ...this.headers() };
+  }
+
+  /**
+   * Auth headers plus a signed EIP-712 proof (`x-agent-proof`) for the read
+   * routes (inbox, sms inbox, notifications, balance). These identify the caller
+   * by wallet, and wallet addresses are public, so without a proof anyone could
+   * read another agent's data by supplying its address. The proof binds this
+   * request to the wallet the SDK controls; the server verifies the signature
+   * locally. A fresh nonce per call prevents replay. Signing failure falls back
+   * to plain headers (the server runs log-only until enforcement is enabled).
+   */
+  private async signedReadHeaders(scope: string = 'read'): Promise<Record<string, string>> {
+    const base = this.headers();
+    try {
+      const agent = this.provider.address;
+      const issuedAt = Math.floor(Date.now() / 1000);
+      const nonce = ethers.hexlify(ethers.randomBytes(32));
+      const signature = await this.provider.signTypedData(
+        { name: 'OneShot Agent Auth', version: '1' },
+        {
+          AgentReadAuth: [
+            { name: 'agent', type: 'address' },
+            { name: 'scope', type: 'string' },
+            { name: 'issuedAt', type: 'uint256' },
+            { name: 'nonce', type: 'bytes32' },
+          ],
+        },
+        { agent, scope, issuedAt, nonce },
+      );
+      const json = JSON.stringify({ agent, scope, issuedAt, nonce, signature });
+      const proof = typeof Buffer !== 'undefined' ? Buffer.from(json).toString('base64') : btoa(json);
+      return { ...base, 'x-agent-proof': proof };
+    } catch (err) {
+      this.log(`Failed to sign read proof (continuing without): ${err}`);
+      return base;
+    }
   }
 
   /** Build a query string, skipping null/undefined values. Pass falsy-but-valid

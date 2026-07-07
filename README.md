@@ -165,6 +165,14 @@ interface OneShotConfig {
 }
 ```
 
+## Authentication
+
+Every request identifies you by your wallet address (`X-Agent-ID`). Paid tools additionally settle a signed [x402](https://x402.org) USDC payment.
+
+**Read endpoints** — `inboxList` / `inboxGet`, `smsInboxList` / `smsInboxGet`, `notifications` / `markNotificationRead`, `getUnifiedBalance`, and `createBrowserProfile` / `listBrowserProfiles` / `deleteBrowserProfile` — return private, per-agent data. Since a wallet address is public, the SDK proves you actually control it: on each read it signs a short-lived **EIP-712 read proof** and sends it as the `x-agent-proof` header. The API verifies the signature locally and rejects any request whose proof doesn't match the `X-Agent-ID` wallet, so no one can read your inbox/balance by supplying your address.
+
+This is fully automatic — you don't do anything beyond providing your `privateKey`. **Requires SDK ≥ 0.25.0.** Older SDKs (or raw HTTP callers) will keep working until the API enables enforcement, after which they must send a valid `x-agent-proof`; upgrade to stay ahead of it.
+
 ## Tool Options
 
 All methods accept these common options:
