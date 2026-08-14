@@ -23,6 +23,29 @@ export class ToolError extends OneShotError {
   }
 }
 
+/**
+ * The facilitator rejected the payment signed for this request.
+ *
+ * Distinct from the ordinary 402 that opens the quote-pay handshake: this is a
+ * 402 arriving on the PAID retry, meaning the signature was refused. `reason`
+ * is the facilitator's machine-readable code (`insufficient_funds`,
+ * `invalid_exact_evm_payload_authorization_value`, …) and `expected`/`received`
+ * name the amounts when the two disagree — the case that produced a silent,
+ * bodiless 402 before the server started reporting it.
+ */
+export class PaymentError extends OneShotError {
+  constructor(
+    message: string,
+    public readonly reason: string,
+    public readonly expected?: { amount?: string; asset?: string; network?: string; payTo?: string },
+    public readonly received?: { amount?: string },
+    public readonly quoteId?: string
+  ) {
+    super(message);
+    this.name = 'PaymentError';
+  }
+}
+
 export class JobError extends OneShotError {
   constructor(
     message: string,

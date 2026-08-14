@@ -9,6 +9,7 @@ import {
   ValidationError,
   ContentBlockedError,
   EmergencyNumberError,
+  PaymentError,
 } from './errors';
 
 export type { WalletProvider, TypedDataDomain, TypedDataField, TransactionRequest, TransactionResponse } from './wallet-provider';
@@ -19,7 +20,7 @@ export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.25.0';
+const SDK_VERSION = '0.26.0';
 
 // ============================================================================
 // Environment Configuration
@@ -446,7 +447,7 @@ export class OneShot {
     });
 
     if (buyResp.status !== 202) {
-      throw new ToolError('Commerce buy failed', buyResp.status, await buyResp.text());
+      await this.failFromResponse('Commerce buy failed', buyResp);
     }
 
     const result = await buyResp.json() as { request_id: string; status: string };
@@ -533,7 +534,7 @@ export class OneShot {
     });
 
     if (callResp.status !== 202) {
-      throw new ToolError('Voice call initiation failed', callResp.status, await callResp.text());
+      await this.failFromResponse('Voice call initiation failed', callResp);
     }
 
     const result = await callResp.json() as { request_id: string; status: string };
@@ -606,7 +607,7 @@ export class OneShot {
     });
 
     if (sendResp.status !== 202) {
-      throw new ToolError('SMS send failed', sendResp.status, await sendResp.text());
+      await this.failFromResponse('SMS send failed', sendResp);
     }
 
     const result = await sendResp.json() as { request_id: string; status: string };
@@ -676,7 +677,7 @@ export class OneShot {
     });
 
     if (buildResp.status !== 202) {
-      throw new ToolError('Build initiation failed', buildResp.status, await buildResp.text());
+      await this.failFromResponse('Build initiation failed', buildResp);
     }
 
     const result = await buildResp.json() as { request_id: string; status: string; build?: { lead_capture_email?: string } };
@@ -740,7 +741,7 @@ export class OneShot {
     });
 
     if (execResp.status !== 202) {
-      throw new ToolError('Browser task initiation failed', execResp.status, await execResp.text());
+      await this.failFromResponse('Browser task initiation failed', execResp);
     }
 
     const result = await execResp.json() as { request_id: string; status: string };
@@ -1037,7 +1038,7 @@ export class OneShot {
     });
 
     if (createResp.status !== 202) {
-      throw new ToolError('Compute goal creation failed', createResp.status, await createResp.text());
+      await this.failFromResponse('Compute goal creation failed', createResp);
     }
 
     return createResp.json() as Promise<ComputeGoalResult>;
@@ -1281,11 +1282,12 @@ export class OneShot {
     };
 
     const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, path, payload, quoteData.context.quote_id);
+    paymentInfo.amount = this.chargeAmount(accepted, quoteData.payment_request.amount);
     const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
     const fundResp = await this.makeRequest(path, payload, auth, quoteData.context.quote_id);
 
     if (!fundResp.ok) {
-      throw new ToolError('Failed to fund compute goal', fundResp.status, await fundResp.text());
+      await this.failFromResponse('Failed to fund compute goal', fundResp);
     }
 
     const json = await fundResp.json() as { data: { goal_id: string; topped_up: number; total_budget: string; remaining: string } };
@@ -1560,6 +1562,94 @@ export class OneShot {
    * a server-side enforcement layer so non-SDK callers (MCP server, custom
    * integrations) can't ignore the cap.
    */
+  /**
+   * The amount to sign, in decimal USDC.
+   *
+   * A 402 advertises its price twice: the x402 v2 `PAYMENT-REQUIRED` header
+   * (`accepts[0].amount`, atomic units) and the legacy JSON body
+   * (`payment_request.amount`, decimal). The header is authoritative — it is
+   * what the server rebuilds its requirement from and what
+   * `findMatchingRequirements` compares the signature against.
+   *
+   * Preferring the body is how quote-based routes (email/send, sms, voice,
+   * build, commerce/buy, compute) silently failed: the body carried a
+   * hardcoded "0.00", so the SDK signed a zero-cost authorization against a
+   * real charge and the server answered with a bodiless 402. It stayed hidden
+   * for as long as credits covered those calls, since the credit path returns
+   * 202 without any payment handshake.
+   *
+   * Falls back to the body when the header is missing or unparseable.
+   */
+  /**
+   * Throw the most specific error a failed response supports.
+   *
+   * A 402 arriving on the PAID retry means the facilitator refused the
+   * signature — not the ordinary "here is your quote" 402. The API names the
+   * cause in that body (`payment_verification_failed` + reason + expected vs
+   * received amount); surface it as a `PaymentError` so callers can branch on
+   * `err.reason` instead of string-matching. Anything else keeps the existing
+   * `ToolError` shape.
+   */
+  private async failFromResponse(message: string, response: Response): Promise<never> {
+    const text = await response.text();
+    const rejection = response.status === 402 ? this.parsePaymentRejection(text) : undefined;
+    if (rejection) throw rejection;
+    throw new ToolError(message, response.status, text);
+  }
+
+  private parsePaymentRejection(text: string): PaymentError | undefined {
+    let data: {
+      error?: string;
+      reason?: string;
+      message?: string;
+      expected?: { amount?: string; asset?: string; network?: string; pay_to?: string };
+      received?: { amount?: string };
+      quote_id?: string;
+    };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+    if (data?.error !== 'payment_verification_failed') return undefined;
+
+    const reason = data.reason || 'unknown';
+    const expectedAmount = data.expected?.amount;
+    const receivedAmount = data.received?.amount;
+    const detail = [
+      expectedAmount ? `expected $${expectedAmount}` : null,
+      receivedAmount ? `signed $${receivedAmount}` : null,
+    ].filter(Boolean).join(', ');
+
+    return new PaymentError(
+      `payment rejected: ${reason}${detail ? ` — ${detail}` : ''}${data.message ? ` (${data.message})` : ''}`,
+      reason,
+      {
+        amount: expectedAmount,
+        asset: data.expected?.asset,
+        network: data.expected?.network,
+        payTo: data.expected?.pay_to,
+      },
+      { amount: receivedAmount },
+      data.quote_id,
+    );
+  }
+
+  private chargeAmount(accepted: { amount?: string }, bodyAmount?: string): string {
+    if (accepted?.amount == null || !/^\d+$/.test(String(accepted.amount))) {
+      return bodyAmount ?? '0';
+    }
+    const fromHeader = ethers.formatUnits(accepted.amount, 6);
+    // When the two agree (every fixed-price route), keep the body's string
+    // verbatim — downstream consumers such as the ETH auto-swap pass this
+    // value along, and there is no reason to reformat it. Only a genuine
+    // disagreement flips to the header.
+    if (bodyAmount != null && parseFloat(bodyAmount) === parseFloat(fromHeader)) {
+      return bodyAmount;
+    }
+    return fromHeader;
+  }
+
   private maxCostHeader(maxCost?: number): Record<string, string> | undefined {
     if (!maxCost || maxCost <= 0) return undefined;
     return { 'X-Max-Cost-USDC': maxCost.toString() };
@@ -1630,7 +1720,7 @@ export class OneShot {
         protocol: 'x402',
         network: accepted.network,
         payTo: accepted.payTo,
-        amount: data.payment_request?.amount ?? ethers.formatUnits(accepted.amount, 6),
+        amount: this.chargeAmount(accepted, data.payment_request?.amount),
         currency: 'USD',
         facilitator_url: this.baseUrl,
         token: { address: accepted.asset, symbol: 'USDC', decimals: 6 }
@@ -1643,7 +1733,7 @@ export class OneShot {
     }
 
     if (!response.ok) {
-      throw new ToolError('Tool request failed', response.status, await response.text());
+      await this.failFromResponse('Tool request failed', response);
     }
 
     const result = await response.json() as Record<string, unknown>;
@@ -1720,6 +1810,7 @@ export class OneShot {
     const { accepted, resource, extensions } = await this.getAcceptedRequirements(
       quoteResp, cfg.endpoint, cfg.payload, quoteData.context.quote_id, cfg.signal,
     );
+    paymentInfo.amount = this.chargeAmount(accepted, quoteData.payment_request.amount);
     const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
     const execResp = await this.makeRequest(
       cfg.endpoint, cfg.payload, auth, quoteData.context.quote_id, cfg.signal, cfg.execTimeoutMs,
