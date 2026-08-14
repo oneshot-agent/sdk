@@ -169,6 +169,12 @@ export interface EmailToolOptions extends ToolOptions {
    *    warms a dedicated mailbox (one-time `mailbox_provisioning_fee` on the quote).
    * Only honored when the domain is first set up — an already-provisioned domain
    * keeps the mode it was created with. Use `'mailbox'` on a new `from_domain`.
+   *
+   * Which means omitting this is NOT a way to avoid the fee: a domain created in
+   * mailbox mode bills `mailbox_provisioning_fee` for every address that isn't
+   * already `active` on it — the default `agent@` included — whatever you pass
+   * here, and `from_mailbox` doesn't change that either. Read `mailbox_mode` per
+   * domain from `listDomains()` to see which of yours charge.
    */
   mailbox_mode?: 'relay' | 'mailbox';
   /** Display name shown to the recipient, e.g. "Jane Doe" → "Jane Doe <jane@domain>". */
@@ -491,6 +497,20 @@ export interface DomainPoolEntry {
    * `mailbox_provisioning_fee`) on first use.
    */
   addresses: DomainAddressEntry[];
+  /**
+   * Which side of the provisioning fee this domain sits on.
+   *
+   * `mailbox` — a real mailbox is provisioned per address, so every address
+   * that isn't already `active` in `addresses[]` bills the one-time
+   * `mailbox_provisioning_fee` on its first send. That includes the canonical
+   * `default_from`; nothing is exempt.
+   * `relay` — header-only send, nothing provisioned, no per-address fee.
+   *
+   * This is a property of the DOMAIN, fixed when it was set up — not of the
+   * call. Omitting `mailbox_mode` on a quote does not make the send relay; the
+   * domain's own mode always wins. Check here before you quote.
+   */
+  mailbox_mode: 'relay' | 'mailbox';
   /** Rotation eligibility — the selector only picks `active`. */
   pool_status: 'active' | 'paused' | 'removed';
   /** Reputation health — a domain can be `paused` AND still `warming`/recovering. */
