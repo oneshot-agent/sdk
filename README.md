@@ -162,8 +162,67 @@ interface OneShotConfig {
   rpcUrl?: string;       // Override RPC URL
   debug?: boolean;       // Enable logging
   logger?: (msg: string) => void;
+  budgets?: {            // Spend budget (see below)
+    daily?: number;
+    perTransaction?: number;
+    alertAt?: number;
+    pauseAt?: number;
+  };
+  alerts?: { email?: string };
 }
 ```
+
+## Spend Budgets
+
+Cap what the agent can spend, so a runaway loop can't drain the wallet overnight.
+
+```typescript
+const agent = await OneShot.create({
+  cdp: true,
+  budgets: {
+    daily: 50,           // max USDC per UTC day
+    perTransaction: 5,   // max USDC for any single call
+    alertAt: 0.8,        // warn at 80% of daily
+    pauseAt: 1.0,        // stop paying at 100%
+  },
+  alerts: { email: 'you@example.com' },
+});
+```
+
+Unlike `maxCost` (a per-call client-side check), budgets are **enforced server-side**
+against your receipt ledger. The config is synced once before your first paid call,
+so the daily figure is a true per-agent total — shared across every process, restart,
+and serverless invocation using the same wallet, not a per-instance counter.
+
+At `alertAt` you get a notification (in-app via `agent.notifications()`, plus email
+if you set one). At `pauseAt` paid calls are rejected with a `BudgetExceededError`
+until the window resets at the next UTC midnight:
+
+```typescript
+try {
+  await agent.research({ topic: '...' });
+} catch (err) {
+  if (err instanceof BudgetExceededError) {
+    console.log(`${err.reason} budget hit — $${err.spent} spent, resumes ${err.resetsAt}`);
+  }
+}
+```
+
+Check utilization any time:
+
+```typescript
+const b = await agent.budgets();
+// { daily_usdc: 50, spent_today_usdc: '41.20', pct_used: 0.824, resets_at: '...' }
+```
+
+Omit `budgets` entirely to leave whatever is stored server-side untouched — agents
+without a budget are unlimited, which is the default.
+
+The sync **fails closed**: if the budget can't be confirmed with the server (network
+error, 5xx, rate limit, rejected config) the paid call throws `BudgetSyncError` and is
+not made — proceeding would silently drop the guardrail you asked for. It retries on
+the next paid call. An invalid config (`daily: -1`, `alertAt: 2`) throws `ValidationError`
+at construction.
 
 ## Authentication
 

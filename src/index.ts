@@ -10,6 +10,8 @@ import {
   ContentBlockedError,
   EmergencyNumberError,
   PaymentError,
+  BudgetExceededError,
+  BudgetSyncError,
 } from './errors';
 
 export type { WalletProvider, TypedDataDomain, TypedDataField, TransactionRequest, TransactionResponse } from './wallet-provider';
@@ -20,7 +22,7 @@ export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.26.0';
+const SDK_VERSION = '0.27.0';
 
 // ============================================================================
 // Environment Configuration
@@ -66,6 +68,7 @@ import type {
   ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeTask,
   ComputeBudgetStatus,
   DomainPoolEntry, DomainPoolListResult, DomainPoolStatusResult,
+  AgentBudgetConfig, AgentBudgetStatus,
 } from './types';
 
 
@@ -82,6 +85,37 @@ import type {
  * await agent.email({ to: 'user@example.com', subject: 'Hi', body: 'Hello' });
  * ```
  */
+/**
+ * Reject a budget config the server would reject, at construction rather than
+ * on the first paid call — a typo'd cap must not become "no cap".
+ */
+function validateBudgetConfig(budgets: AgentBudgetConfig | undefined): AgentBudgetConfig | undefined {
+  if (!budgets) return undefined;
+  // A typo'd key (`daliy`) from an untyped caller must not silently mean "no cap".
+  for (const key of Object.keys(budgets)) {
+    if (!['daily', 'perTransaction', 'alertAt', 'pauseAt'].includes(key)) {
+      throw new ValidationError(`budgets.${key} is not a recognized field`, `budgets.${key}`);
+    }
+  }
+  const positive = (v: number | undefined, field: string) => {
+    if (v === undefined) return;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+      throw new ValidationError(`budgets.${field} must be a positive number`, `budgets.${field}`);
+    }
+  };
+  const fraction = (v: number | undefined, field: string) => {
+    if (v === undefined) return;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || v > 1) {
+      throw new ValidationError(`budgets.${field} must be a fraction in (0, 1]`, `budgets.${field}`);
+    }
+  };
+  positive(budgets.daily, 'daily');
+  positive(budgets.perTransaction, 'perTransaction');
+  fraction(budgets.alertAt, 'alertAt');
+  fraction(budgets.pauseAt, 'pauseAt');
+  return budgets;
+}
+
 export class OneShot {
   private readonly provider: WalletProvider;
   private readonly rpcProvider: ethers.JsonRpcProvider;
@@ -90,6 +124,14 @@ export class OneShot {
   private readonly logger: LoggerFn;
   private readonly _currency: 'USDC' | 'ETH';
   private readonly _slippage: number;
+  private readonly _budgets?: AgentBudgetConfig;
+  private readonly _alertEmail?: string;
+  /**
+   * In-flight/settled budget sync. One PUT per instance: kept as a promise (not
+   * a boolean) so concurrent first calls await the same request instead of
+   * racing four PUTs on startup.
+   */
+  private _budgetSync?: Promise<void>;
 
   /**
    * Async factory — required for CDP wallets (account creation is async).
@@ -138,6 +180,8 @@ export class OneShot {
     this.logger = config.logger ?? console.log;
     this._currency = config.currency ?? 'USDC';
     this._slippage = config.slippage ?? 0.01;
+    this._budgets = validateBudgetConfig(config.budgets);
+    this._alertEmail = config.alerts?.email;
     this.rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? RPC_URL);
 
     if (walletProvider) {
@@ -186,6 +230,11 @@ export class OneShot {
 
   get slippage(): number {
     return this._slippage;
+  }
+
+  /** The budget config this instance was constructed with, if any. */
+  get budgetConfig(): AgentBudgetConfig | undefined {
+    return this._budgets;
   }
 
   // ---------------------------------------------------------------------------
@@ -1258,10 +1307,13 @@ export class OneShot {
     const path = `/v1/compute/${goalId}/fund`;
     const payload = { amount };
 
+    await this.ensureBudgetsSynced();
+
     // First call: get quote (402)
     const quoteResp = await this.makeRequest(path, payload);
     if (quoteResp.status !== 402) {
-      throw new ToolError('Expected 402 for compute fund quote', quoteResp.status, await quoteResp.text());
+      // A 403 here is the budget gate on the quote leg → BudgetExceededError.
+      await this.failFromResponse('Expected 402 for compute fund quote', quoteResp);
     }
 
     const quoteData = await quoteResp.json() as {
@@ -1270,6 +1322,7 @@ export class OneShot {
     };
 
     this.log(`Compute fund quote: $${quoteData.payment_request.amount} to top up ${goalId}`);
+    this.assertWithinBudget(quoteData.payment_request.amount);
 
     const paymentInfo: PaymentInfo = {
       protocol: 'x402',
@@ -1548,6 +1601,102 @@ export class OneShot {
     return qs.toString();
   }
 
+  /**
+   * Push `config.budgets` to the server once, before the first paid call.
+   *
+   * Lazy rather than in the constructor because the PUT is signed (async) and
+   * the constructor is sync. Idempotent per instance via the cached promise,
+   * which is only kept once the sync SUCCEEDS.
+   *
+   * FAILS CLOSED. If the server can't confirm the budget — network error,
+   * 5xx, 429, or a rejected config — this throws BudgetSyncError and the paid
+   * call is not made. Proceeding would silently drop the guardrail the
+   * developer configured, which is exactly the "empty wallet at 3am" the
+   * budget exists to prevent. The marker is cleared so the next paid call
+   * retries.
+   */
+  private async ensureBudgetsSynced(): Promise<void> {
+    if (!this._budgets && !this._alertEmail) return;
+    if (this._budgetSync) return this._budgetSync;
+
+    const attempt = (async () => {
+      const body: Record<string, unknown> = {};
+      if (this._budgets?.daily !== undefined) body.daily = this._budgets.daily;
+      if (this._budgets?.perTransaction !== undefined) body.per_transaction = this._budgets.perTransaction;
+      if (this._budgets?.alertAt !== undefined) body.alert_at = this._budgets.alertAt;
+      if (this._budgets?.pauseAt !== undefined) body.pause_at = this._budgets.pauseAt;
+      if (this._alertEmail !== undefined) body.alert_email = this._alertEmail;
+
+      let response: Response;
+      try {
+        response = await fetch(`${this.baseUrl}/v1/agents/me/budgets`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
+          body: JSON.stringify(body),
+        });
+      } catch (err) {
+        throw new BudgetSyncError(`Could not sync spend budget (network): ${err}`);
+      }
+      if (!response.ok) {
+        const text = await response.text();
+        throw new BudgetSyncError(`Could not sync spend budget (${response.status}): ${text}`, response.status, text);
+      }
+      this.log('Budget synced');
+    })();
+
+    this._budgetSync = attempt;
+    try {
+      await attempt;
+    } catch (err) {
+      // Not synced: clear the marker so the next paid call retries, then
+      // refuse this one rather than run it unguarded.
+      this._budgetSync = undefined;
+      this.log(`${(err as Error).message} — paid call refused until the budget is confirmed`);
+      throw err;
+    }
+  }
+
+  /**
+   * Local fast-fail on the per-transaction cap, so an oversized call fails
+   * without a network round-trip. The server enforces the same cap (and the
+   * daily one, which needs the ledger) regardless of which client calls —
+   * this is the same SDK-checks/server-enforces split as maxCost.
+   */
+  private assertWithinBudget(total: string): void {
+    const cap = this._budgets?.perTransaction;
+    if (!cap || cap <= 0) return;
+    const amount = parseFloat(total);
+    if (Number.isFinite(amount) && amount > cap) {
+      throw new BudgetExceededError(
+        `Quote $${total} exceeds this agent's per-transaction budget of $${cap}`,
+        'per_transaction',
+        cap,
+        undefined,
+        amount,
+      );
+    }
+  }
+
+  /**
+   * Current spend budget and today's utilization.
+   *
+   * @example
+   * ```typescript
+   * const b = await agent.budgets();
+   * console.log(`${b.spent_today_usdc} of ${b.daily_usdc} spent, resets ${b.resets_at}`);
+   * ```
+   */
+  async budgets(): Promise<AgentBudgetStatus> {
+    const response = await fetch(`${this.baseUrl}/v1/agents/me/budgets`, {
+      headers: await this.signedReadHeaders(),
+    });
+    if (!response.ok) {
+      throw new ToolError('Failed to fetch budgets', response.status, await response.text());
+    }
+    const body = await response.json() as { data?: AgentBudgetStatus };
+    return (body.data ?? body) as AgentBudgetStatus;
+  }
+
   /** Local fast-fail guard: throw when a quote total exceeds the caller's cap. */
   private assertWithinMaxCost(total: string, maxCost?: number): void {
     if (maxCost && parseFloat(total) > maxCost) {
@@ -1594,7 +1743,36 @@ export class OneShot {
     const text = await response.text();
     const rejection = response.status === 402 ? this.parsePaymentRejection(text) : undefined;
     if (rejection) throw rejection;
+    const budget = response.status === 403 ? this.parseBudgetRejection(text) : undefined;
+    if (budget) throw budget;
     throw new ToolError(message, response.status, text);
+  }
+
+  /**
+   * Map a 403 `budget_exceeded` body onto a typed error, so callers can catch
+   * "my own budget stopped this" separately from an auth failure or a payment
+   * rejection. Any other 403 falls through to ToolError.
+   */
+  private parseBudgetRejection(text: string): BudgetExceededError | undefined {
+    try {
+      const body = JSON.parse(text) as {
+        error?: string;
+        message?: string;
+        budget?: { reason?: string; cap?: string; spent?: string; charge?: string; resets_at?: string };
+      };
+      if (body.error !== 'budget_exceeded') return undefined;
+      const b = body.budget ?? {};
+      return new BudgetExceededError(
+        body.message ?? 'Agent spend budget exceeded',
+        b.reason === 'per_transaction' ? 'per_transaction' : 'daily',
+        b.cap !== undefined ? parseFloat(b.cap) : undefined,
+        b.spent !== undefined ? parseFloat(b.spent) : undefined,
+        b.charge !== undefined ? parseFloat(b.charge) : undefined,
+        b.resets_at,
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   private parsePaymentRejection(text: string): PaymentError | undefined {
@@ -1704,6 +1882,10 @@ export class OneShot {
       throw new OneShotError('Operation cancelled');
     }
 
+    // One-time push of config.budgets before the first paid call, so the
+    // server-side gate knows about them on this very request.
+    await this.ensureBudgetsSynced();
+
     let response = await this.makeRequest(endpoint, payload, undefined, quoteId, signal, undefined, extraHeaders);
 
     // Handle 402 Payment Required
@@ -1727,6 +1909,7 @@ export class OneShot {
       };
       this.log(`Payment required: ${paymentInfo.amount} USDC`);
 
+      this.assertWithinBudget(paymentInfo.amount);
       this.checkAbortBeforePayment(signal);
       const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
       response = await this.makeRequest(endpoint, payload, auth, quoteId, signal, undefined, extraHeaders);
@@ -1775,6 +1958,8 @@ export class OneShot {
     onQuote: (ctx: Q) => void;
     on400?: (resp: Response) => Promise<void>;
   }): Promise<{ context: Q; execResp: Response }> {
+    await this.ensureBudgetsSynced();
+
     const quoteResp = await this.makeRequest(
       cfg.endpoint, cfg.payload, undefined, undefined,
       cfg.signal, cfg.quoteTimeoutMs, this.maxCostHeader(cfg.maxCost),
@@ -1785,7 +1970,9 @@ export class OneShot {
     }
 
     if (quoteResp.status !== 402) {
-      throw new ToolError(cfg.expectMsg, quoteResp.status, await quoteResp.text());
+      // Routes the budget gate on the quote leg (fixed-price ones) surface a
+      // 403 here; failFromResponse maps it to BudgetExceededError.
+      await this.failFromResponse(cfg.expectMsg, quoteResp);
     }
 
     const quoteData = await quoteResp.json() as {
@@ -1795,6 +1982,7 @@ export class OneShot {
 
     cfg.onQuote(quoteData.context);
     this.assertWithinMaxCost(cfg.totalOf(quoteData.context), cfg.maxCost);
+    this.assertWithinBudget(cfg.totalOf(quoteData.context));
 
     const paymentInfo: PaymentInfo = {
       protocol: 'x402',

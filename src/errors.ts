@@ -98,3 +98,44 @@ export class EmergencyNumberError extends OneShotError {
     this.name = 'EmergencyNumberError';
   }
 }
+
+/**
+ * The agent's own spend budget stopped this call (HTTP 403 `budget_exceeded`).
+ *
+ * Distinct from PaymentError: nothing was signed and nothing was charged. A
+ * retry cannot succeed until the daily window resets (`resetsAt`) or the budget
+ * is raised — which is why the server answers 403 rather than 402.
+ *
+ * `reason` is 'daily' when cumulative UTC-day spend would cross the budget, or
+ * 'per_transaction' when this single call is larger than the per-call cap.
+ */
+export class BudgetExceededError extends OneShotError {
+  constructor(
+    message: string,
+    public readonly reason: 'daily' | 'per_transaction',
+    public readonly cap?: number,
+    public readonly spent?: number,
+    public readonly charge?: number,
+    public readonly resetsAt?: string
+  ) {
+    super(message);
+    this.name = 'BudgetExceededError';
+  }
+}
+
+/**
+ * The SDK could not confirm the configured spend budget with the server
+ * before a paid call, so the call was NOT made.
+ *
+ * Budgets are enforced server-side; if the sync fails (network error, 5xx,
+ * rate limit, or a rejected config) the only honest options are to proceed
+ * without the guardrail the developer asked for, or to stop. We stop. The
+ * sync is retried on the next paid call. `status` is the HTTP status when the
+ * server answered, undefined on a network failure.
+ */
+export class BudgetSyncError extends OneShotError {
+  constructor(message: string, public readonly status?: number, public readonly responseBody?: string) {
+    super(message);
+    this.name = 'BudgetSyncError';
+  }
+}

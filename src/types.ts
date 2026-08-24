@@ -76,6 +76,40 @@ export interface OneShotConfig {
   currency?: 'USDC' | 'ETH';
   /** Slippage tolerance for ETH→USDC swaps (default: 0.01 = 1%). Only used when currency is "ETH". */
   slippage?: number;
+  /**
+   * Spend budget for this agent. Synced to the server once, before the first
+   * paid call, and enforced there against the receipts ledger — so the daily
+   * figure is a real per-agent total, shared across every process and restart
+   * running this wallet, not a per-instance counter.
+   *
+   * Omit to leave whatever budget is already stored server-side untouched.
+   */
+  budgets?: AgentBudgetConfig;
+  /** Where budget alerts are delivered, in addition to in-app notifications. */
+  alerts?: { email?: string };
+}
+
+export interface AgentBudgetConfig {
+  /** Max USDC the agent may spend per UTC day. */
+  daily?: number;
+  /** Max USDC for any single call. */
+  perTransaction?: number;
+  /** Fraction of `daily` that triggers a warning notification (default 0.8). */
+  alertAt?: number;
+  /** Fraction of `daily` at which paid calls stop (default 1.0). */
+  pauseAt?: number;
+}
+
+/** Live budget utilization, from GET /v1/agents/me/budgets. */
+export interface AgentBudgetStatus {
+  daily_usdc: number | null;
+  per_transaction_usdc: number | null;
+  alert_at: number | null;
+  pause_at: number | null;
+  spent_today_usdc: string;
+  remaining_usdc: string | null;
+  pct_used: number | null;
+  resets_at: string;
 }
 
 /**
