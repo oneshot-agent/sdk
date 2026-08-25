@@ -195,7 +195,6 @@ export class OneShot {
       );
     }
 
-    // Validate ETH mode requirements
     if (this._currency === 'ETH' && !this.provider.sendTransaction) {
       throw new ValidationError(
         'ETH currency mode requires a wallet provider that supports sendTransaction',
@@ -540,7 +539,6 @@ export class OneShot {
     this.validate(options.objective, 'objective');
     this.validate(options.target_number, 'target_number');
 
-    // Check for empty arrays
     if (Array.isArray(options.target_number) && options.target_number.length === 0) {
       throw new ValidationError('target_number array cannot be empty', 'target_number');
     }
@@ -611,7 +609,6 @@ export class OneShot {
     this.validate(options.message, 'message');
     this.validate(options.to_number, 'to_number');
 
-    // Check for empty arrays
     if (Array.isArray(options.to_number) && options.to_number.length === 0) {
       throw new ValidationError('to_number array cannot be empty', 'to_number');
     }
@@ -1309,7 +1306,6 @@ export class OneShot {
 
     await this.ensureBudgetsSynced();
 
-    // First call: get quote (402)
     const quoteResp = await this.makeRequest(path, payload);
     if (quoteResp.status !== 402) {
       // A 403 here is the budget gate on the quote leg → BudgetExceededError.
@@ -1854,7 +1850,6 @@ export class OneShot {
       ...this.idempotencyHeader(idempotencyKey as string | undefined),
     };
 
-    // Validate memo
     if (payload.memo !== undefined) {
       if (typeof payload.memo !== 'string' || payload.memo.trim().length === 0) {
         delete payload.memo; // Drop invalid memo silently
@@ -1866,7 +1861,6 @@ export class OneShot {
       this.log('No memo provided — consider adding a reason for audit trail');
     }
 
-    // Validate decisionContext
     if (payload.decisionContext !== undefined) {
       if (typeof payload.decisionContext !== 'object' || payload.decisionContext === null) {
         delete payload.decisionContext;
@@ -2352,7 +2346,6 @@ export class OneShot {
     }
     if (quoteId) headers['x-quote-id'] = quoteId;
 
-    // Create timeout signal if specified
     let fetchSignal = signal;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
 

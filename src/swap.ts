@@ -104,11 +104,9 @@ export async function getSwapQuote(
   });
 
   const amountInBigInt = BigInt(amountIn);
-  // Add slippage buffer to the input amount
   const slippageBps = BigInt(Math.round(slippage * 10000));
   const amountInMax = amountInBigInt + (amountInBigInt * slippageBps) / 10000n;
 
-  // Calculate effective rate (ETH per USDC)
   const ethAmount = parseFloat(ethers.formatEther(amountInBigInt));
   const usdcAmountFloat = parseFloat(usdcAmount);
   const rate = usdcAmountFloat / ethAmount; // USDC per ETH
@@ -164,7 +162,6 @@ export async function executeSwap(
   const addresses = getAddresses(chainId);
   const quote = await getSwapQuote(provider, usdcAmount, chainId, slippage);
 
-  // Check wallet has enough ETH
   if (walletProvider.getBalance) {
     const balance = await walletProvider.getBalance();
     if (balance < quote.amountInMax) {
@@ -193,7 +190,6 @@ export async function executeSwap(
     [swapCalldata, refundCalldata],
   ]);
 
-  // Send the swap transaction
   const tx = await walletProvider.sendTransaction({
     to: addresses.swapRouter,
     value: quote.amountInMax,
