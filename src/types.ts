@@ -1162,6 +1162,8 @@ export interface Receipt {
   amount_usdc: string;
   service_fee: string;
   status: string;
+  execution_status: string;
+  goal_id: string | null;
   settlement_tx: string | null;
   value_tag: { type: string; amount?: number; label?: string } | null;
   job_id: string | null;

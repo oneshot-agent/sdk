@@ -22,7 +22,22 @@ export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.27.0';
+const SDK_VERSION = '0.28.1';
+
+/** Shared state between the WebSocket and HTTP branches of one job wait. */
+interface JobWaitState {
+  /** A request-scoped message arrived over the socket: push works for this job. */
+  pushConfirmed: boolean;
+  /** Last status surfaced to `onStatusUpdate`, for de-duplication across branches. */
+  lastStatus: string | undefined;
+  /** Which branch delivered the terminal outcome (debug log only). */
+  via: 'ws' | 'http' | undefined;
+}
+
+/** HTTP poll cadence while push is unconfirmed: fast first checks, settling at 2s. */
+const HTTP_POLL_BACKOFF_MS = [300, 600, 1000, 2000] as const;
+/** HTTP poll cadence once the WebSocket has delivered for this request. */
+const HTTP_POLL_RELAXED_MS = 5000;
 
 // ============================================================================
 // Environment Configuration
@@ -31,6 +46,12 @@ const SDK_VERSION = '0.27.0';
 const BASE_URL = 'https://win.oneshotagent.com';
 const RPC_URL = 'https://mainnet.base.org';
 const CHAIN_ID = 8453;
+
+/** Chain id from an x402 network id such as `eip155:84532`; undefined when absent or malformed. */
+function chainIdFromNetwork(network: string | undefined): number | undefined {
+  const m = /^eip155:(\d+)$/.exec(network ?? '');
+  return m ? Number(m[1]) : undefined;
+}
 const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 
 // ============================================================================
@@ -2001,6 +2022,34 @@ export class OneShot {
     return { context: quoteData.context, execResp };
   }
 
+  /**
+   * Wait for a previously dispatched job and return its result.
+   *
+   * Use this to resolve the `request_id` returned by a call made with
+   * `wait: false`, or to resume waiting after a client restart. Delivery is the
+   * same as for blocking calls: WebSocket push when the server offers it, HTTP
+   * polling of `GET /v1/requests/:id` as the source of truth.
+   */
+  async waitForResult<T = Record<string, unknown>>(
+    requestId: string,
+    options: {
+      timeout?: number;
+      signal?: AbortSignal;
+      onStatusUpdate?: StatusUpdateFn;
+      waitForPhones?: boolean;
+      phoneTimeoutSec?: number;
+    } = {}
+  ): Promise<T> {
+    this.validate(requestId, 'requestId');
+    return this.pollJob<T>(
+      requestId,
+      options.timeout,
+      options.signal,
+      options.onStatusUpdate,
+      options.waitForPhones ? { waitForPhones: true, phoneTimeoutSec: options.phoneTimeoutSec } : undefined,
+    );
+  }
+
   private async pollJob<T>(
     requestId: string,
     timeoutSec?: number,
@@ -2008,21 +2057,47 @@ export class OneShot {
     onStatusUpdate?: StatusUpdateFn,
     phoneOpts?: { waitForPhones?: boolean; phoneTimeoutSec?: number }
   ): Promise<T> {
-    // Try WebSocket push first, fall back to HTTP polling. Both phases share a
-    // single deadline so the combined wait never exceeds the caller's timeout —
-    // previously the WS cap (≤180s) plus a fresh full HTTP timeout could total
-    // up to ~1.6× timeoutSec (e.g. ~480s for a 300s request).
-    const deadline = timeoutSec != null ? Date.now() + timeoutSec * 1000 : undefined;
+    // HTTP polling is the source of truth; the WebSocket is an accelerator.
+    // Both run concurrently from the start and the first terminal outcome wins,
+    // so a broken push channel (Redis down, worker unconfigured, proxy that
+    // swallows frames) costs nothing beyond the poll cadence. Previously the
+    // client waited 60% of its timeout on the socket before polling at all —
+    // in prod that was ~72s of dead air on every call while the push never came.
+    const inner = new AbortController();
+    const onOuterAbort = () => inner.abort();
+    if (signal?.aborted) inner.abort();
+    else signal?.addEventListener('abort', onOuterAbort, { once: true });
+
+    const wait: JobWaitState = { pushConfirmed: false, lastStatus: undefined, via: undefined };
+    // Two sources now report status; only surface changes to the caller.
+    const emit = (status: string) => {
+      if (status === wait.lastStatus) return;
+      wait.lastStatus = status;
+      onStatusUpdate?.(status, requestId);
+    };
+    const startedAt = Date.now();
+
+    const wsBranch = this.waitViaWebSocket<T>(requestId, inner.signal, emit, wait).catch((err: unknown) => {
+      // A failed job or a cancellation is a real outcome. Anything else is a
+      // transport problem: never settle the race on it, HTTP carries on.
+      if (err instanceof OneShotError) throw err;
+      this.log(`WebSocket unavailable (${err instanceof Error ? err.message : String(err)}) — relying on HTTP polling`);
+      return new Promise<T>(() => { /* released when the race settles */ });
+    });
+    const httpBranch = this.pollJobHttp<T>(requestId, timeoutSec, inner.signal, emit, wait);
+    // The losing branch rejects on abort; mark both handled so it never
+    // surfaces as an unhandled rejection.
+    wsBranch.catch(() => {});
+    httpBranch.catch(() => {});
+
     let result: T;
     try {
-      result = await this.waitViaWebSocket<T>(requestId, timeoutSec, signal, onStatusUpdate);
-    } catch {
-      this.log('WebSocket unavailable, falling back to HTTP polling');
-      const remainingSec = deadline != null
-        ? Math.max(1, Math.ceil((deadline - Date.now()) / 1000))
-        : undefined;
-      result = await this.pollJobHttp<T>(requestId, remainingSec, signal, onStatusUpdate);
+      result = await Promise.race([wsBranch, httpBranch]);
+    } finally {
+      inner.abort();
+      signal?.removeEventListener('abort', onOuterAbort);
     }
+    this.log(`Job ${requestId} ready after ${Date.now() - startedAt}ms via ${wait.via ?? 'unknown'}`);
 
     // Optional second phase: keep polling for the async phone-reveal webhook.
     // Only kicks in when the caller explicitly opts in AND the result still
@@ -2114,98 +2189,81 @@ export class OneShot {
     return lastResult as T;
   }
 
+  /**
+   * WebSocket branch of a job wait. Resolves on a `completed` push for this
+   * request, rejects with `JobError` on `failed` and with `OneShotError` on
+   * abort. Every other failure (no WebSocket global, handshake refused, socket
+   * closed early) rejects with a plain `Error`, which `pollJob` treats as
+   * "no push available" rather than as an outcome. There is no timeout here:
+   * the HTTP branch owns the deadline and aborts this one when it settles.
+   */
   private waitViaWebSocket<T>(
     requestId: string,
-    timeoutSec?: number,
-    signal?: AbortSignal,
-    onStatusUpdate?: StatusUpdateFn
+    signal: AbortSignal,
+    emit: (status: string) => void,
+    wait: JobWaitState
   ): Promise<T> {
     return new Promise((resolve, reject) => {
-      const maxWaitMs = (timeoutSec ?? 120) * 1000;
-      // Cap WS timeout to 60% of caller timeout so HTTP fallback has real time to work.
-      // Floor at 10s (below that, skip WS entirely). This prevents the WS timeout
-      // from racing with Cloud Run / load balancer timeouts.
-      const wsTimeoutMs = Math.max(Math.floor(maxWaitMs * 0.6), 10_000);
-      if (wsTimeoutMs >= maxWaitMs) {
-        // Timeout too short for WS + HTTP — reject immediately to force HTTP path
-        return reject(new Error('Timeout too short for WebSocket path'));
+      if (typeof WebSocket === 'undefined') {
+        return reject(new Error('WebSocket not available'));
+      }
+      if (signal.aborted) {
+        return reject(new OneShotError('Operation cancelled'));
       }
       const wsUrl = this.baseUrl.replace(/^http/, 'ws') +
         `/v1/requests/subscribe?wallet=${encodeURIComponent(this.provider.address)}`;
 
       let ws: WebSocket;
-      let settled = false;
-      let receivedAnyMessage = false;
-
       try {
         ws = new WebSocket(wsUrl);
       } catch {
         return reject(new Error('WebSocket not available'));
       }
 
+      let settled = false;
       const settle = (fn: () => void) => {
         if (settled) return;
         settled = true;
         fn();
       };
 
-      // Overall WS timeout — bail to HTTP fallback with time to spare
-      const timeout = setTimeout(() => {
-        settle(() => {
-          ws.close();
-          reject(new Error('WebSocket timeout — falling back to HTTP'));
-        });
-      }, wsTimeoutMs);
-
-      // First-message deadline: if no relevant message arrives within 15s of
-      // subscribing, the WS connection is likely silent (load balancer proxying
-      // without forwarding, scale-from-zero, etc). Bail fast to HTTP.
-      let firstMessageTimer: ReturnType<typeof setTimeout> | null = null;
-
       const cleanup = () => {
-        clearTimeout(timeout);
-        if (firstMessageTimer) clearTimeout(firstMessageTimer);
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        signal.removeEventListener('abort', onAbort);
+        // 0 = CONNECTING, 1 = OPEN (avoid relying on static props of a fake global)
+        if (ws.readyState === 0 || ws.readyState === 1) {
           ws.close();
         }
       };
 
-      if (signal) {
-        signal.addEventListener('abort', () => {
-          settle(() => {
-            cleanup();
-            reject(new OneShotError('Operation cancelled'));
-          });
-        }, { once: true });
-      }
+      const onAbort = () => {
+        settle(() => {
+          cleanup();
+          reject(new OneShotError('Operation cancelled'));
+        });
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
 
       ws.onopen = () => {
         ws.send(JSON.stringify({ subscribe: [requestId] }));
-        // Start first-message deadline after subscribing
-        firstMessageTimer = setTimeout(() => {
-          if (!receivedAnyMessage) {
-            settle(() => {
-              this.log('WebSocket silent after subscribe — falling back to HTTP');
-              cleanup();
-              reject(new Error('WebSocket silent — no messages received'));
-            });
-          }
-        }, 15_000);
       };
 
       ws.onmessage = (event) => {
-        receivedAnyMessage = true;
-        if (firstMessageTimer) { clearTimeout(firstMessageTimer); firstMessageTimer = null; }
-
         try {
           const msg = JSON.parse(typeof event.data === 'string' ? event.data : event.data.toString());
 
+          // The subscribe ack and other jobs' pushes are not request-scoped.
           if (msg.request_id !== requestId) return;
+
+          if (!wait.pushConfirmed) {
+            wait.pushConfirmed = true;
+            this.log('WebSocket push confirmed — relaxing HTTP polling');
+          }
 
           if (msg.status === 'completed') {
             this.log('Job completed (WebSocket)');
             settle(() => {
               cleanup();
+              wait.via = 'ws';
               const result = (msg.result ?? msg) as Record<string, unknown>;
               if (msg.request_id && typeof result === 'object' && result !== null && !('request_id' in result)) {
                 result.request_id = msg.request_id;
@@ -2215,10 +2273,11 @@ export class OneShot {
           } else if (msg.status === 'failed') {
             settle(() => {
               cleanup();
+              wait.via = 'ws';
               reject(new JobError(`Job failed: ${msg.error ?? 'Unknown'}`, requestId, String(msg.error ?? 'Unknown'), msg.error_code as string | undefined));
             });
           } else {
-            onStatusUpdate?.(msg.status, requestId);
+            emit(String(msg.status));
           }
         } catch {
           // Ignore malformed messages
@@ -2233,9 +2292,7 @@ export class OneShot {
       };
 
       ws.onclose = () => {
-        // Any close before we got a result — reject so HTTP fallback kicks in.
-        // Previously we only rejected on non-1000 codes, but a clean close
-        // without a result is equally fatal for the poll loop.
+        // Any close before we got a result means no push is coming.
         settle(() => {
           cleanup();
           reject(new Error('WebSocket closed before result'));
@@ -2244,17 +2301,24 @@ export class OneShot {
     });
   }
 
+  /**
+   * HTTP branch of a job wait: polls `GET /v1/requests/:id` immediately, then
+   * on a short backoff (300ms → 2s). Once the WebSocket has proven it delivers
+   * for this request, polling relaxes to 5s and acts as a safety net only.
+   * Owns the caller's deadline (`JobTimeoutError`).
+   */
   private async pollJobHttp<T>(
     requestId: string,
     timeoutSec?: number,
     signal?: AbortSignal,
-    onStatusUpdate?: StatusUpdateFn
+    emit?: (status: string) => void,
+    wait?: JobWaitState
   ): Promise<T> {
     const maxWaitMs = (timeoutSec ?? 120) * 1000;
     const startTime = Date.now();
-    const pollInterval = 2000;
     let retries = 0;
     const maxRetries = 3;
+    let polls = 0;
 
     while (Date.now() - startTime < maxWaitMs) {
       if (signal?.aborted) throw new OneShotError('Operation cancelled');
@@ -2266,13 +2330,20 @@ export class OneShot {
         });
 
         if (!resp.ok) {
-          throw new ToolError('Failed to check job status', resp.status, await resp.text());
+          const body = await resp.text();
+          // 5xx / 429 from the poll endpoint are transient — keep polling.
+          // Any other non-2xx (401/403/404) is a real answer about this job.
+          if (resp.status >= 500 || resp.status === 429) {
+            throw new Error(`Poll returned ${resp.status}: ${body.slice(0, 200)}`);
+          }
+          throw new ToolError('Failed to check job status', resp.status, body);
         }
 
         const job = await resp.json() as Record<string, unknown>;
 
         if (job.status === 'completed') {
           this.log('Job completed');
+          if (wait) wait.via = 'http';
           const result = (job.result ?? job) as Record<string, unknown>;
           // Propagate request_id into the result so callers always have it
           if (job.request_id && typeof result === 'object' && result !== null && !('request_id' in result)) {
@@ -2282,12 +2353,19 @@ export class OneShot {
         }
 
         if (job.status === 'failed') {
+          if (wait) wait.via = 'http';
           throw new JobError(`Job failed: ${job.error ?? 'Unknown'}`, requestId, String(job.error ?? 'Unknown'), job.error_code as string | undefined);
         }
 
-        onStatusUpdate?.(job.status as string, requestId);
+        emit?.(String(job.status));
         retries = 0;
-        await this.sleep(pollInterval, signal);
+        const interval = wait?.pushConfirmed
+          ? HTTP_POLL_RELAXED_MS
+          : HTTP_POLL_BACKOFF_MS[Math.min(polls, HTTP_POLL_BACKOFF_MS.length - 1)];
+        polls++;
+        const remaining = maxWaitMs - (Date.now() - startTime);
+        if (remaining <= 0) break;
+        await this.sleep(Math.min(interval, remaining), signal);
 
       } catch (err) {
         if (err instanceof OneShotError) throw err;
@@ -2296,7 +2374,7 @@ export class OneShot {
           throw new OneShotError(`Polling failed after ${maxRetries} retries: ${err}`);
         }
 
-        const backoff = pollInterval * Math.pow(2, retries - 1);
+        const backoff = 2000 * Math.pow(2, retries - 1);
         this.log(`Retry ${retries}/${maxRetries} in ${backoff}ms`);
         await this.sleep(backoff, signal);
       }
@@ -2497,16 +2575,20 @@ export class OneShot {
     const validBefore = now + 3600;
     const nonceHex = ethers.hexlify(nonce);
 
-    // Use EIP-712 domain from the server's payment requirements
+    // Use the EIP-712 domain from the server's payment requirements — name,
+    // version AND chain. The chain used to be the mainnet constant, which made
+    // every signature invalid against Base Sepolia (the domain separator
+    // includes chainId), so the SDK could never pay on staging.
     const domainName = (accepted.extra?.name as string) || 'USD Coin';
     const domainVersion = (accepted.extra?.version as string) || '2';
+    const chainId = chainIdFromNetwork(accepted.network ?? paymentInfo.network) ?? CHAIN_ID;
 
     // Sign EIP-3009 TransferWithAuthorization
     const signature = await this.provider.signTypedData(
       {
         name: domainName,
         version: domainVersion,
-        chainId: CHAIN_ID,
+        chainId,
         verifyingContract: paymentInfo.token.address
       },
       {
