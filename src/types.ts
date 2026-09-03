@@ -72,10 +72,23 @@ export interface OneShotConfig {
   debug?: boolean;
   /** Custom logger function */
   logger?: LoggerFn;
-  /** Payment currency: "USDC" (default, no swap) or "ETH" (auto-swap via Uniswap V3) */
+  /**
+   * Payment currency: "USDC" (default, no swap) or "ETH". In ETH mode the SDK
+   * checks the wallet's USDC before each payment and only swaps ETH→USDC (Uniswap
+   * V3, Base mainnet) when it does not cover the charge — buying a buffer so one
+   * swap covers many calls. See `swapBufferMultiplier`.
+   */
   currency?: 'USDC' | 'ETH';
   /** Slippage tolerance for ETH→USDC swaps (default: 0.01 = 1%). Only used when currency is "ETH". */
   slippage?: number;
+  /**
+   * ETH mode only. When a swap is needed, top the wallet up to this many
+   * payments' worth of USDC (default 10, range 1–1000) so one swap covers many
+   * calls. Payments signed but not yet settled on-chain are counted against the
+   * balance for ~90s, so a burst of calls never double-spends the same USDC.
+   * Set to 1 to swap only the exact shortfall each time.
+   */
+  swapBufferMultiplier?: number;
   /**
    * Spend budget for this agent. Synced to the server once, before the first
    * paid call, and enforced there against the receipts ledger — so the daily

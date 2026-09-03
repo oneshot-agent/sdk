@@ -92,6 +92,24 @@ agent.usdcAddress; // 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
 agent.chainId;     // 8453
 ```
 
+### Paying with ETH
+
+Set `currency: 'ETH'` and the SDK keeps the wallet funded in USDC for you:
+
+- Before each payment it reads the wallet's USDC and subtracts payments it has
+  signed in the last ~90s that may not have settled yet. If that covers the
+  charge, no swap happens — the call costs one `eth_call`.
+- Otherwise it swaps ETH→USDC on Uniswap V3 (Base mainnet) for
+  `swapBufferMultiplier` × the charge (default 10, range 1–1000), so one swap
+  covers many calls. If the wallet's ETH cannot cover the buffer it swaps just
+  the shortfall. Set `swapBufferMultiplier: 1` for exact-shortfall swaps.
+- Concurrent calls from one instance are serialized around the swap, so a burst
+  never double-swaps or races the wallet nonce.
+
+Run one process per wallet in ETH mode: each process keeps its own in-flight
+ledger. ETH mode requires a wallet provider with `sendTransaction` and is Base
+mainnet only.
+
 ## Available Methods
 
 | Method | Description |

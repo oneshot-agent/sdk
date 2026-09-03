@@ -22,7 +22,7 @@ export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.28.1';
+const SDK_VERSION = '0.29.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -53,6 +53,37 @@ function chainIdFromNetwork(network: string | undefined): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+
+// ETH-currency mode. A payment is an EIP-3009 authorization that the
+// facilitator settles AFTER the API has responded, so for seconds after a
+// successful call `balanceOf` still shows pre-payment funds. The SDK therefore
+// keeps a ledger of signed-but-unsettled authorizations and works from
+// `balanceOf − pending`, over-reserving (one early buffered swap) rather than
+// under-reserving (a failed settlement).
+/** One balanceOf read per paid call, deduped within roughly one Base block. */
+const USDC_BALANCE_CACHE_MS = 2_000;
+/** How long a signed authorization stays subtracted from the on-chain balance (settlement lands well within this). */
+const USDC_RESERVATION_TTL_MS = 90_000;
+const DEFAULT_SWAP_BUFFER_MULTIPLIER = 10;
+const MAX_SWAP_BUFFER_MULTIPLIER = 1000;
+const ERC20_BALANCE_ABI = ['function balanceOf(address) view returns (uint256)'];
+
+/** A signed payment whose settlement has not yet been observed on-chain. */
+interface UsdcReservation { id: number; amount: bigint; createdAt: number }
+
+/** A signed payment authorization plus the ETH-mode reservation backing it (if any). */
+interface SignedPayment { auth: PaymentAuthorization; reservation?: UsdcReservation }
+
+function validateSwapBufferMultiplier(m: number | undefined): number {
+  if (m === undefined) return DEFAULT_SWAP_BUFFER_MULTIPLIER;
+  if (typeof m !== 'number' || !Number.isFinite(m) || m < 1 || m > MAX_SWAP_BUFFER_MULTIPLIER) {
+    throw new ValidationError(
+      `swapBufferMultiplier must be a finite number between 1 and ${MAX_SWAP_BUFFER_MULTIPLIER}`,
+      'swapBufferMultiplier',
+    );
+  }
+  return m;
+}
 
 // ============================================================================
 // Public types — defined in ./types.ts. Re-exported below so existing
@@ -153,6 +184,14 @@ export class OneShot {
    * racing four PUTs on startup.
    */
   private _budgetSync?: Promise<void>;
+  private readonly _swapBufferMultiplier: number;
+  /** ETH mode: signed payments not yet observed as settled, keyed by reservation id. */
+  private _usdcPending = new Map<number, UsdcReservation>();
+  private _usdcReservationSeq = 0;
+  /** ETH mode: serializes read → decide → swap → reserve per instance (also prevents concurrent swap nonce races). */
+  private _usdcLock: Promise<void> = Promise.resolve();
+  /** ETH mode: last balanceOf read. Read dedupe only — correctness lives in the ledger. */
+  private _usdcBalanceCache?: { balance: bigint; at: number };
 
   /**
    * Async factory — required for CDP wallets (account creation is async).
@@ -201,6 +240,7 @@ export class OneShot {
     this.logger = config.logger ?? console.log;
     this._currency = config.currency ?? 'USDC';
     this._slippage = config.slippage ?? 0.01;
+    this._swapBufferMultiplier = validateSwapBufferMultiplier(config.swapBufferMultiplier);
     this._budgets = validateBudgetConfig(config.budgets);
     this._alertEmail = config.alerts?.email;
     this.rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? RPC_URL);
@@ -250,6 +290,11 @@ export class OneShot {
 
   get slippage(): number {
     return this._slippage;
+  }
+
+  /** ETH mode: how many payments' worth of USDC a swap buys (default 10). */
+  get swapBufferMultiplier(): number {
+    return this._swapBufferMultiplier;
   }
 
   /** The budget config this instance was constructed with, if any. */
@@ -1353,8 +1398,8 @@ export class OneShot {
 
     const { accepted, resource, extensions } = await this.getAcceptedRequirements(quoteResp, path, payload, quoteData.context.quote_id);
     paymentInfo.amount = this.chargeAmount(accepted, quoteData.payment_request.amount);
-    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
-    const fundResp = await this.makeRequest(path, payload, auth, quoteData.context.quote_id);
+    const signed = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
+    const fundResp = await this.makePaidRequest(signed, path, payload, quoteData.context.quote_id);
 
     if (!fundResp.ok) {
       await this.failFromResponse('Failed to fund compute goal', fundResp);
@@ -1926,8 +1971,8 @@ export class OneShot {
 
       this.assertWithinBudget(paymentInfo.amount);
       this.checkAbortBeforePayment(signal);
-      const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
-      response = await this.makeRequest(endpoint, payload, auth, quoteId, signal, undefined, extraHeaders);
+      const signed = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
+      response = await this.makePaidRequest(signed, endpoint, payload, quoteId, signal, undefined, extraHeaders);
     }
 
     if (!response.ok) {
@@ -2014,9 +2059,9 @@ export class OneShot {
       quoteResp, cfg.endpoint, cfg.payload, quoteData.context.quote_id, cfg.signal,
     );
     paymentInfo.amount = this.chargeAmount(accepted, quoteData.payment_request.amount);
-    const auth = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
-    const execResp = await this.makeRequest(
-      cfg.endpoint, cfg.payload, auth, quoteData.context.quote_id, cfg.signal, cfg.execTimeoutMs,
+    const signed = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
+    const execResp = await this.makePaidRequest(
+      signed, cfg.endpoint, cfg.payload, quoteData.context.quote_id, cfg.signal, cfg.execTimeoutMs,
     );
 
     return { context: quoteData.context, execResp };
@@ -2451,26 +2496,171 @@ export class OneShot {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // ETH-currency mode: USDC ledger + buffered swaps
+  // ---------------------------------------------------------------------------
+
   /**
-   * If currency is ETH, swap ETH→USDC to ensure the wallet has enough USDC for payment.
-   * This is called before signing the x402 payment authorization.
+   * ETH mode only. Make sure the wallet's *effective* USDC (on-chain balance
+   * minus payments signed but not yet settled) covers this charge, swapping
+   * ETH→USDC for a buffer of `swapBufferMultiplier` payments when it does not,
+   * then reserve the charge. Returns the reservation so the caller can release
+   * it if the payment never settles (request failed). Runs under a per-instance
+   * lock so concurrent calls never double-swap or race the wallet nonce.
    */
-  private async ensureUsdcBalance(paymentInfo: PaymentInfo): Promise<void> {
-    if (this._currency !== 'ETH') return;
+  private async ensureUsdcBalance(paymentInfo: PaymentInfo): Promise<UsdcReservation | undefined> {
+    if (this._currency !== 'ETH') return undefined;
 
+    const { chainId, usdcAddress } = this.assertEthModeSupported(paymentInfo);
+    const charge = ethers.parseUnits(paymentInfo.amount, paymentInfo.token.decimals);
+
+    return this.withUsdcLock(async () => {
+      let balance = await this.readUsdcBalance(usdcAddress);
+      const effective = this.effectiveUsdcBalance(balance);
+
+      if (effective >= charge) {
+        this.log(`USDC balance covers payment (${ethers.formatUnits(effective, 6)} available for ${paymentInfo.amount}); skipping ETH swap`);
+      } else {
+        const swapAmount = await this.sizeSwap(charge, effective, chainId);
+        const swapAmountStr = ethers.formatUnits(swapAmount, 6);
+        this.log(`USDC ${ethers.formatUnits(effective, 6)} is below ${paymentInfo.amount}; swapping ETH→USDC for ${swapAmountStr} USDC (${this._swapBufferMultiplier}x buffer, slippage: ${this._slippage * 100}%)`);
+        try {
+          const result = await this.executeUsdcSwap(swapAmountStr, chainId);
+          balance += result.usdcReceived;
+          // exactOutput delivers exactly amountOut and tx.wait() has confirmed it.
+          this._usdcBalanceCache = { balance, at: Date.now() };
+          this.log(`Swap complete: tx=${result.txHash}, USDC received=${ethers.formatUnits(result.usdcReceived, 6)}`);
+        } catch (err) {
+          this._usdcBalanceCache = undefined;
+          throw err;
+        }
+      }
+
+      return this.reserveUsdc(charge);
+    });
+  }
+
+  /** ETH mode is Base-mainnet-only (that is where the Uniswap route lives); fail clearly before any RPC. */
+  private assertEthModeSupported(paymentInfo: PaymentInfo): { chainId: number; usdcAddress: string } {
+    const chainId = chainIdFromNetwork(paymentInfo.network) ?? CHAIN_ID;
+    if (chainId !== CHAIN_ID) {
+      throw new ValidationError(
+        `ETH currency mode is only supported on Base mainnet (eip155:${CHAIN_ID}); this payment is on ${paymentInfo.network}. Fund the wallet with USDC or use currency: 'USDC'.`,
+        'currency',
+      );
+    }
+    const usdcAddress = paymentInfo.token.address;
+    if (usdcAddress.toLowerCase() !== USDC_ADDRESS.toLowerCase()) {
+      throw new ValidationError(
+        `ETH→USDC swap buys ${USDC_ADDRESS} but this payment requires ${usdcAddress}`,
+        'currency',
+      );
+    }
+    return { chainId, usdcAddress };
+  }
+
+  private withUsdcLock<T>(fn: () => Promise<T>): Promise<T> {
+    // A failed predecessor must not poison the chain: the waiter runs its own attempt.
+    const run = this._usdcLock.then(fn, fn);
+    this._usdcLock = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  /** On-chain USDC balance (atomic units), deduped within one block. Overridable in tests. */
+  private async readUsdcBalance(usdcAddress: string): Promise<bigint> {
+    const cached = this._usdcBalanceCache;
+    if (cached && Date.now() - cached.at < USDC_BALANCE_CACHE_MS) return cached.balance;
+    const usdc = new ethers.Contract(usdcAddress, ERC20_BALANCE_ABI, this.rpcProvider);
+    const balance = BigInt(await usdc.balanceOf(this.provider.address));
+    this._usdcBalanceCache = { balance, at: Date.now() };
+    return balance;
+  }
+
+  /** `balanceOf − Σ pending` (never negative); drops reservations older than the TTL. */
+  private effectiveUsdcBalance(balance: bigint): bigint {
+    const cutoff = Date.now() - USDC_RESERVATION_TTL_MS;
+    let pending = 0n;
+    for (const [id, r] of this._usdcPending) {
+      if (r.createdAt < cutoff) this._usdcPending.delete(id);
+      else pending += r.amount;
+    }
+    return balance > pending ? balance - pending : 0n;
+  }
+
+  private reserveUsdc(amount: bigint): UsdcReservation {
+    const reservation = { id: ++this._usdcReservationSeq, amount, createdAt: Date.now() };
+    this._usdcPending.set(reservation.id, reservation);
+    return reservation;
+  }
+
+  /** Forget a reservation whose payment will never settle (signing or request failed). */
+  private releaseUsdcReservation(reservation: UsdcReservation | undefined): void {
+    if (reservation) this._usdcPending.delete(reservation.id);
+  }
+
+  /**
+   * How much USDC to buy: top up to `charge × swapBufferMultiplier`, counting
+   * whatever effective balance is already there. If the wallet's ETH cannot
+   * cover the buffered quote, fall back to the bare shortfall so an ETH-poor
+   * wallet can still make the one payment in front of it.
+   */
+  private async sizeSwap(charge: bigint, effective: bigint, chainId: number): Promise<bigint> {
+    const shortfall = charge - effective;
+    // Integer math on a 1000× scale: no float→BigInt on an unbounded value.
+    const mScaled = BigInt(Math.round(this._swapBufferMultiplier * 1000));
+    const target = (charge * mScaled + 999n) / 1000n;
+    let amount = target > effective ? target - effective : shortfall;
+    if (amount > shortfall && this.provider.getBalance) {
+      try {
+        const amountInMax = await this.quoteSwapAmountInMax(ethers.formatUnits(amount, 6), chainId);
+        const eth = await this.provider.getBalance();
+        if (amountInMax !== undefined && eth < amountInMax) {
+          this.log(`ETH balance cannot cover a ${ethers.formatUnits(amount, 6)} USDC buffer; swapping only the ${ethers.formatUnits(shortfall, 6)} USDC shortfall`);
+          amount = shortfall;
+        }
+      } catch {
+        // Quoting failed — let executeSwap quote again and report properly.
+      }
+    }
+    return amount;
+  }
+
+  /** Max ETH the buffered swap could cost (quote), or undefined if unavailable. Overridable in tests. */
+  private async quoteSwapAmountInMax(usdcAmount: string, chainId: number): Promise<bigint | undefined> {
+    const { getSwapQuote } = await import('./swap');
+    const quote = await getSwapQuote(this.rpcProvider, usdcAmount, chainId, this._slippage);
+    return quote?.amountInMax;
+  }
+
+  /** Perform the on-chain swap. Overridable in tests. */
+  private async executeUsdcSwap(usdcAmount: string, chainId: number) {
     const { executeSwap } = await import('./swap');
+    return executeSwap(this.provider, this.rpcProvider, usdcAmount, chainId, this._slippage);
+  }
 
-    this.log(`Swapping ETH→USDC for ${paymentInfo.amount} USDC (slippage: ${this._slippage * 100}%)`);
-
-    const result = await executeSwap(
-      this.provider,
-      this.rpcProvider,
-      paymentInfo.amount,
-      CHAIN_ID,
-      this._slippage,
-    );
-
-    this.log(`Swap complete: tx=${result.txHash}, USDC received=${ethers.formatUnits(result.usdcReceived, 6)}`);
+  /**
+   * Send the paid leg of a request. The server settles the authorization only
+   * on a 2xx, so a thrown request or a non-2xx response means nothing will be
+   * debited on-chain — release the ETH-mode reservation in that case.
+   */
+  private async makePaidRequest(
+    signed: SignedPayment,
+    endpoint: string,
+    data: Record<string, unknown>,
+    quoteId?: string,
+    signal?: AbortSignal,
+    timeoutMs?: number,
+    extraHeaders?: Record<string, string>,
+  ): Promise<Response> {
+    let resp: Response;
+    try {
+      resp = await this.makeRequest(endpoint, data, signed.auth, quoteId, signal, timeoutMs, extraHeaders);
+    } catch (err) {
+      this.releaseUsdcReservation(signed.reservation);
+      throw err;
+    }
+    if (!resp.ok) this.releaseUsdcReservation(signed.reservation);
+    return resp;
   }
 
   /** Parse the PAYMENT-REQUIRED header from a 402 response into the accepted requirements and Bazaar metadata. */
@@ -2541,12 +2731,12 @@ export class OneShot {
     accepted: PaymentRequirements,
     resource?: { url: string; description?: string; mimeType?: string },
     extensions?: Record<string, unknown>,
-  ): Promise<PaymentAuthorization | undefined> {
+  ): Promise<SignedPayment> {
     // Credits may cover the full cost — send a zero-cost authorization so the server
     // always receives a payment-signature header (avoids 402 from x402 SDK).
     if (parseFloat(paymentInfo.amount) === 0) {
       this.log('Credits cover full cost — sending zero-cost authorization');
-      return {
+      return { auth: {
         x402Version: 2,
         ...(resource ? { resource } : {}),
         ...(extensions ? { extensions } : {}),
@@ -2562,11 +2752,11 @@ export class OneShot {
             nonce: '0x' + '00'.repeat(32),
           },
         },
-      };
+      } };
     }
 
-    // If paying with ETH, swap to USDC first
-    await this.ensureUsdcBalance(paymentInfo);
+    // If paying with ETH, make sure USDC covers the charge (swapping a buffer if not) and reserve it
+    const reservation = await this.ensureUsdcBalance(paymentInfo);
 
     const now = Math.floor(Date.now() / 1000);
     const nonce = ethers.randomBytes(32);
@@ -2584,7 +2774,9 @@ export class OneShot {
     const chainId = chainIdFromNetwork(accepted.network ?? paymentInfo.network) ?? CHAIN_ID;
 
     // Sign EIP-3009 TransferWithAuthorization
-    const signature = await this.provider.signTypedData(
+    let signature: string;
+    try {
+      signature = await this.provider.signTypedData(
       {
         name: domainName,
         version: domainVersion,
@@ -2609,10 +2801,14 @@ export class OneShot {
         validBefore,
         nonce: nonceHex
       }
-    );
+      );
+    } catch (err) {
+      this.releaseUsdcReservation(reservation);
+      throw err;
+    }
 
     // Return x402 PaymentPayload v2 format (including resource + extensions for Bazaar discovery)
-    return {
+    return { reservation, auth: {
       x402Version: 2,
       ...(resource ? { resource } : {}),
       ...(extensions ? { extensions } : {}),
@@ -2628,6 +2824,6 @@ export class OneShot {
           nonce: nonceHex,
         },
       },
-    };
+    } };
   }
 }
