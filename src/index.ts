@@ -66,6 +66,8 @@ const USDC_BALANCE_CACHE_MS = 2_000;
 const USDC_RESERVATION_TTL_MS = 90_000;
 const DEFAULT_SWAP_BUFFER_MULTIPLIER = 10;
 const MAX_SWAP_BUFFER_MULTIPLIER = 1000;
+/** Fixed-point scale for the multiplier (6 decimals, matching USDC). */
+const SWAP_MULTIPLIER_SCALE = 1_000_000;
 const ERC20_BALANCE_ABI = ['function balanceOf(address) view returns (uint256)'];
 
 /** A signed payment whose settlement has not yet been observed on-chain. */
@@ -2600,15 +2602,18 @@ export class OneShot {
 
   /**
    * How much USDC to buy: top up to `charge × swapBufferMultiplier`, counting
-   * whatever effective balance is already there. If the wallet's ETH cannot
-   * cover the buffered quote, fall back to the bare shortfall so an ETH-poor
-   * wallet can still make the one payment in front of it.
+   * whatever effective balance is already there. When the wallet provider
+   * exposes `getBalance` and its ETH cannot cover the buffered quote, fall
+   * back to the bare shortfall so an ETH-poor wallet can still make the one
+   * payment in front of it (a send-only provider always gets the buffer).
    */
   private async sizeSwap(charge: bigint, effective: bigint, chainId: number): Promise<bigint> {
     const shortfall = charge - effective;
-    // Integer math on a 1000× scale: no float→BigInt on an unbounded value.
-    const mScaled = BigInt(Math.round(this._swapBufferMultiplier * 1000));
-    const target = (charge * mScaled + 999n) / 1000n;
+    // Integer math on a 10^6 scale (multiplier ≤ 1000, so ≤ 10^9 — always a
+    // finite, exact integer): keeps the multiplier's precision, no float→BigInt
+    // on an unbounded value.
+    const mScaled = BigInt(Math.round(this._swapBufferMultiplier * SWAP_MULTIPLIER_SCALE));
+    const target = (charge * mScaled + BigInt(SWAP_MULTIPLIER_SCALE) - 1n) / BigInt(SWAP_MULTIPLIER_SCALE);
     let amount = target > effective ? target - effective : shortfall;
     if (amount > shortfall && this.provider.getBalance) {
       try {

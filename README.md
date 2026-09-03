@@ -101,8 +101,10 @@ Set `currency: 'ETH'` and the SDK keeps the wallet funded in USDC for you:
   charge, no swap happens — the call costs one `eth_call`.
 - Otherwise it swaps ETH→USDC on Uniswap V3 (Base mainnet) for
   `swapBufferMultiplier` × the charge (default 10, range 1–1000), so one swap
-  covers many calls. If the wallet's ETH cannot cover the buffer it swaps just
-  the shortfall. Set `swapBufferMultiplier: 1` for exact-shortfall swaps.
+  covers many calls. If your provider exposes `getBalance` and the wallet's ETH
+  cannot cover the buffer, it swaps just the shortfall (a send-only provider
+  always gets the buffered amount). Set `swapBufferMultiplier: 1` for
+  exact-shortfall swaps.
 - Concurrent calls from one instance are serialized around the swap, so a burst
   never double-swaps or races the wallet nonce.
 

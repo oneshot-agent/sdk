@@ -86,7 +86,9 @@ export interface OneShotConfig {
    * payments' worth of USDC (default 10, range 1–1000) so one swap covers many
    * calls. Payments signed but not yet settled on-chain are counted against the
    * balance for ~90s, so a burst of calls never double-spends the same USDC.
-   * Set to 1 to swap only the exact shortfall each time.
+   * If the provider exposes `getBalance` and its ETH cannot cover the buffer,
+   * only the shortfall is swapped. Set to 1 to swap only the exact shortfall.
+   * Up to 6 decimal places are honoured.
    */
   swapBufferMultiplier?: number;
   /**
