@@ -1,3 +1,5 @@
+import { deadlineScope, abortable } from './deadline';
+import { RequestTimeoutError } from './errors';
 import { ethers } from 'ethers';
 import type { WalletProvider } from './wallet-provider';
 import { EthersWalletProvider } from './providers/ethers';
@@ -22,7 +24,7 @@ export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.29.0';
+const SDK_VERSION = '0.31.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -102,6 +104,8 @@ import type {
   EmailToolOptions, ResearchToolOptions, PeopleSearchOptions,
   EnrichProfileOptions, FindEmailOptions, VerifyEmailOptions,
   CompanySearchOptions, CompanySearchResult, EnrichCompanyOptions, EnrichCompanyResult,
+  LocalSearchOptions, LocalSearchResult, LocalResolveOptions, LocalResolveResult,
+  GovSolicitationsOptions, GovSolicitationsResult,
   DeepResearchPersonOptions, SocialProfilesOptions, ArticleSearchOptions,
   PersonNewsfeedOptions, PersonInterestsOptions, PersonInteractionsOptions,
   InboxListOptions, ShippingAddress, CommerceBuyOptions, CommerceSearchOptions,
@@ -453,6 +457,53 @@ export class OneShot {
       throw new ValidationError('At least one of domain, name, linkedin_url, or ticker is required', 'identifier');
     }
     return this.tool('enrich/company', { ...options });
+  }
+
+  /**
+   * Discover local businesses (restaurants, contractors, practices) by
+   * category/keywords × location. Flat price per search, not per row.
+   */
+  async localSearch(options: LocalSearchOptions): Promise<LocalSearchResult> {
+    if (!options.location || options.location.length === 0) {
+      throw new ValidationError('location is required (e.g. ["Austin, TX"])', 'location');
+    }
+    if (!(options.category && options.category.length) && !(options.keywords && options.keywords.length)) {
+      throw new ValidationError('At least one of category or keywords is required', 'category');
+    }
+    return this.tool('local/search', { ...options, limit: options.limit ?? 100 });
+  }
+
+  /**
+   * Resolve a business name + one locating field to its domain, phone,
+   * category and operating status. A miss resolves with `found: false`
+   * (a completed job), never a rejection.
+   */
+  async localResolve(options: LocalResolveOptions): Promise<LocalResolveResult> {
+    this.validate(options.name, 'name');
+    if (!options.address && !options.city && !options.postal_code && !options.phone) {
+      throw new ValidationError('name plus at least one of address, city, postal_code, or phone is required', 'address');
+    }
+    return this.tool('local/resolve', { ...options });
+  }
+
+  /**
+   * Federal contract opportunities (SAM.gov) by NAICS code — Sources Sought
+   * and Presolicitation notices with the contracting officer's published
+   * contact. Flat price per search; zero notices is a completed result.
+   */
+  async govSolicitations(options: GovSolicitationsOptions): Promise<GovSolicitationsResult> {
+    if (!options.naics || options.naics.length === 0) {
+      throw new ValidationError('naics is required (one or more 6-digit codes, e.g. ["541511"])', 'naics');
+    }
+    const bad = options.naics.find(c => !/^\d{6}$/.test(String(c)));
+    if (bad !== undefined) {
+      throw new ValidationError(`NAICS codes are 6 digits (got ${JSON.stringify(bad)})`, 'naics');
+    }
+    return this.tool('gov/solicitations', {
+      ...options,
+      notice_types: options.notice_types ?? ['r', 'p'],
+      limit: options.limit ?? 100,
+    });
   }
 
   async findEmail(options: FindEmailOptions): Promise<FindEmailResult> {
@@ -1907,12 +1958,55 @@ export class OneShot {
     return { 'Idempotency-Key': idempotencyKey };
   }
 
-  private async executeToolRequest<T>(
+  private async readReliabilityJson<T>(path: string, signed: boolean, allowDegraded = false): Promise<T> {
+    const scope = deadlineScope(undefined, signed ? 10_000 : 5_000);
+    try {
+      return await abortable((async () => {
+        const headers = signed ? await this.signedReadHeaders() : undefined;
+        if (scope.signal.aborted) throw new OneShotError('Read deadline exceeded');
+        const response = await fetch(`${this.baseUrl}${path}`, { headers, signal: scope.signal });
+        if (!response.ok && !(allowDegraded && response.status === 503)) await this.failFromResponse('Reliability read failed', response);
+        return await response.json() as T;
+      })(), scope.signal);
+    } finally { scope.close(); }
+  }
+
+  async recoverRequest(options: { endpoint: 'enrich/profile' | 'enrich/email' | 'verify/email'; idempotencyKey: string }): Promise<{ request_id: string; receipt_id: string; status: string; settlement_status: string }> {
+    const query = new URLSearchParams({ endpoint: options.endpoint, key: options.idempotencyKey });
+    return this.readReliabilityJson(`/v1/submissions/recover?${query}`, true);
+  }
+
+  async getServiceStatus(): Promise<{ status: 'healthy' | 'degraded'; observed_at: string; dependencies: Record<string, unknown> }> {
+    return this.readReliabilityJson('/v1/status', false, true);
+  }
+
+  private async executeToolRequest<T>(endpoint: string, options: ToolOptions & Record<string, unknown>, quoteId?: string): Promise<T> {
+    const reliable = /(?:^|\/)(enrich\/(profile|email)|verify\/email)$/.test(endpoint);
+    const key = options.idempotencyKey ?? (reliable ? ethers.hexlify(ethers.randomBytes(16)) : undefined);
+    if (options.totalTimeoutMs !== undefined && (!Number.isFinite(options.totalTimeoutMs) || options.totalTimeoutMs <= 0)) {
+      throw new ValidationError('totalTimeoutMs must be positive', 'totalTimeoutMs');
+    }
+    const scope = deadlineScope(options.signal, options.totalTimeoutMs);
+    const context: { phase: string; requestId?: string; receiptId?: string } = { phase: 'initialization' };
+    const started = Date.now();
+    try {
+      if (scope.signal.aborted) throw new OneShotError('Operation cancelled');
+      if (key) options.onRequestCreated?.({ idempotencyKey: key });
+      return await abortable(this.executeToolRequestImpl<T>(endpoint, { ...options, idempotencyKey: key, signal: scope.signal }, quoteId, context), scope.signal);
+    } catch (error) {
+      if (scope.timedOut()) throw new RequestTimeoutError(Date.now() - started, context.phase, key, context.requestId, context.receiptId);
+      if (error instanceof Error) Object.assign(error, { idempotencyKey: key, requestId: context.requestId, receiptId: context.receiptId, phase: context.phase });
+      throw error;
+    } finally { scope.close(); }
+  }
+
+  private async executeToolRequestImpl<T>(
     endpoint: string,
     options: ToolOptions & Record<string, unknown>,
-    quoteId?: string
+    quoteId?: string,
+    context: { phase: string; requestId?: string; receiptId?: string } = { phase: "initialization" },
   ): Promise<T> {
-    const { signal, onStatusUpdate, wait = true, waitForPhones, phoneTimeoutSec, idempotencyKey, maxCost, ...payload } = options;
+    const { totalTimeoutMs, onRequestCreated, onAccepted, signal, onStatusUpdate, wait = true, waitForPhones, phoneTimeoutSec, idempotencyKey, maxCost, ...payload } = options;
     const extraHeaders = {
       ...this.maxCostHeader(maxCost as number | undefined),
       ...this.idempotencyHeader(idempotencyKey as string | undefined),
@@ -1948,6 +2042,10 @@ export class OneShot {
     // server-side gate knows about them on this very request.
     await this.ensureBudgetsSynced();
 
+    if (signal?.aborted) throw new OneShotError('Operation cancelled');
+    if (idempotencyKey) Object.assign(extraHeaders, { 'x-agent-proof': 'required' });
+    if (signal?.aborted) throw new OneShotError('Operation cancelled');
+    context.phase = 'submission';
     let response = await this.makeRequest(endpoint, payload, undefined, quoteId, signal, undefined, extraHeaders);
 
     // Handle 402 Payment Required
@@ -1973,7 +2071,10 @@ export class OneShot {
 
       this.assertWithinBudget(paymentInfo.amount);
       this.checkAbortBeforePayment(signal);
+      context.phase = 'payment';
       const signed = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
+      this.checkAbortBeforePayment(signal);
+      context.phase = 'submission';
       response = await this.makePaidRequest(signed, endpoint, payload, quoteId, signal, undefined, extraHeaders);
     }
 
@@ -1985,17 +2086,25 @@ export class OneShot {
 
     // Handle async jobs
     if ((result.status === 'pending' || result.status === 'processing') && result.request_id) {
+      context.requestId = String(result.request_id);
+      context.receiptId = typeof result.receipt_id === 'string' ? result.receipt_id : undefined;
+      onAccepted?.({ request_id: context.requestId, receipt_id: context.receiptId, idempotencyKey });
+      context.phase = 'polling';
       this.log(`Job queued: ${result.request_id}`);
       if (!wait) {
-        return { request_id: result.request_id, status: result.status } as T;
+        return { ...result, idempotencyKey } as T;
       }
-      return this.pollJob(
+      const completed = await this.pollJob<Record<string, unknown>>(
         result.request_id as string,
         options.timeout,
         signal,
         onStatusUpdate,
         waitForPhones ? { waitForPhones, phoneTimeoutSec } : undefined,
       );
+      if (completed && typeof completed === 'object' && !Array.isArray(completed)) {
+        return { ...completed, request_id: context.requestId, receipt_id: completed.receipt_id ?? context.receiptId, idempotencyKey } as T;
+      }
+      return completed as T;
     }
 
     return (result.data ?? result) as T;
@@ -2354,7 +2463,17 @@ export class OneShot {
    * for this request, polling relaxes to 5s and acts as a safety net only.
    * Owns the caller's deadline (`JobTimeoutError`).
    */
-  private async pollJobHttp<T>(
+  private async pollJobHttp<T>(requestId: string, timeoutSec?: number, signal?: AbortSignal, emit?: (status: string) => void, wait?: JobWaitState): Promise<T> {
+    const scope = deadlineScope(signal, (timeoutSec ?? 120) * 1000);
+    const started = Date.now();
+    try { return await abortable(this.pollJobHttpImpl<T>(requestId, timeoutSec, scope.signal, emit, wait), scope.signal); }
+    catch (error) {
+      if (scope.timedOut()) throw new JobTimeoutError(requestId, Date.now() - started);
+      throw error;
+    } finally { scope.close(); }
+  }
+
+  private async pollJobHttpImpl<T>(
     requestId: string,
     timeoutSec?: number,
     signal?: AbortSignal,
@@ -2396,6 +2515,10 @@ export class OneShot {
           if (job.request_id && typeof result === 'object' && result !== null && !('request_id' in result)) {
             result.request_id = job.request_id;
           }
+          if (result && typeof result === 'object' && !Array.isArray(result)) {
+            if (job.receipt_id && !result.receipt_id) result.receipt_id = job.receipt_id;
+            if (job.settlement_status && !result.settlement_status) result.settlement_status = job.settlement_status;
+          }
           return result as T;
         }
 
@@ -2436,7 +2559,7 @@ export class OneShot {
         return reject(new OneShotError('Operation cancelled'));
       }
 
-      const timer = setTimeout(resolve, ms);
+      const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
 
       const onAbort = () => {
         clearTimeout(timer);
@@ -2459,7 +2582,8 @@ export class OneShot {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...this.headers(),
-      ...(extraHeaders ?? {})
+      ...(extraHeaders ?? {}),
+      ...(extraHeaders?.['x-agent-proof'] ? await this.signedReadHeaders(/(enrich\/(profile|email)|verify\/email)$/.test(endpoint) ? 'submit' : 'read') : {})
     };
 
     if (payment) {
@@ -2471,25 +2595,17 @@ export class OneShot {
     }
     if (quoteId) headers['x-quote-id'] = quoteId;
 
-    let fetchSignal = signal;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-    if (timeoutMs && !signal) {
-      const controller = new AbortController();
-      timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-      fetchSignal = controller.signal;
-    }
-
-    try {
-      return await fetch(`${this.baseUrl}${endpoint}`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(data),
-        signal: fetchSignal
-      });
-    } finally {
-      if (timeoutId) clearTimeout(timeoutId);
-    }
+    const transportDeadline = timeoutMs === undefined ? undefined : deadlineScope(signal, timeoutMs);
+    const fetchSignal = transportDeadline?.signal ?? signal;
+    // Node 18 compatibility: do not require AbortSignal.any. Retain the deadline
+    // through response-body consumption; cleanup occurs when it expires/aborts.
+    transportDeadline?.signal.addEventListener('abort', () => transportDeadline.close(), { once: true });
+    if (fetchSignal?.aborted) throw new OneShotError('Operation cancelled');
+    const work = fetch(`${this.baseUrl}${endpoint}`, {
+      method: 'POST', headers, body: JSON.stringify(data), signal: fetchSignal,
+    });
+    try { return await (fetchSignal ? abortable(work, fetchSignal) : work); }
+    catch (error) { transportDeadline?.close(); throw error; }
   }
 
   private checkAbortBeforePayment(signal?: AbortSignal): void {
@@ -2645,8 +2761,8 @@ export class OneShot {
 
   /**
    * Send the paid leg of a request. The server settles the authorization only
-   * on a 2xx, so a thrown request or a non-2xx response means nothing will be
-   * debited on-chain — release the ETH-mode reservation in that case.
+   * on acceptance. A transport failure on a durable endpoint is ambiguous;
+   * retain its short-lived ETH-mode reservation until recovery or expiry.
    */
   private async makePaidRequest(
     signed: SignedPayment,
@@ -2661,10 +2777,10 @@ export class OneShot {
     try {
       resp = await this.makeRequest(endpoint, data, signed.auth, quoteId, signal, timeoutMs, extraHeaders);
     } catch (err) {
-      this.releaseUsdcReservation(signed.reservation);
+      if (!/(enrich\/(profile|email)|verify\/email)$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
       throw err;
     }
-    if (!resp.ok) this.releaseUsdcReservation(signed.reservation);
+    if (!resp.ok && !(extraHeaders?.['Idempotency-Key'] && resp.status >= 500)) this.releaseUsdcReservation(signed.reservation);
     return resp;
   }
 

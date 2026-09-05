@@ -147,6 +147,12 @@ export interface DecisionContext {
 }
 
 export interface ToolOptions {
+  /** End-to-end deadline in milliseconds. Existing timeout remains the polling limit in seconds. */
+  totalTimeoutMs?: number;
+  /** Called before submission, so the recovery key can be persisted immediately. */
+  onRequestCreated?: (event: { idempotencyKey: string }) => void;
+  /** Called when the server returns durable job and receipt handles. */
+  onAccepted?: (event: { request_id: string; receipt_id?: string; idempotencyKey?: string }) => void;
   maxCost?: number;
   timeout?: number;
   signal?: AbortSignal;
@@ -184,8 +190,8 @@ export interface ToolOptions {
    * If a call times out client-side, retrying with the same key (and the
    * same request intent) returns the original job instead of charging and
    * executing again. Replay window: 24h; reusing a key with a different
-   * body is rejected with 422. Currently honored by email.send — other
-   * tools ignore the header until their routes opt in server-side.
+   * body is rejected with 422. Honored by email.send and by enrichProfile/findEmail/verifyEmail when
+   * durable enrichment is enabled on the server. Save the key before submission.
    */
   idempotencyKey?: string;
 }
@@ -1352,4 +1358,186 @@ export interface ComputeBudgetStatus {
     description: string;
     created_at: string;
   }>;
+}
+
+// ── Local businesses (local/search, local/resolve) ──────────────────
+
+export interface LocalSearchOptions extends ToolOptions {
+  /** Business categories, e.g. ['hvac contractor', 'dental practice']. category or keywords required. */
+  category?: string[];
+  /** Free-text keywords (alternative to category). */
+  keywords?: string[];
+  /** Cities, neighborhoods, or "City, ST" strings. Required. */
+  location: string[];
+  min_rating?: number;
+  min_review_count?: number;
+  /** true = only chains, false = exclude detected chains. Undetected rows have is_chain null and survive `false`. */
+  is_chain?: boolean;
+  /** Default 'open' drops closed businesses. */
+  operating_status?: 'open' | 'any';
+  /** true = only rows with a resolvable website domain (contactable via findEmail). */
+  has_domain?: boolean;
+  /** 1-500, default 100. Effective max is bounded by the vendor-call cap; see `truncated`. */
+  limit?: number;
+}
+
+export interface LocalResolveOptions extends ToolOptions {
+  name: string;
+  address?: string;
+  city?: string;
+  /** State / province. */
+  region?: string;
+  postal_code?: string;
+  /** Strongest single match signal after the name. */
+  phone?: string;
+}
+
+/** One local business. Field order is the priority for callers: join key, then real/operating, then contact. */
+export interface LocalResult {
+  /** Bare website domain ("franklinbbq.com") or null when the business only has a social/aggregator page. */
+  domain: string | null;
+  operating_status: 'open' | 'closed';
+  /** Only on resolve results. */
+  confidence?: number;
+  phone: string | null;
+  category: string | null;
+  /** true when detected (national brand or same name at 3+ addresses); null = not detected. Never false in v1. */
+  is_chain: boolean | null;
+  name: string;
+  address: string | null;
+  /** Platform → URL, e.g. { facebook: 'https://facebook.com/...' }. */
+  socials: Record<string, string>;
+  review_count: number | null;
+  rating: number | null;
+  /** Stable, provider-neutral id (hash of normalized name + address). Dedupe across runs on this. */
+  id: string;
+  website: string | null;
+  latitude: number | null;
+  longitude: number | null;
+}
+
+export interface LocalSearchResult {
+  status: string;
+  results: LocalResult[];
+  total_found: number;
+  /** true when the vendor-call cap stopped the search before `limit`. */
+  truncated: boolean;
+  vendor_calls: number;
+  filters?: Record<string, unknown>;
+  request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
+  completed_at?: string;
+  memo?: string;
+  cost?: number;
+}
+
+export interface LocalResolveResult {
+  status: string;
+  /** false is a completed job, not an error — the same contract as findEmail. */
+  found: boolean;
+  /** 0..1 confidence of the best candidate (0 when nothing was returned). */
+  confidence: number;
+  /** The match when found, else null. */
+  result: LocalResult | null;
+  /** On a miss, the best candidate that did not clear the threshold. */
+  closest_match?: LocalResult;
+  candidates_considered: number;
+  query?: Record<string, string | null | undefined>;
+  request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
+  completed_at?: string;
+  memo?: string;
+  cost?: number;
+}
+
+// ── Government solicitations (gov/solicitations) ────────────────────
+
+/** SAM.gov notice type codes: r=Sources Sought, p=Presolicitation, o=Solicitation,
+ *  k=Combined Synopsis/Solicitation, s=Special Notice, a=Award Notice, u=Justification,
+ *  i=Intent to Bundle, g=Surplus Property. */
+export type GovNoticeTypeCode = 'r' | 'p' | 'o' | 'k' | 's' | 'a' | 'u' | 'i' | 'g';
+
+export interface GovSolicitationsOptions extends ToolOptions {
+  /** 6-digit NAICS codes, 1-20. Required. */
+  naics: string[];
+  /** Default ['r', 'p'] — Sources Sought + Presolicitation, the window where the requirement is still being written. */
+  notice_types?: GovNoticeTypeCode[];
+  /** Look-back window on posted date, 1-365. Default 30. */
+  since_days?: number;
+  /** Agency-name substrings to keep (case-insensitive). */
+  agencies?: string[];
+  /** Title / full-text keywords. */
+  keywords?: string[];
+  /** Place-of-performance state code, e.g. 'TX'. */
+  state?: string;
+  /** Set-aside code: SBA, 8A, HZC, SDVOSBC, WOSB, ... */
+  set_aside?: string;
+  /** Default true: drop archived notices and past response deadlines. */
+  active_only?: boolean;
+  /** Only notices whose point of contact has both a name and an email. */
+  has_contact?: boolean;
+  /** Default true: fetch description bodies for the first rows (capped per search; see `truncated`). */
+  include_description?: boolean;
+  /** 1-500, default 100. */
+  limit?: number;
+}
+
+export type GovNoticeType =
+  | 'sources_sought' | 'presolicitation' | 'solicitation' | 'combined_synopsis'
+  | 'special_notice' | 'award' | 'justification' | 'other';
+
+export interface GovContact {
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  title: string | null;
+  type: string | null;
+}
+
+/** One federal notice. */
+export interface Solicitation {
+  notice_id: string;
+  notice_type: GovNoticeType;
+  notice_type_code: GovNoticeTypeCode | null;
+  title: string;
+  solicitation_number: string | null;
+  /** Full agency path, e.g. "DEPT OF DEFENSE.DEPT OF THE ARMY.AMC". */
+  agency: string | null;
+  naics_code: string | null;
+  /** YYYY-MM-DD */
+  posted_date: string | null;
+  /** ISO 8601 or null. */
+  response_deadline: string | null;
+  active: boolean | null;
+  set_aside: string | null;
+  place_of_performance: { city: string | null; state: string | null; zip: string | null } | null;
+  /** Primary point of contact (the contracting officer), or null. */
+  contact: GovContact | null;
+  contacts: GovContact[];
+  /** Stripped description text, capped per notice; null when not fetched. */
+  description: string | null;
+  description_truncated: boolean;
+  /** Notice page on sam.gov. */
+  url: string | null;
+  /** = notice_id */
+  id: string;
+}
+
+export interface GovSolicitationsResult {
+  status: string;
+  results: Solicitation[];
+  total_found: number;
+  /** true when some rows have no description because the per-search fetch cap was hit or fetching stopped. */
+  truncated: boolean;
+  description_fetches: number;
+  vendor_calls: number;
+  filters?: Record<string, unknown>;
+  request_id?: string;
+  /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
+  receipt_id?: string;
+  completed_at?: string;
+  memo?: string;
+  cost?: number;
 }

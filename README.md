@@ -136,6 +136,11 @@ mainnet only.
 | `enrichProfile()` | Enrich from LinkedIn/email |
 | `findEmail()` | Find email for a person |
 | `verifyEmail()` | Verify email deliverability |
+| `companySearch()` | Search companies by name, domain, industry, location, size, funding |
+| `enrichCompany()` | Enrich a company from domain, name, LinkedIn URL, or ticker |
+| `localSearch()` | Discover local businesses (restaurants, contractors, practices) by category × location |
+| `localResolve()` | Business name + address → website domain, phone, status, confidence |
+| `govSolicitations()` | Federal Sources Sought / Presolicitation notices by NAICS with the contracting officer's contact |
 | `deepResearchPerson()` | Full dossier on a person |
 | `socialProfiles()` | Find all social accounts |
 | `articleSearch()` | Find articles about a person |

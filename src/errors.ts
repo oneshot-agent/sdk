@@ -72,6 +72,21 @@ export class JobTimeoutError extends OneShotError {
   }
 }
 
+/** The server may have accepted work even when no response reached the caller. */
+export class RequestTimeoutError extends OneShotError {
+  constructor(
+    public readonly elapsedMs: number,
+    public readonly phase: string,
+    public readonly idempotencyKey?: string,
+    public readonly requestId?: string,
+    public readonly receiptId?: string,
+  ) {
+    super(`Request deadline exceeded during ${phase}; recover the original submission before retrying`);
+    this.name = 'RequestTimeoutError';
+  }
+  get acceptance(): 'accepted' | 'unknown' { return this.requestId ? 'accepted' : 'unknown'; }
+}
+
 export class ValidationError extends OneShotError {
   constructor(message: string, public readonly field: string) {
     super(message);
