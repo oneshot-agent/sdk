@@ -442,6 +442,7 @@ export interface Education {
 }
 
 export interface PersonResult {
+  company_address?: BusinessAddress | null;
   full_name?: string;
   first_name?: string;
   last_name?: string;
@@ -604,7 +605,18 @@ export interface EnrichProfileResult {
   cost?: number;
 }
 
+/** Provider-sourced business address; components may be missing. Not postal validation. */
+export interface BusinessAddress {
+  address_line1?: string;
+  address_line2?: string;
+  address_city?: string;
+  address_state?: string;
+  address_zip?: string;
+  address_country?: string;
+}
+
 export interface CompanyResult {
+  business_address?: BusinessAddress | null;
   name?: string;
   domain?: string;
   industry?: string;
