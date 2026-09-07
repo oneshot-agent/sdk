@@ -1,3 +1,5 @@
+import { PhysicalMail } from './physical-mail';
+export * from './physical-mail';
 import { deadlineScope, abortable } from './deadline';
 import { RequestTimeoutError } from './errors';
 import { ethers } from 'ethers';
@@ -24,7 +26,7 @@ export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.31.0';
+const SDK_VERSION = '0.32.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -175,6 +177,16 @@ function validateBudgetConfig(budgets: AgentBudgetConfig | undefined): AgentBudg
 }
 
 export class OneShot {
+  readonly physicalMail = new PhysicalMail(async <T>(path: string, method: string, body?: unknown, mime?: string): Promise<T> => {
+    const response = await fetch(`${this.baseUrl}/v1/tools/physical-mail${path}`, {
+      method, headers: { ...await this.signedReadHeaders(method === 'GET' ? 'read' : 'write'), 'Content-Type': mime ?? 'application/json' },
+      ...(body === undefined ? {} : { body: mime ? body as Uint8Array<ArrayBuffer> : JSON.stringify(body) }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok) await this.failFromResponse('Physical mail request failed', response);
+    return await response.json() as T;
+  }, input => this.executeToolRequest('/v1/tools/physical-mail/send', { ...input, wait: false }));
+
   private readonly provider: WalletProvider;
   private readonly rpcProvider: ethers.JsonRpcProvider;
   private readonly baseUrl: string;
@@ -2583,7 +2595,7 @@ export class OneShot {
       'Content-Type': 'application/json',
       ...this.headers(),
       ...(extraHeaders ?? {}),
-      ...(extraHeaders?.['x-agent-proof'] ? await this.signedReadHeaders(/(enrich\/(profile|email)|verify\/email)$/.test(endpoint) ? 'submit' : 'read') : {})
+      ...(extraHeaders?.['x-agent-proof'] ? await this.signedReadHeaders(/(enrich\/(profile|email)|verify\/email|physical-mail\/send)$/.test(endpoint) ? 'submit' : 'read') : {})
     };
 
     if (payment) {
@@ -2777,7 +2789,7 @@ export class OneShot {
     try {
       resp = await this.makeRequest(endpoint, data, signed.auth, quoteId, signal, timeoutMs, extraHeaders);
     } catch (err) {
-      if (!/(enrich\/(profile|email)|verify\/email)$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
+      if (!/(enrich\/(profile|email)|verify\/email|physical-mail\/send)$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
       throw err;
     }
     if (!resp.ok && !(extraHeaders?.['Idempotency-Key'] && resp.status >= 500)) this.releaseUsdcReservation(signed.reservation);

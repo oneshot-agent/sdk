@@ -614,3 +614,7 @@ The signal **cannot** cancel:
 ## License
 
 MIT
+
+### Physical mail
+
+`agent.physicalMail` exposes `uploadArtwork`, `validateAddress`, `preview`, `getQuote`, `approve`, `send`, `getOrder`, `recover`, and `cancel` for U.S. letters and 4×6 postcards. Inspect the proof and price before explicitly approving each quote. Persist `idempotencyKey` before `send`; use `recover(key)` after uncertain responses. Approval is never inferred by automatic payment retries. Payment receipts and postal events are separate; delivery does not prove readership. See `docs/physical-mail.md` in the OneShot repository for configuration and examples.
