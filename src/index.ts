@@ -26,7 +26,7 @@ export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.32.0';
+const SDK_VERSION = '0.32.1';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -502,6 +502,8 @@ export class OneShot {
    * Federal contract opportunities (SAM.gov) by NAICS code — Sources Sought
    * and Presolicitation notices with the contracting officer's published
    * contact. Flat price per search; zero notices is a completed result.
+   * `data_as_of` on the result is the snapshot behind the rows (SAM.gov's
+   * daily extract publish time, or "now" when the live API served).
    */
   async govSolicitations(options: GovSolicitationsOptions): Promise<GovSolicitationsResult> {
     if (!options.naics || options.naics.length === 0) {

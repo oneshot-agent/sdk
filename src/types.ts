@@ -1545,6 +1545,13 @@ export interface GovSolicitationsResult {
   truncated: boolean;
   description_fetches: number;
   vendor_calls: number;
+  /**
+   * ISO timestamp of the data snapshot behind `results`: the publish time of
+   * SAM.gov's daily extract when served from it (the common case — same-day
+   * postings appear the next morning), or the request time when the live
+   * SAM.gov API answered.
+   */
+  data_as_of?: string;
   filters?: Record<string, unknown>;
   request_id?: string;
   /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
