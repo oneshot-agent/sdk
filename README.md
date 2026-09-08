@@ -182,7 +182,12 @@ mainnet only.
 
 ```typescript
 interface OneShotConfig {
-  privateKey: string;    // Required
+  privateKey?: string;   // Option A: raw key
+  cdp?: boolean;         // Option B: Coinbase CDP server wallet
+  walletProvider?: WalletProvider; // Option C: bring your own signer
+  accessToken?: string;  // Option D: credits-only session, no key (see Access tokens)
+  address?: string;      // With accessToken in the sync constructor; create() resolves it
+  defaultHeaders?: Record<string, string>; // Sent on every request
   baseUrl?: string;      // Override API URL
   rpcUrl?: string;       // Override RPC URL
   debug?: boolean;       // Enable logging
@@ -256,6 +261,31 @@ Every request identifies you by your wallet address (`X-Agent-ID`). Paid tools a
 **Read endpoints** — `inboxList` / `inboxGet`, `smsInboxList` / `smsInboxGet`, `notifications` / `markNotificationRead`, `getUnifiedBalance`, and `createBrowserProfile` / `listBrowserProfiles` / `deleteBrowserProfile` — return private, per-agent data. Since a wallet address is public, the SDK proves you actually control it: on each read it signs a short-lived **EIP-712 read proof** and sends it as the `x-agent-proof` header. The API verifies the signature locally and rejects any request whose proof doesn't match the `X-Agent-ID` wallet, so no one can read your inbox/balance by supplying your address.
 
 This is fully automatic — you don't do anything beyond providing your `privateKey`. **Requires SDK ≥ 0.25.0.** Older SDKs (or raw HTTP callers) will keep working until the API enables enforcement, after which they must send a valid `x-agent-proof`; upgrade to stay ahead of it.
+
+### Access tokens (credits-only sessions)
+
+Some code can't hold your wallet key — a hosted MCP client such as Grok Bot, a cloud
+runner, a third-party agent platform. For those, mint an **access token** from a wallet
+session and hand it over instead:
+
+```typescript
+// From a wallet session (once):
+const { token } = await agent.createAccessToken({ name: 'grok-bot' });
+
+// In the hosted environment:
+const hosted = await OneShot.create({ accessToken: token }); // resolves the wallet address
+await hosted.webSearch({ query: '…' });                        // billed to the agent's credits
+```
+
+An access-token session identifies the agent with the token (no `x-agent-proof`), **pays
+every call from the agent's prepaid credit balance**, and never signs x402. When credits
+can't cover a call it throws `InsufficientCreditsError` (`required`, `balance`,
+`shortfall`) — top up and retry. Budgets set on the agent still apply, with credit-funded
+spend counted; they are **read-only** from a token session (`agent.budgets()` works,
+passing `budgets` to the constructor throws). A token cannot mint, list, or revoke
+tokens; do that from the wallet session (`listAccessTokens()`, `revokeAccessToken(id)`).
+`accessToken` is exclusive with `privateKey` / `cdp` / `walletProvider` and with
+`currency: 'ETH'`. **Requires SDK ≥ 0.33.0.**
 
 ## Tool Options
 
@@ -605,7 +635,7 @@ The signal **cannot** cancel:
 ## Links
 
 - [Documentation](https://docs.oneshotagent.com)
-- [MCP Server](https://www.npmjs.com/package/@oneshot-agent/mcp-server) — Claude Desktop, Cursor, Claude Code
+- [MCP Server](https://www.npmjs.com/package/@oneshot-agent/mcp-server) — Claude Desktop, Cursor, Claude Code (local), or the hosted endpoint at `https://win.oneshotagent.com/mcp` with an access token
 - [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 26 tools as LangChain BaseTool
 - [Python SDK (Core)](https://pypi.org/project/oneshot-python/) — HTTP client with x402 payments
 - [Pricing](https://docs.oneshotagent.com/pricing)

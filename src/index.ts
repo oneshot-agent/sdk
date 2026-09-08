@@ -1,7 +1,8 @@
 import { PhysicalMail } from './physical-mail';
 export * from './physical-mail';
 import { deadlineScope, abortable } from './deadline';
-import { RequestTimeoutError } from './errors';
+import { RequestTimeoutError, InsufficientCreditsError } from './errors';
+import { ReadOnlyWalletProvider } from './providers/read-only';
 import { ethers } from 'ethers';
 import type { WalletProvider } from './wallet-provider';
 import { EthersWalletProvider } from './providers/ethers';
@@ -21,12 +22,13 @@ import {
 export type { WalletProvider, TypedDataDomain, TypedDataField, TransactionRequest, TransactionResponse } from './wallet-provider';
 export { EthersWalletProvider } from './providers/ethers';
 export { CdpWalletProvider } from './providers/cdp';
+export { ReadOnlyWalletProvider } from './providers/read-only';
 export { getSwapQuote, executeSwap } from './swap';
 export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.32.1';
+const SDK_VERSION = '0.33.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -128,7 +130,7 @@ import type {
   ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeTask,
   ComputeBudgetStatus,
   DomainPoolEntry, DomainPoolListResult, DomainPoolStatusResult,
-  AgentBudgetConfig, AgentBudgetStatus,
+  AgentBudgetConfig, AgentBudgetStatus, AccessTokenCreated, AccessTokenInfo,
 } from './types';
 
 
@@ -196,6 +198,9 @@ export class OneShot {
   private readonly _slippage: number;
   private readonly _budgets?: AgentBudgetConfig;
   private readonly _alertEmail?: string;
+  /** Set in access-token mode; the session pays from credits and never signs. */
+  private readonly _accessToken?: string;
+  private readonly _defaultHeaders: Record<string, string>;
   /**
    * In-flight/settled budget sync. One PUT per instance: kept as a promise (not
    * a boolean) so concurrent first calls await the same request instead of
@@ -225,6 +230,14 @@ export class OneShot {
    * ```
    */
   static async create(config: OneShotConfig): Promise<OneShot> {
+    if (config.accessToken) {
+      if (config.address) return new OneShot(config);
+      // The API keys job status and the WebSocket on X-Agent-ID, so the
+      // session needs its wallet address even though it never signs with it.
+      const address = await OneShot.resolveTokenAddress(config);
+      return new OneShot({ ...config, address });
+    }
+
     if (config.walletProvider) {
       return new OneShot(config, config.walletProvider);
     }
@@ -261,9 +274,37 @@ export class OneShot {
     this._swapBufferMultiplier = validateSwapBufferMultiplier(config.swapBufferMultiplier);
     this._budgets = validateBudgetConfig(config.budgets);
     this._alertEmail = config.alerts?.email;
+    this._defaultHeaders = { ...(config.defaultHeaders ?? {}) };
     this.rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? RPC_URL);
 
-    if (walletProvider) {
+    if (config.accessToken) {
+      // Option D: access-token session. Exclusive with every wallet option,
+      // and budgets are read-only (a delegated credential that could raise its
+      // own cap would make the cap meaningless) — set them from a wallet.
+      if (!/^oneshot_[0-9a-f]{64}$/.test(config.accessToken)) {
+        throw new ValidationError('accessToken must be oneshot_<64 lowercase hex characters>', 'accessToken');
+      }
+      if (config.privateKey || config.cdp || config.walletProvider || walletProvider) {
+        throw new ValidationError('accessToken cannot be combined with privateKey, cdp, or walletProvider', 'accessToken');
+      }
+      if (config.budgets || config.alerts) {
+        throw new ValidationError(
+          'budgets and alerts are read-only for access-token sessions; set them from a wallet session or the API',
+          'budgets',
+        );
+      }
+      if (this._currency === 'ETH') {
+        throw new ValidationError('ETH currency mode is not available to access-token sessions (they pay from credits)', 'currency');
+      }
+      if (!config.address) {
+        throw new ValidationError('address is required with accessToken in the constructor; use OneShot.create() to resolve it', 'address');
+      }
+      let address: string;
+      try { address = ethers.getAddress(config.address); }
+      catch { throw new ValidationError('address must be a valid Ethereum address', 'address'); }
+      this._accessToken = config.accessToken;
+      this.provider = new ReadOnlyWalletProvider(address);
+    } else if (walletProvider) {
       this.provider = walletProvider;
     } else if (config.privateKey) {
       this.provider = new EthersWalletProvider(config.privateKey, this.rpcProvider);
@@ -1453,6 +1494,13 @@ export class OneShot {
     this.log(`Compute fund quote: $${quoteData.payment_request.amount} to top up ${goalId}`);
     this.assertWithinBudget(quoteData.payment_request.amount);
 
+    if (this._accessToken) {
+      const fundResp = await this.retryAsCreditsSession(quoteData as unknown as Record<string, unknown>, path, payload, quoteData.context.quote_id);
+      if (!fundResp.ok) await this.failFromResponse('Failed to fund compute goal', fundResp);
+      const json = await fundResp.json() as { data: { goal_id: string; topped_up: number; total_budget: string; remaining: string } };
+      return json.data;
+    }
+
     const paymentInfo: PaymentInfo = {
       protocol: 'x402',
       network: `eip155:${quoteData.payment_request.chain_id}`,
@@ -1674,9 +1722,16 @@ export class OneShot {
 
   private headers(): Record<string, string> {
     return {
+      ...this._defaultHeaders,
       'X-Agent-ID': this.provider.address,
-      'X-OneShot-SDK-Version': SDK_VERSION
+      'X-OneShot-SDK-Version': SDK_VERSION,
+      ...(this._accessToken ? { Authorization: `Bearer ${this._accessToken}` } : {}),
     };
+  }
+
+  /** True for access-token sessions: credits-only, never signs. */
+  get isAccessTokenSession(): boolean {
+    return this._accessToken !== undefined;
   }
 
   /** Auth headers plus Content-Type for JSON-body requests. */
@@ -1695,6 +1750,9 @@ export class OneShot {
    */
   private async signedReadHeaders(scope: string = 'read'): Promise<Record<string, string>> {
     const base = this.headers();
+    // The bearer token already binds the request to the agent (and is
+    // revocable); the API accepts it in place of the signed proof.
+    if (this._accessToken) return base;
     try {
       const agent = this.provider.address;
       const issuedAt = Math.floor(Date.now() / 1000);
@@ -1826,6 +1884,63 @@ export class OneShot {
     return (body.data ?? body) as AgentBudgetStatus;
   }
 
+  // ---------------------------------------------------------------------------
+  // Access tokens (wallet sessions only)
+  // ---------------------------------------------------------------------------
+
+  private assertWalletSession(action: string): void {
+    if (this._accessToken) {
+      throw new ValidationError(`Access tokens cannot ${action}; use a wallet session`, 'accessToken');
+    }
+  }
+
+  /**
+   * Mint an access token for this agent: a revocable, credits-only credential
+   * for code that runs where the wallet key cannot be (hosted MCP clients,
+   * cloud runners). The plaintext is returned once and never stored.
+   *
+   * @example
+   * ```typescript
+   * const { token } = await agent.createAccessToken({ name: 'grok-bot' });
+   * // hand `token` to the hosted client; it uses OneShot.create({ accessToken: token })
+   * ```
+   */
+  async createAccessToken(opts: { name?: string } = {}): Promise<AccessTokenCreated> {
+    this.assertWalletSession('mint access tokens');
+    const response = await fetch(`${this.baseUrl}/v1/agents/me/access-tokens`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
+      body: JSON.stringify(opts.name !== undefined ? { name: opts.name } : {}),
+    });
+    if (!response.ok) throw new ToolError('Failed to create access token', response.status, await response.text());
+    const body = await response.json() as { data: AccessTokenCreated };
+    return body.data;
+  }
+
+  /** List this agent's access tokens (prefix, label, last use, spend today — never the token). */
+  async listAccessTokens(opts: { activeOnly?: boolean } = {}): Promise<AccessTokenInfo[]> {
+    this.assertWalletSession('list access tokens');
+    const response = await fetch(`${this.baseUrl}/v1/agents/me/access-tokens${opts.activeOnly ? '?active=true' : ''}`, {
+      headers: await this.signedReadHeaders(),
+    });
+    if (!response.ok) throw new ToolError('Failed to list access tokens', response.status, await response.text());
+    const body = await response.json() as { data: { tokens: AccessTokenInfo[] } };
+    return body.data.tokens;
+  }
+
+  /** Revoke an access token. Sessions using it fail with 401 from the next request. */
+  async revokeAccessToken(id: string): Promise<{ id: string; revoked_at: string }> {
+    this.assertWalletSession('revoke access tokens');
+    this.validate(id, 'id');
+    const response = await fetch(`${this.baseUrl}/v1/agents/me/access-tokens/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: await this.signedReadHeaders('write'),
+    });
+    if (!response.ok) throw new ToolError('Failed to revoke access token', response.status, await response.text());
+    const body = await response.json() as { data: { id: string; revoked_at: string } };
+    return body.data;
+  }
+
   /** Local fast-fail guard: throw when a quote total exceeds the caller's cap. */
   private assertWithinMaxCost(total: string, maxCost?: number): void {
     if (maxCost && parseFloat(total) > maxCost) {
@@ -1870,11 +1985,91 @@ export class OneShot {
    */
   private async failFromResponse(message: string, response: Response): Promise<never> {
     const text = await response.text();
+    const credits = response.status === 402 ? this.parseInsufficientCredits(text) : undefined;
+    if (credits) throw credits;
     const rejection = response.status === 402 ? this.parsePaymentRejection(text) : undefined;
     if (rejection) throw rejection;
     const budget = response.status === 403 ? this.parseBudgetRejection(text) : undefined;
     if (budget) throw budget;
     throw new ToolError(message, response.status, text);
+  }
+
+  /**
+   * Map a 402 `insufficient_credits` body (access-token sessions) onto a typed
+   * error. Any other 402 falls through to the payment-rejection / quote parse.
+   */
+  private parseInsufficientCredits(text: string | Record<string, unknown>): InsufficientCreditsError | undefined {
+    let body: any;
+    try { body = typeof text === 'string' ? JSON.parse(text) : text; } catch { return undefined; }
+    if (!body || body.error !== 'insufficient_credits') return undefined;
+    const num = (v: unknown) => (typeof v === 'string' || typeof v === 'number') && Number.isFinite(parseFloat(String(v))) ? parseFloat(String(v)) : undefined;
+    return new InsufficientCreditsError(
+      body.message ?? 'Credit balance does not cover this call',
+      num(body.required_usdc),
+      num(body.credits_balance),
+      num(body.shortfall_usdc),
+    );
+  }
+
+  /**
+   * Access-token sessions never sign. When a paid call answers 402 the SDK
+   * either got the server's `insufficient_credits` verdict (throw it) or a
+   * quote (re-POST with `x-quote-id` and no payment: the server executes
+   * when the quote's credits cover it, otherwise answers `insufficient_credits`
+   * with the balance and shortfall, which failFromResponse turns into the
+   * typed error). Server-decided on purpose — the SDK holds no ledger.
+   */
+  private async retryAsCreditsSession(
+    body: Record<string, unknown> | undefined,
+    endpoint: string,
+    payload: Record<string, unknown>,
+    quoteId?: string,
+    signal?: AbortSignal,
+    timeoutMs?: number,
+    extraHeaders?: Record<string, string>,
+  ): Promise<Response> {
+    const credits = body ? this.parseInsufficientCredits(body) : undefined;
+    if (credits) throw credits;
+    const qid = quoteId ?? (body as { context?: { quote_id?: string } } | undefined)?.context?.quote_id;
+    if (!qid) {
+      const amount = (body as { payment_request?: { amount?: string } } | undefined)?.payment_request?.amount;
+      throw new InsufficientCreditsError(
+        `Credits do not cover ${amount ? `$${amount}` : 'this call'}; top up credits or use a wallet session`,
+        amount ? parseFloat(amount) : undefined,
+      );
+    }
+    this.log(`Access-token session: retrying quote ${qid} against credits`);
+    const retry = await this.makeRequest(endpoint, payload, undefined, qid, signal, timeoutMs, extraHeaders);
+    if (retry.status === 402) await this.failFromResponse('Credits do not cover this call', retry);
+    return retry;
+  }
+
+  /** GET /v1/agents/me with the token, for OneShot.create({ accessToken }) without an address. */
+  private static async resolveTokenAddress(config: OneShotConfig): Promise<string> {
+    const TOKEN_RESOLVE_TIMEOUT_MS = 10_000;
+    const baseUrl = config.baseUrl ?? BASE_URL;
+    let response: Response;
+    try {
+      response = await fetch(`${baseUrl}/v1/agents/me`, {
+        headers: {
+          ...(config.defaultHeaders ?? {}),
+          Authorization: `Bearer ${config.accessToken}`,
+          'X-OneShot-SDK-Version': SDK_VERSION,
+        },
+        // Bounded: with no signal, Node's fetch can wait minutes on a hung
+        // connection and OneShot.create() would hang with it.
+        signal: AbortSignal.timeout(TOKEN_RESOLVE_TIMEOUT_MS),
+      });
+    } catch (err) {
+      throw new ToolError(`Could not resolve the access token's agent (network): ${err}`, 0, String(err));
+    }
+    if (!response.ok) {
+      throw new ToolError('Could not resolve the access token\'s agent', response.status, await response.text());
+    }
+    const json = await response.json() as { data?: { wallet_address?: string } };
+    const address = json.data?.wallet_address;
+    if (!address) throw new ToolError('GET /v1/agents/me returned no wallet_address', response.status, JSON.stringify(json));
+    return address;
   }
 
   /**
@@ -2072,24 +2267,30 @@ export class OneShot {
       const data = await response.json() as {
         payment_request?: { chain_id: number; token_address: string; amount: string; recipient: string };
       };
-      const paymentInfo: PaymentInfo = {
-        protocol: 'x402',
-        network: accepted.network,
-        payTo: accepted.payTo,
-        amount: this.chargeAmount(accepted, data.payment_request?.amount),
-        currency: 'USD',
-        facilitator_url: this.baseUrl,
-        token: { address: accepted.asset, symbol: 'USDC', decimals: 6 }
-      };
-      this.log(`Payment required: ${paymentInfo.amount} USDC`);
+      if (this._accessToken) {
+        // Credits-only session: never sign. Let the server settle it.
+        this.checkAbortBeforePayment(signal);
+        response = await this.retryAsCreditsSession(data as Record<string, unknown>, endpoint, payload, quoteId, signal, undefined, extraHeaders);
+      } else {
+        const paymentInfo: PaymentInfo = {
+          protocol: 'x402',
+          network: accepted.network,
+          payTo: accepted.payTo,
+          amount: this.chargeAmount(accepted, data.payment_request?.amount),
+          currency: 'USD',
+          facilitator_url: this.baseUrl,
+          token: { address: accepted.asset, symbol: 'USDC', decimals: 6 }
+        };
+        this.log(`Payment required: ${paymentInfo.amount} USDC`);
 
-      this.assertWithinBudget(paymentInfo.amount);
-      this.checkAbortBeforePayment(signal);
-      context.phase = 'payment';
-      const signed = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
-      this.checkAbortBeforePayment(signal);
-      context.phase = 'submission';
-      response = await this.makePaidRequest(signed, endpoint, payload, quoteId, signal, undefined, extraHeaders);
+        this.assertWithinBudget(paymentInfo.amount);
+        this.checkAbortBeforePayment(signal);
+        context.phase = 'payment';
+        const signed = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
+        this.checkAbortBeforePayment(signal);
+        context.phase = 'submission';
+        response = await this.makePaidRequest(signed, endpoint, payload, quoteId, signal, undefined, extraHeaders);
+      }
     }
 
     if (!response.ok) {
@@ -2168,6 +2369,14 @@ export class OneShot {
     cfg.onQuote(quoteData.context);
     this.assertWithinMaxCost(cfg.totalOf(quoteData.context), cfg.maxCost);
     this.assertWithinBudget(cfg.totalOf(quoteData.context));
+
+    if (this._accessToken) {
+      this.checkAbortBeforePayment(cfg.signal);
+      const execResp = await this.retryAsCreditsSession(
+        quoteData as unknown as Record<string, unknown>, cfg.endpoint, cfg.payload, quoteData.context.quote_id, cfg.signal, cfg.execTimeoutMs,
+      );
+      return { context: quoteData.context, execResp };
+    }
 
     const paymentInfo: PaymentInfo = {
       protocol: 'x402',
@@ -2888,6 +3097,15 @@ export class OneShot {
           },
         },
       } };
+    }
+
+    // Belt and braces: every paid path branches to retryAsCreditsSession
+    // before reaching here in access-token mode.
+    if (this._accessToken) {
+      throw new InsufficientCreditsError(
+        `Credits do not cover $${paymentInfo.amount}; top up credits or use a wallet session`,
+        parseFloat(paymentInfo.amount),
+      );
     }
 
     // If paying with ETH, make sure USDC covers the charge (swapping a buffer if not) and reserve it

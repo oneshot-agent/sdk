@@ -64,6 +64,22 @@ export interface OneShotConfig {
   cdp?: boolean | { address?: string };
   /** Option C: Bring your own WalletProvider implementation */
   walletProvider?: WalletProvider;
+  /**
+   * Option D: an agent access token (`oneshot_<64 hex>`), for code that runs
+   * where the wallet key cannot be — hosted MCP clients, cloud runners. The
+   * session identifies the agent with the token, pays every call from the
+   * agent's prepaid credit balance, and never signs x402: a shortfall throws
+   * `InsufficientCreditsError`. Budgets are read-only in this mode (set them
+   * from a wallet session). Mint one with `agent.createAccessToken()`.
+   */
+  accessToken?: string;
+  /**
+   * The token's agent wallet address. Required with `accessToken` in the
+   * sync constructor; `OneShot.create()` resolves it from the API when omitted.
+   */
+  address?: string;
+  /** Extra headers sent on every request (e.g. forwarded client IP by a hosted server). */
+  defaultHeaders?: Record<string, string>;
   /** Override API URL */
   baseUrl?: string;
   /** Override RPC URL */
@@ -113,6 +129,28 @@ export interface AgentBudgetConfig {
   alertAt?: number;
   /** Fraction of `daily` at which paid calls stop (default 1.0). */
   pauseAt?: number;
+}
+
+/** A freshly minted access token. `token` is shown once and never stored server-side. */
+export interface AccessTokenCreated {
+  id: string;
+  token: string;
+  token_prefix: string;
+  name: string | null;
+  created_at: string;
+}
+
+/** One row of GET /v1/agents/me/access-tokens. Never carries the token itself. */
+export interface AccessTokenInfo {
+  id: string;
+  token_prefix: string;
+  name: string | null;
+  source: 'wallet' | 'internal';
+  last_used_at: string | null;
+  created_at: string;
+  revoked_at: string | null;
+  /** Credit-funded spend attributed to this token in the current UTC day. */
+  spent_today_usdc: string;
 }
 
 /** Live budget utilization, from GET /v1/agents/me/budgets. */

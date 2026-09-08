@@ -154,3 +154,23 @@ export class BudgetSyncError extends OneShotError {
     this.name = 'BudgetSyncError';
   }
 }
+
+/**
+ * An access-token session's credit balance cannot cover the call (HTTP 402
+ * `insufficient_credits`). Access-token sessions pay from credits only and
+ * never sign x402, so this is the end of the road for the call: top up the
+ * agent's credits (or use a wallet session) and retry. `required` is the
+ * gross price of the call and `balance` the current credit balance, in USDC,
+ * when the server reported them.
+ */
+export class InsufficientCreditsError extends OneShotError {
+  constructor(
+    message: string,
+    public readonly required?: number,
+    public readonly balance?: number,
+    public readonly shortfall?: number,
+  ) {
+    super(message);
+    this.name = 'InsufficientCreditsError';
+  }
+}
