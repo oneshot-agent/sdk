@@ -486,13 +486,14 @@ await agent.email({
   subject: 'Hello',
   body: 'Sent from a custom sender.',
   from_name: 'Jane Doe',    // display name (optional)
-  from_mailbox: 'jane',     // local-part, defaults to "agent"
-  from_domain: 'acme.com'   // defaults to "oneshotagent.com"
+  from_mailbox: 'jane',     // local-part, defaults to "agent"; requires from_domain
+  from_domain: 'acme.com'   // must be a domain you own
 });
 ```
 
-`from_domain` must be a domain you've provisioned through OneShot. Defaults
-produce `agent@oneshotagent.com`.
+`from_domain` must be a domain you've provisioned through OneShot. Pinning
+`from_mailbox` without `from_domain` throws a client-side `ValidationError` —
+there is no default domain to fall back to; omit both to rotate instead.
 
 **Dedicated mailboxes:** pass `mailbox_mode: 'mailbox'` when **first provisioning
 a new `from_domain`** to give each address a real dedicated mailbox (better
@@ -514,7 +515,7 @@ email lands in the inbox. Understanding pin-vs-rotate is the key concept:
   warmup protection. If you own no eligible domain, the quote returns
   **`400 no_sending_domain`** — there is **no shared fallback sender**; you must
   provision/own a domain to send.
-- **Pin:** set `from_domain` (and/or `from_mailbox`) to force an exact sender.
+- **Pin:** set the required `from_domain` and optionally `from_mailbox` to select a sender. `from_mailbox` cannot be used alone.
   Rotation is bypassed — **and so are the warmup-score and daily-limit gates.**
   Pinning a still-warming or over-cap domain will hurt deliverability; the send
   still goes out, but the response carries a non-blocking `warning` (see below).

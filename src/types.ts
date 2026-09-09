@@ -249,7 +249,9 @@ export interface EmailToolOptions extends ToolOptions {
   from_domain?: string;
   /**
    * Sender mailbox / local-part. Defaults to `agent` (i.e. agent@from_domain).
-   * You may use any local-part — a new address is auto-provisioned on first use
+   * Requires `from_domain` to be set — pinning `from_mailbox` alone throws a
+   * `ValidationError` (there is no default domain to attach it to). You may
+   * use any local-part — a new address is auto-provisioned on first use
    * (and starts unwarmed, building reputation over time). See the email
    * "list domains" tool for each domain's `default_from` and existing `addresses`.
    */

@@ -381,12 +381,22 @@ export class OneShot {
     // from_mailbox, omit from_address entirely so the server picks from
     // the agent's domain pool. The chosen address comes back on the
     // quote response (`quote.from_address`) and we replay it on /send.
-    // When the caller pins either knob, we keep legacy behavior: build
-    // `${mailbox ?? 'agent'}@${domain ?? 'oneshotagent.com'}`.
+    // When the caller pins from_domain (with or without from_mailbox), we
+    // build `${mailbox ?? 'agent'}@${from_domain}`. Pinning from_mailbox
+    // alone has no domain to attach it to — `oneshotagent.com` is OneShot's
+    // own domain and no agent can send from it — so that combination is a
+    // client-side validation error rather than a guaranteed domain_not_owned
+    // rejection from the server.
+    if (options.from_mailbox && !options.from_domain) {
+      throw new ValidationError(
+        'from_mailbox was pinned without from_domain. Pass from_domain (a domain you own) as well, or omit both to rotate across your warmed domains.',
+        'from_domain'
+      );
+    }
     const useRotation = !options.from_domain && !options.from_mailbox;
     const fromAddress = useRotation
       ? undefined
-      : `${options.from_mailbox ?? 'agent'}@${options.from_domain ?? 'oneshotagent.com'}`;
+      : `${options.from_mailbox ?? 'agent'}@${options.from_domain}`;
 
     // `mailbox_provisioning_fee` (>0) means `from_address` is a new address that
     // provisions a mailbox on first send — a one-time fee folded into `total_cost`.
