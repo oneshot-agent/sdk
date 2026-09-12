@@ -1143,17 +1143,39 @@ export interface BrowserTaskOptions extends ToolOptions {
   output_schema?: Record<string, unknown>;
   /** Initial URL to navigate to */
   start_url?: string;
-  /** Restrict browsing to specific domains */
+  /** Instruct the agent to stay within these domains; not a network firewall. */
   allowed_domains?: string[];
   /** Reuse an existing browser session */
   session_id?: string;
   /** Persistent browser profile ID for reusing cookies/localStorage across sessions */
   profile_id?: string;
-  /** Domain-scoped credentials for auto-login, e.g. { "github.com": "user:token" } */
+  /** @deprecated Unsupported. Import cookies/storage_state when creating a profile. */
   secrets?: Record<string, string>;
-  /** Maximum browser steps (default: 50, max: 100) */
+  /** Legacy step-derived budget allowance (default: 50, supported: 25–100); not an exact action limit. */
   max_steps?: number;
 }
+
+export interface BrowserCookie {
+  name: string;
+  value: string;
+  url?: string;
+  domain?: string;
+  path?: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: 'Strict' | 'Lax' | 'None';
+  partitionKey?: string;
+}
+
+export interface BrowserStorageState {
+  cookies: BrowserCookie[];
+  origins: Array<{ origin: string; localStorage: Array<{ name: string; value: string }> }>;
+}
+
+export type BrowserProfileCreateOptions =
+  | { cookies?: BrowserCookie[]; storage_state?: never }
+  | { cookies?: never; storage_state?: BrowserStorageState };
 
 export interface BrowserProfile {
   id: string;
@@ -1172,16 +1194,28 @@ export interface BrowserQuote {
 }
 
 export interface BrowserResult {
+  status?: string;
   request_id?: string;
   /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
   receipt_id?: string;
   output?: string | Record<string, unknown>;
   steps?: Array<{ number: number; goal: string; url: string }>;
   memo?: string;
-  cost?: number;
+  cost?: number | null;
   output_files?: string[];
   browser_task_id?: string;
   session_id?: string;
+  /** Provider cost for this task, excluding OneShot fees. */
+  total_cost_usd?: number | null;
+  /** Final customer charge, including applied credits, net of reconciliation credits. */
+  billed_cost?: number | null;
+  step_count?: number;
+  steps_incomplete?: boolean;
+  final_url?: string;
+  success?: boolean | null;
+  error_reason?: string;
+  error_ref?: string;
+
 }
 
 export interface UpdateBuildOptions extends ToolOptions {
@@ -1601,4 +1635,15 @@ export interface GovSolicitationsResult {
   completed_at?: string;
   memo?: string;
   cost?: number;
+}
+
+/** Interactive profile login. live_url grants control; do not log or persist it. */
+export interface BrowserProfileSetup {
+  profile_id: string;
+  session_id?: string;
+  status: string;
+  live_url?: string | null;
+  expires_at?: string;
+  stored_cookies?: Array<{ name: string; domain: string; path: string }>;
+  verification?: 'fresh_browser_before_navigation';
 }

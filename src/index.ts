@@ -28,7 +28,7 @@ export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.33.0';
+const SDK_VERSION = '0.34.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -124,7 +124,7 @@ import type {
   VoiceQuote, VoiceCallResult, SmsQuote, SmsSendResult, SmsInboxMessage,
   SmsInboxResult, Notification, NotificationsListOptions, NotificationsResult,
   BuildProduct, BuildLeadCapture, BuildBrand, BuildImages, BuildOptions,
-  BuildQuote, BuildResult, BrowserTaskOptions, BrowserProfile, BrowserQuote,
+  BuildQuote, BuildResult, BrowserTaskOptions, BrowserProfile, BrowserProfileCreateOptions, BrowserProfileSetup, BrowserQuote,
   BrowserResult, UpdateBuildOptions, SpendCategory, SpendBreakdown, RoCSResult, RoCSByGoalResult,
   Receipt, ReceiptsListResult, UnifiedBalance, ComputeSchedule, ComputeOptions,
   ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeTask,
@@ -940,8 +940,8 @@ export class OneShot {
       throw new ValidationError('Task must be at least 10 characters', 'task');
     }
 
-    if (options.max_steps !== undefined && (options.max_steps < 1 || options.max_steps > 100)) {
-      throw new ValidationError('max_steps must be between 1 and 100', 'max_steps');
+    if (options.max_steps !== undefined && (!Number.isInteger(options.max_steps) || options.max_steps < 25 || options.max_steps > 100)) {
+      throw new ValidationError('max_steps must be between 25 and 100', 'max_steps');
     }
 
     const payload: Record<string, unknown> = {
@@ -953,7 +953,7 @@ export class OneShot {
     if (options.allowed_domains) payload.allowed_domains = options.allowed_domains;
     if (options.session_id) payload.session_id = options.session_id;
     if (options.profile_id) payload.profile_id = options.profile_id;
-    if (options.secrets) payload.secrets = options.secrets;
+    if (options.secrets !== undefined) throw new ValidationError('secrets is unsupported; import cookies or storage_state with createBrowserProfile', 'secrets');
     if (options.max_steps) payload.max_steps = options.max_steps;
 
     const { execResp } = await this.runQuoteToPay<BrowserQuote>({
@@ -994,19 +994,45 @@ export class OneShot {
    * console.log(profile.id); // Use this in browser({ profile_id: ... })
    * ```
    */
-  async createBrowserProfile(name: string): Promise<BrowserProfile> {
+  async createBrowserProfile(name: string, options: BrowserProfileCreateOptions = {}): Promise<BrowserProfile> {
     this.validate(name, 'name');
+    if (options.cookies !== undefined && options.storage_state !== undefined) throw new ValidationError('Provide cookies or storage_state, not both', 'options');
 
     const response = await fetch(`${this.baseUrl}/v1/tools/browser/profiles`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders()) },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, ...options }),
+      signal: AbortSignal.timeout(150_000),
     });
 
     if (!response.ok) {
       throw new ToolError('Failed to create browser profile', response.status, await response.text());
     }
     return response.json() as Promise<BrowserProfile>;
+  }
+
+  /** Open a profile login session; wait for idle before entering credentials in live_url. */
+  async startBrowserProfileSetup(profileId: string, startUrl: string): Promise<BrowserProfileSetup> {
+    return this.browserProfileSetup(profileId, 'start', { start_url: startUrl });
+  }
+
+  async getBrowserProfileSetup(profileId: string): Promise<BrowserProfileSetup> {
+    return this.browserProfileSetup(profileId, 'status');
+  }
+
+  /** Call after login and 2FA. Saves state and inspects cookies before site navigation. */
+  async finishBrowserProfileSetup(profileId: string): Promise<BrowserProfileSetup> {
+    return this.browserProfileSetup(profileId, 'finish');
+  }
+
+  private async browserProfileSetup(profileId: string, action: string, body: Record<string, unknown> = {}): Promise<BrowserProfileSetup> {
+    this.validate(profileId, 'profileId');
+    const response = await fetch(`${this.baseUrl}/v1/tools/browser/profiles/${encodeURIComponent(profileId)}/setup/${action}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders()) },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(150_000),
+    });
+    if (!response.ok) throw new ToolError('Browser profile setup failed', response.status, '');
+    return response.json() as Promise<BrowserProfileSetup>;
   }
 
   /**
@@ -2698,7 +2724,7 @@ export class OneShot {
             settle(() => {
               cleanup();
               wait.via = 'ws';
-              reject(new JobError(`Job failed: ${msg.error ?? 'Unknown'}`, requestId, String(msg.error ?? 'Unknown'), msg.error_code as string | undefined));
+              reject(new JobError(`Job failed: ${msg.error ?? 'Unknown'}`, requestId, String(msg.error ?? 'Unknown'), msg.error_code as string | undefined, msg.result as Record<string, unknown> | undefined));
             });
           } else {
             emit(String(msg.status));
@@ -2792,7 +2818,7 @@ export class OneShot {
 
         if (job.status === 'failed') {
           if (wait) wait.via = 'http';
-          throw new JobError(`Job failed: ${job.error ?? 'Unknown'}`, requestId, String(job.error ?? 'Unknown'), job.error_code as string | undefined);
+          throw new JobError(`Job failed: ${job.error ?? 'Unknown'}`, requestId, String(job.error ?? 'Unknown'), job.error_code as string | undefined, job.result as Record<string, unknown> | undefined);
         }
 
         emit?.(String(job.status));

@@ -155,6 +155,9 @@ mainnet only.
 | **Browser** | |
 | `browser()` | Autonomous browser — navigate, click, extract |
 | `createBrowserProfile()` | Create a persistent browser profile |
+| `startBrowserProfileSetup(id, loginUrl)` | Start interactive account login / 2FA |
+| `getBrowserProfileSetup(id)` | Get setup readiness and private live URL |
+| `finishBrowserProfileSetup(id)` | Save profile and inspect stored cookie metadata |
 | `listBrowserProfiles()` | List saved browser profiles |
 | `deleteBrowserProfile()` | Delete a browser profile |
 | **Build** | |
@@ -650,3 +653,12 @@ MIT
 ### Physical mail
 
 `agent.physicalMail` exposes `uploadArtwork`, `validateAddress`, `preview`, `getQuote`, `approve`, `send`, `getOrder`, `recover`, and `cancel` for U.S. letters and 4×6 postcards. Inspect the proof and price before explicitly approving each quote. Persist `idempotencyKey` before `send`; use `recover(key)` after uncertain responses. Approval is never inferred by automatic payment retries. Payment receipts and postal events are separate; delivery does not prove readership. See `docs/physical-mail.md` in the OneShot repository for configuration and examples.
+
+
+### Account login and 2FA (SDK 0.34.0+)
+
+Create a browser profile, call `startBrowserProfileSetup(profile.id, loginUrl)`, and poll `getBrowserProfileSetup(profile.id)` until `status` is `idle`. Open the returned `live_url` privately for the user to sign in and complete the site's verification. It currently uses the Browser-Use domain. After the user confirms completion, call `finishBrowserProfileSetup(profile.id)` and store the profile ID for later `browser({ profile_id, task })` calls.
+
+The finish operation stops the session and inspects cookies in a fresh browser before website navigation. It returns cookie names/domains/paths, never values; a subsequent task must check whether the site accepts the login. Setup expires after 15 minutes and abandoned sessions are closed by the lifecycle sweep. Profiles are retained. Start setup again to reconnect an expired site login. Keep live URLs, passwords, and codes out of logs and agent prompts.
+
+Browser tasks reject the legacy `secrets` field and `max_steps` below 25 before payment. Use interactive setup or `createBrowserProfile(name, { cookies })` / `{ storage_state }` for authentication. `cost` is the provider cost; `billed_cost` is the final customer charge after reconciliation (null while pending). Failed `JobError`s expose `partialResult` for diagnostics.

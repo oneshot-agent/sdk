@@ -56,7 +56,8 @@ export class JobError extends OneShotError {
     // provider_auth, enrichment_exhausted, target_unreachable,
     // source_unsupported, checkout_failed, internal_error.
     // Branch on this to decide whether to fund/fix vs. blind-retry.
-    public readonly code?: string
+    public readonly code?: string,
+    public readonly partialResult?: Record<string, unknown>
   ) {
     super(message);
     this.name = 'JobError';
