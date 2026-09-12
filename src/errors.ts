@@ -53,7 +53,8 @@ export class JobError extends OneShotError {
     public readonly jobError: string,
     // Stable error-code taxonomy (issue #111): insufficient_funds, payment_failed,
     // invalid_input, content_blocked, rate_limited, provider_unavailable,
-    // provider_auth, enrichment_exhausted, checkout_failed, internal_error.
+    // provider_auth, enrichment_exhausted, target_unreachable,
+    // source_unsupported, checkout_failed, internal_error.
     // Branch on this to decide whether to fund/fix vs. blind-retry.
     public readonly code?: string
   ) {

@@ -201,6 +201,7 @@ export class OneShot {
   /** Set in access-token mode; the session pays from credits and never signs. */
   private readonly _accessToken?: string;
   private readonly _defaultHeaders: Record<string, string>;
+  private _stagingKey?: string;
   /**
    * In-flight/settled budget sync. One PUT per instance: kept as a promise (not
    * a boolean) so concurrent first calls await the same request instead of
@@ -275,6 +276,7 @@ export class OneShot {
     this._budgets = validateBudgetConfig(config.budgets);
     this._alertEmail = config.alerts?.email;
     this._defaultHeaders = { ...(config.defaultHeaders ?? {}) };
+    this._stagingKey = config.stagingKey;
     this.rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? RPC_URL);
 
     if (config.accessToken) {
@@ -1733,10 +1735,42 @@ export class OneShot {
   private headers(): Record<string, string> {
     return {
       ...this._defaultHeaders,
+      ...(this._stagingKey ? { 'X-Staging-Key': this._stagingKey } : {}),
       'X-Agent-ID': this.provider.address,
       'X-OneShot-SDK-Version': SDK_VERSION,
       ...(this._accessToken ? { Authorization: `Bearer ${this._accessToken}` } : {}),
     };
+  }
+
+  /** Submit a wallet-proven application. Approval is performed by the staging operator. */
+  async applyForStaging(contact: string, purpose: string): Promise<{ wallet: string; status: string; created_at: string }> {
+    return this.stagingOnboarding('POST', '/applications', { contact, purpose });
+  }
+
+  async getStagingApplication(): Promise<{ wallet: string; status: string; tester_id: string | null; daily_micros: number | null; tools: string[] | null; expires_at: string | null; active: boolean | null }> {
+    return this.stagingOnboarding('GET', '/applications/me');
+  }
+
+  /** Rotates the wallet's staging key and installs it on this SDK instance. */
+  async obtainStagingKey(): Promise<string> {
+    const result = await this.stagingOnboarding('POST', '/credential', {});
+    this._stagingKey = result.staging_key;
+    return result.staging_key;
+  }
+
+  private async stagingOnboarding(method: string, path: string, body?: Record<string, unknown>): Promise<any> {
+    if (this._accessToken) throw new Error('Staging onboarding requires a wallet signer');
+    const digest = ethers.sha256(ethers.toUtf8Bytes(JSON.stringify(body ?? {}))).slice(2);
+    const headers = await this.signedReadHeaders(`staging:${method}:${path}:${digest}`);
+    if (!headers['x-agent-proof']) throw new Error('Could not sign staging application');
+    const response = await fetch(`${this.baseUrl}/v1/staging${path}`, {
+      method, headers: { ...headers, 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const result = await response.json() as any;
+    if (!response.ok) throw new Error(result.error ?? `Staging request failed (${response.status})`);
+    return result;
   }
 
   /** True for access-token sessions: credits-only, never signs. */
@@ -2063,6 +2097,7 @@ export class OneShot {
       response = await fetch(`${baseUrl}/v1/agents/me`, {
         headers: {
           ...(config.defaultHeaders ?? {}),
+          ...(config.stagingKey ? { 'X-Staging-Key': config.stagingKey } : {}),
           Authorization: `Bearer ${config.accessToken}`,
           'X-OneShot-SDK-Version': SDK_VERSION,
         },

@@ -80,6 +80,8 @@ export interface OneShotConfig {
   address?: string;
   /** Extra headers sent on every request (e.g. forwarded client IP by a hosted server). */
   defaultHeaders?: Record<string, string>;
+  /** Approved staging credential; independent of Sepolia payment or access-token auth. */
+  stagingKey?: string;
   /** Override API URL */
   baseUrl?: string;
   /** Override RPC URL */

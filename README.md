@@ -372,7 +372,8 @@ try {
 When a `JobError` is thrown, `error.code` is one of:
 `insufficient_funds`, `payment_failed`, `invalid_input`, `content_blocked`,
 `rate_limited`, `provider_unavailable`, `provider_auth`, `enrichment_exhausted`,
-`checkout_failed`, `internal_error`. See the
+`target_unreachable`, `source_unsupported`, `checkout_failed`,
+`internal_error`. See the
 [Check Job Status](https://docs.oneshotagent.com/api-reference/status#error-codes)
 reference for the full meaning and recommended reaction for each.
 
@@ -637,7 +638,7 @@ The signal **cannot** cancel:
 
 - [Documentation](https://docs.oneshotagent.com)
 - [MCP Server](https://www.npmjs.com/package/@oneshot-agent/mcp-server) — Claude Desktop, Cursor, Claude Code (local), or the hosted endpoint at `https://win.oneshotagent.com/mcp` with an access token
-- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 26 tools as LangChain BaseTool
+- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 35 tools as LangChain BaseTool
 - [Python SDK (Core)](https://pypi.org/project/oneshot-python/) — HTTP client with x402 payments
 - [Pricing](https://docs.oneshotagent.com/pricing)
 - [GitHub](https://github.com/oneshot-agent/sdk)
