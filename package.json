@@ -1,10 +1,31 @@
 {
   "name": "@oneshot-agent/sdk",
-  "version": "0.34.0",
+  "version": "0.35.0",
   "description": "Autonomous Agent SDK for executing real-world commercial transactions with automatic x402 payments",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./receipt": {
+      "types": "./dist/receipt.d.ts",
+      "default": "./dist/receipt.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "receipt": [
+        "dist/receipt.d.ts"
+      ]
+    }
+  },
+  "bin": {
+    "oneshot-verify-receipt": "./dist/bin/verify-receipt.js"
+  },
   "files": [
     "dist",
     "README.md"

@@ -317,6 +317,41 @@ The `maxCost` option is a client-side guard — the SDK compares the quoted pric
 | `browser()` | Supported |
 | All other tools | Not applicable (fixed low-cost pricing) |
 
+## Verifying Receipts
+
+Signed receipts use Ed25519 over the canonical public receipt fields, the `revision` counter and a SHA-256 digest of `metadata` — nothing private. The response also carries the `signature`, `digest`, `key_id` and `alg` needed to verify; those are not part of the signed bytes, and neither is the caller-supplied `value_tag`. Unsigned receipts return `malformed_receipt`. `verifyReceipt` works offline after fetching the public keys:
+
+```typescript
+import { verifyReceipt, receiptFromWire } from '@oneshot-agent/sdk/receipt';
+
+// `wireReceipt` is whatever GET /v1/analytics/receipts (or the audit export)
+// returned for one receipt — snake_case field names.
+const receipt = receiptFromWire(wireReceipt);
+const jwks = await fetch('https://win.oneshotagent.com/.well-known/oneshot-receipts.json').then(r => r.json());
+
+const result = verifyReceipt(receipt, jwks);
+if (result.valid) {
+  console.log(`Verified against key ${result.keyId}`);
+} else {
+  // reason is one of: 'malformed_receipt' | 'key_not_found' | 'digest_mismatch' | 'signature_invalid'
+  console.log(`Verification failed (${result.reason}): ${result.message}`);
+}
+```
+
+`verifyReceipt` recomputes the canonical payload with the same `canonicalizeReceipt` function the API uses to sign — the two can never drift apart because they're literally the same function, imported on both sides. It matches the receipt's `key_id` against the JWKS's `kid`s, so a receipt signed with a rotated-out key still verifies as long as the JWKS retains it (which it does — see `RECEIPT_SIGNING_HISTORICAL_PUBLIC_KEYS`).
+
+There is one canonical payload and no version field. `revision` starts at 1 and increments on every re-sign under the same row lock that protects the signature, so two signed copies of the same receipt order from the signed bytes alone. `metadata_digest` is a key-order-independent SHA-256 of the receipt's `metadata` (`memo`, `decisionContext`, …), stable for `metadata: null`; the metadata value itself is never placed in the signed bytes, so altering it after signing invalidates the signature without embedding unbounded agent-supplied data in the canonical payload. If the format ever changes, OneShot re-signs every stored receipt rather than versioning the payload — see `docs/architecture/receipt-signatures.md`.
+
+### CLI
+
+```bash
+npx @oneshot-agent/sdk receipt.json
+# or, after installing the package:
+oneshot-verify-receipt receipt.json [jwksUrlOrPath]
+```
+
+`npx <package> <args...>` runs that package's single bin directly, passing the trailing args straight to it — so the package name itself is never one of `argv`. `receipt.json` is a receipt object as returned by the API. `jwksUrlOrPath` is an http(s) URL (fetched) or a local file path; it defaults to the production well-known path. Exit code `0` on a valid signature (with version and key printed), `1` on a verification failure (with the reason printed), `2` on a usage/IO or input-shape error. The audit export uses separate `receipt_signature*` fields; the adapter distinguishes those from its settlement-proof `signature`.
+
 ## Error Handling
 
 ```typescript
@@ -641,7 +676,7 @@ The signal **cannot** cancel:
 
 - [Documentation](https://docs.oneshotagent.com)
 - [MCP Server](https://www.npmjs.com/package/@oneshot-agent/mcp-server) — Claude Desktop, Cursor, Claude Code (local), or the hosted endpoint at `https://win.oneshotagent.com/mcp` with an access token
-- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 35 tools as LangChain BaseTool
+- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 43 tools as LangChain BaseTool
 - [Python SDK (Core)](https://pypi.org/project/oneshot-python/) — HTTP client with x402 payments
 - [Pricing](https://docs.oneshotagent.com/pricing)
 - [GitHub](https://github.com/oneshot-agent/sdk)

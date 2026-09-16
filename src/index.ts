@@ -26,9 +26,33 @@ export { ReadOnlyWalletProvider } from './providers/read-only';
 export { getSwapQuote, executeSwap } from './swap';
 export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
+// Receipt verification (`canonicalizeReceipt`, `verifyReceipt`,
+// `receiptFromWire`, and their supporting types `SignableReceipt`,
+// `ReceiptSignatureFields`, `ReceiptJwk`, `ReceiptJwks`,
+// `ReceiptVerificationResult`, `ReceiptVerificationFailureReason`) is
+// intentionally NOT re-exported here, values OR types. `./receipt`
+// statically imports `node:crypto`, and this file is the SDK's main entry —
+// re-exporting its values would give every consumer (including browser/edge
+// bundles, which this file otherwise avoids requiring Node builtins for;
+// see the deliberate `btoa` fallback below) a hard Node-only dependency
+// with no way to opt out. Import from the `@oneshot-agent/sdk/receipt`
+// subpath instead (see package.json `exports` and the README's
+// "Verifying Receipts" section).
+//
+// Types alone erase at compile time and carry no runtime import, so a
+// type-only re-export here would be runtime-safe — but `SignableReceipt`
+// declares `providerCost` (libs/agent-sdk/src/receipt.ts), the field whose
+// removal from the public SDK surface `tests/unit/sdk-provider-cost-removed
+// .test.ts` guards. Re-exporting it from the main entry would put it back
+// on the surface that guard exists to keep clean, just via the type system
+// instead of a runtime value. `providerCost` must stay inside
+// `SignableReceipt` itself (it's part of what the signer actually signs —
+// see `canonicalizeReceipt`), so the fix is not exposing that type here,
+// not removing the field. Import `SignableReceipt` from the `./receipt`
+// subpath directly if you need it.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.34.0';
+const SDK_VERSION = '0.35.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -131,6 +155,24 @@ import type {
   ComputeBudgetStatus,
   DomainPoolEntry, DomainPoolListResult, DomainPoolStatusResult,
   AgentBudgetConfig, AgentBudgetStatus, AccessTokenCreated, AccessTokenInfo,
+  LinkedInConnectOptions,
+  LinkedInReconnectOptions,
+  LinkedInConnectIntentIssued,
+  LinkedInConnectIntent,
+  LinkedInAccount,
+  LinkedInRevokeResult,
+  LinkedInSyncStatus,
+  LinkedInSyncOptions,
+  LinkedInSyncRunResult,
+  LinkedInConversationsOptions,
+  LinkedInConversationsPage,
+  LinkedInMessagesOptions,
+  LinkedInMessagesPage,
+  LinkedInReplyOptions,
+  LinkedInViewProfileOptions,
+  LinkedInReactOptions,
+  LinkedInWriteResult,
+  LinkedInProfileViewResult,
 } from './types';
 
 
@@ -1077,6 +1119,131 @@ export class OneShot {
     if (!response.ok) {
       throw new ToolError('Failed to delete browser profile', response.status, await response.text());
     }
+  }
+
+  // ── LinkedIn — messaging through a human-connected account (issue #756) ──
+  //
+  // The human connects THEIR OWN LinkedIn account through a hosted login link
+  // and grants specific actions. Connection/reads are free (signed proof);
+  // sync, reply, profile view and react are paid fixed-price tools. Every
+  // write is idempotency-keyed automatically — a message LinkedIn accepted
+  // cannot be recalled.
+
+  private async linkedinFree<T>(method: 'GET' | 'POST' | 'DELETE', path: string, opts: { body?: unknown; query?: Record<string, string | undefined>; scope?: string; what: string }): Promise<T> {
+    const url = new URL(`${this.baseUrl}/v1/tools/linkedin${path}`);
+    for (const [k, v] of Object.entries(opts.query ?? {})) if (v !== undefined) url.searchParams.set(k, v);
+    const response = await fetch(url.toString(), {
+      method,
+      headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders(opts.scope ?? 'read')) },
+      ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok) throw new ToolError(`LinkedIn ${opts.what} failed`, response.status, await response.text());
+    return response.json() as Promise<T>;
+  }
+
+  /**
+   * Create a hosted LinkedIn login link. Show `url` to the human once; it
+   * expires in 30 minutes and must be opened top-level (never in an iframe).
+   * Poll `getLinkedInConnection(intent_id)` until `completed`.
+   */
+  async linkedinConnect(options: LinkedInConnectOptions): Promise<LinkedInConnectIntentIssued> {
+    if (!Array.isArray(options.requestedActions) || options.requestedActions.length === 0) {
+      throw new ValidationError('requestedActions must list at least one action (read, reply, view_profile, react)', 'requestedActions');
+    }
+    return this.linkedinFree('POST', '/connect', {
+      scope: 'write', what: 'connect',
+      body: { requested_actions: options.requestedActions, success_redirect_url: options.successRedirectUrl, failure_redirect_url: options.failureRedirectUrl },
+    });
+  }
+
+  async getLinkedInConnection(intentId: string): Promise<LinkedInConnectIntent> {
+    this.validate(intentId, 'intentId');
+    return this.linkedinFree('GET', `/connect/${encodeURIComponent(intentId)}`, { what: 'connection status' });
+  }
+
+  async listLinkedInAccounts(options: { includeRevoked?: boolean } = {}): Promise<{ accounts: LinkedInAccount[] }> {
+    return this.linkedinFree('GET', '/accounts', { what: 'accounts', query: { include_revoked: options.includeRevoked ? 'true' : undefined } });
+  }
+
+  async getLinkedInAccount(accountId: string): Promise<LinkedInAccount> {
+    this.validate(accountId, 'accountId');
+    return this.linkedinFree('GET', `/accounts/${encodeURIComponent(accountId)}`, { what: 'account' });
+  }
+
+  /** Reconnect an existing account (keeps ownership; may narrow, never widen, the grant). */
+  async reconnectLinkedInAccount(accountId: string, options: LinkedInReconnectOptions = {}): Promise<LinkedInConnectIntentIssued> {
+    this.validate(accountId, 'accountId');
+    return this.linkedinFree('POST', `/accounts/${encodeURIComponent(accountId)}/reconnect`, {
+      scope: 'write', what: 'reconnect',
+      body: { requested_actions: options.requestedActions, success_redirect_url: options.successRedirectUrl, failure_redirect_url: options.failureRedirectUrl },
+    });
+  }
+
+  /** End the grant, cancel queued writes, delete the upstream connection. */
+  async revokeLinkedInAccount(accountId: string): Promise<LinkedInRevokeResult> {
+    this.validate(accountId, 'accountId');
+    return this.linkedinFree('DELETE', `/accounts/${encodeURIComponent(accountId)}`, { scope: 'write', what: 'revoke' });
+  }
+
+  async getLinkedInSync(accountId: string): Promise<LinkedInSyncStatus> {
+    this.validate(accountId, 'accountId');
+    return this.linkedinFree('GET', `/accounts/${encodeURIComponent(accountId)}/sync`, { what: 'sync status' });
+  }
+
+  async linkedinConversations(options: LinkedInConversationsOptions): Promise<LinkedInConversationsPage> {
+    this.validate(options.accountId, 'accountId');
+    return this.linkedinFree('GET', `/accounts/${encodeURIComponent(options.accountId)}/conversations`, {
+      what: 'conversations',
+      query: { cursor: options.cursor, limit: options.limit?.toString(), since: options.since, unread: options.unread ? 'true' : undefined, archived: options.archived ? 'true' : undefined },
+    });
+  }
+
+  async linkedinMessages(options: LinkedInMessagesOptions): Promise<LinkedInMessagesPage> {
+    this.validate(options.accountId, 'accountId');
+    return this.linkedinFree('GET', `/accounts/${encodeURIComponent(options.accountId)}/messages`, {
+      what: 'messages',
+      query: {
+        conversation_id: options.conversationId, direction: options.direction, since: options.since, changed_since: options.changedSince,
+        cursor: options.cursor, limit: options.limit?.toString(), include_deleted: options.includeDeleted ? 'true' : undefined,
+      },
+    });
+  }
+
+  /**
+   * One bounded, paid history-sync run (up to maxPages × 250 messages). A
+   * run that hits the bound is paused with a cursor; the next `continue`
+   * call resumes it. Check `coverage.complete` before buying another run.
+   */
+  async linkedinSync(options: LinkedInSyncOptions): Promise<LinkedInSyncRunResult> {
+    this.validate(options.accountId, 'accountId');
+    const { accountId, mode, maxPages, ...rest } = options;
+    return this.tool('linkedin/sync', { ...rest, account_id: accountId, ...(mode ? { mode } : {}), ...(maxPages ? { max_pages: maxPages } : {}), timeout: options.timeout ?? 600 });
+  }
+
+  /** Send a reply in an existing conversation through the connected account. Paced; per-account daily cap. */
+  async linkedinReply(options: LinkedInReplyOptions): Promise<LinkedInWriteResult> {
+    this.validate(options.accountId, 'accountId');
+    this.validate(options.conversationId, 'conversationId');
+    this.validate(options.text, 'text');
+    const { accountId, conversationId, text, ...rest } = options;
+    return this.tool('linkedin/reply', { ...rest, account_id: accountId, conversation_id: conversationId, text, timeout: options.timeout ?? 180 });
+  }
+
+  /** View a profile through the connected account. `notify: true` is visible to the target and cannot be undone. */
+  async linkedinViewProfile(options: LinkedInViewProfileOptions): Promise<LinkedInProfileViewResult> {
+    this.validate(options.accountId, 'accountId');
+    this.validate(options.identifier, 'identifier');
+    const { accountId, identifier, notify, ...rest } = options;
+    return this.tool('linkedin/profile-view', { ...rest, account_id: accountId, identifier, notify: !!notify, timeout: options.timeout ?? 180 });
+  }
+
+  /** React to a post through the connected account. */
+  async linkedinReact(options: LinkedInReactOptions): Promise<LinkedInWriteResult> {
+    this.validate(options.accountId, 'accountId');
+    this.validate(options.postId, 'postId');
+    const { accountId, postId, reactionType, ...rest } = options;
+    return this.tool('linkedin/react', { ...rest, account_id: accountId, post_id: postId, reaction_type: reactionType ?? 'like', timeout: options.timeout ?? 180 });
   }
 
   /**
@@ -2261,7 +2428,8 @@ export class OneShot {
   }
 
   private async executeToolRequest<T>(endpoint: string, options: ToolOptions & Record<string, unknown>, quoteId?: string): Promise<T> {
-    const reliable = /(?:^|\/)(enrich\/(profile|email)|verify\/email)$/.test(endpoint);
+    // LinkedIn writes act through a human's account and cannot be recalled: always keyed.
+    const reliable = /(?:^|\/)(enrich\/(profile|email)|verify\/email|linkedin\/(reply|profile-view|react))$/.test(endpoint);
     const key = options.idempotencyKey ?? (reliable ? ethers.hexlify(ethers.randomBytes(16)) : undefined);
     if (options.totalTimeoutMs !== undefined && (!Number.isFinite(options.totalTimeoutMs) || options.totalTimeoutMs <= 0)) {
       throw new ValidationError('totalTimeoutMs must be positive', 'totalTimeoutMs');
@@ -3071,7 +3239,8 @@ export class OneShot {
     try {
       resp = await this.makeRequest(endpoint, data, signed.auth, quoteId, signal, timeoutMs, extraHeaders);
     } catch (err) {
-      if (!/(enrich\/(profile|email)|verify\/email|physical-mail\/send)$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
+      // Keyed writes may already be queued server-side after a transport failure: keep the reservation.
+      if (!/(enrich\/(profile|email)|verify\/email|physical-mail\/send|linkedin\/(reply|profile-view|react))$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
       throw err;
     }
     if (!resp.ok && !(extraHeaders?.['Idempotency-Key'] && resp.status >= 500)) this.releaseUsdcReservation(signed.reservation);

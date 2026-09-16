@@ -228,10 +228,18 @@ export interface ToolOptions {
   /**
    * Client-supplied idempotency key sent as the `Idempotency-Key` header.
    * If a call times out client-side, retrying with the same key (and the
-   * same request intent) returns the original job instead of charging and
-   * executing again. Replay window: 24h; reusing a key with a different
-   * body is rejected with 422. Honored by email.send and by enrichProfile/findEmail/verifyEmail when
-   * durable enrichment is enabled on the server. Save the key before submission.
+   * same request intent) returns the original job where the endpoint applies
+   * idempotency. Those endpoints reject a conflicting body with 422.
+   * Access-token enrichment requests do not receive replay or conflict
+   * checks. Replay window and requirement differ by endpoint: email.send
+   * is optional with a 24h cached-response replay window; enrichProfile /
+   * findEmail / verifyEmail are honored when durable enrichment is enabled
+   * on the server AND the session authenticates with a wallet, not an
+   * `accessToken` — an access-token session skips the durable-replay check
+   * on these three routes entirely and always dispatches a fresh job, even
+   * with durable enrichment on (no expiry otherwise — backed by a durable
+   * row, not a cache); physical-mail/send is mandatory and likewise never
+   * expires. Save the key before submission.
    */
   idempotencyKey?: string;
 }
@@ -1266,12 +1274,22 @@ export interface RoCSResult {
 export interface Receipt {
   id: string;
   receipt_id: string;
+  agent_id: string;
+  soul_agent_id: string | null;
   category: string;
   subcategory: string;
   amount_usdc: string;
   service_fee: string;
   status: string;
   execution_status: string;
+  /** Base64url Ed25519 signature over the canonical receipt JSON, if signing is configured. */
+  signature: string | null;
+  /** Signing-time revision counter bound into the signed payload; increments on every re-sign. Absent means 1. */
+  revision?: number;
+  /** Hex SHA-256 digest of the canonical receipt JSON, if signing is configured. */
+  digest: string | null;
+  key_id: string | null;
+  alg: string | null;
   goal_id: string | null;
   settlement_tx: string | null;
   value_tag: { type: string; amount?: number; label?: string } | null;
@@ -1646,4 +1664,299 @@ export interface BrowserProfileSetup {
   expires_at?: string;
   stored_cookies?: Array<{ name: string; domain: string; path: string }>;
   verification?: 'fresh_browser_before_navigation';
+}
+
+// ============================================================================
+// LinkedIn — messaging through a human-connected account (issue #756)
+// ============================================================================
+
+export type LinkedInGrantAction = 'read' | 'reply' | 'view_profile' | 'react' | 'invite' | 'comment';
+
+export interface LinkedInConnectOptions {
+  /** Actions to ask the human to grant. `read` is needed for sync + reads; `reply` to send; `view_profile` / `react` for engagement. */
+  requestedActions: LinkedInGrantAction[];
+  /** https:// URL the human is sent to after connecting. */
+  successRedirectUrl?: string;
+  failureRedirectUrl?: string;
+}
+
+export interface LinkedInReconnectOptions {
+  /** Subset of the current grant (never wider). Defaults to the current grant. */
+  requestedActions?: LinkedInGrantAction[];
+  successRedirectUrl?: string;
+  failureRedirectUrl?: string;
+}
+
+export interface LinkedInConnectIntentIssued {
+  intent_id: string;
+  type: 'create' | 'reconnect';
+  /** Hosted LinkedIn login link. Returned once, never stored. Open top-level, never in an iframe. */
+  url: string;
+  expires_at: string;
+  status: 'pending';
+  requested_actions: string[];
+}
+
+export interface LinkedInCoverage {
+  provider_history: 'never' | 'requested' | 'running' | 'done' | 'error';
+  provider_history_completed_at: string | null;
+  enumerated_as_of: string | null;
+  enumerated_back_to: string | null;
+  latest_message_at: string | null;
+  pending_cursor: boolean;
+  message_count: number;
+  conversation_count: number;
+  last_incremental_at: string | null;
+  last_webhook_at: string | null;
+  /** provider_history done AND a windowless enumeration finished after it AND no pending cursor. */
+  complete: boolean;
+}
+
+export type LinkedInSyncState = 'reconnect_required' | 'never_synced' | 'syncing' | 'partial' | 'complete';
+
+export interface LinkedInAccount {
+  id: string;
+  status: 'connected' | 'reconnect_required' | 'error' | 'revoked' | 'deleted_upstream';
+  display_name: string | null;
+  member_urn: string | null;
+  allowed_actions: string[];
+  grant_version: number;
+  connected_at: string;
+  reconnected_at: string | null;
+  last_status_at: string | null;
+  revoked_at: string | null;
+  reconnect_required: boolean;
+  idle_revoke_at: string | null;
+  sync: {
+    history_sync_status: string;
+    history_sync_completed_at: string | null;
+    coverage_earliest_at: string | null;
+    coverage_latest_at: string | null;
+    last_full_enumeration_at: string | null;
+    last_incremental_at: string | null;
+    last_webhook_at: string | null;
+    message_count: number;
+    conversation_count: number;
+  };
+}
+
+export interface LinkedInConnectIntent {
+  intent_id: string;
+  type: 'create' | 'reconnect';
+  status: 'pending' | 'verifying' | 'completed' | 'failed' | 'expired' | 'cancelled';
+  requested_actions: string[];
+  expires_at: string;
+  failure_reason: string | null;
+  account: LinkedInAccount | null;
+}
+
+export interface LinkedInRevokeResult {
+  id: string;
+  status: 'revoked';
+  revoked_at: string;
+  cancelled_sends: number;
+  upstream_deleted: boolean;
+}
+
+export interface LinkedInSyncRun {
+  run_id: string;
+  kind: 'initial' | 'continue' | 'incremental' | 'reconcile' | 'history_request' | 'conversations';
+  trigger: 'paid' | 'scheduler' | 'webhook' | 'internal';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'paused' | 'superseded';
+  continuation_of: string | null;
+  has_next_cursor: boolean;
+  max_pages: number;
+  pages: number;
+  requests: number;
+  rate_limited: number;
+  cursor_resets: number;
+  messages_seen: number;
+  messages_inserted: number;
+  messages_updated: number;
+  conversations_inserted: number;
+  earliest_seen_at: string | null;
+  latest_seen_at: string | null;
+  provider_sync_status: string | null;
+  upstream_ms: number;
+  duration_ms: number | null;
+  error_code: string | null;
+  request_id: string | null;
+  receipt_id: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface LinkedInSyncStatus {
+  account_id: string;
+  sync_state: LinkedInSyncState;
+  coverage: LinkedInCoverage;
+  active_run: LinkedInSyncRun | null;
+  last_run: LinkedInSyncRun | null;
+  runs: LinkedInSyncRun[];
+}
+
+export interface LinkedInSyncOptions extends ToolOptions {
+  accountId: string;
+  /** continue = resume the paused cursor (default); restart = discard paused cursors; history = also re-request the provider back-fill. */
+  mode?: 'continue' | 'restart' | 'history';
+  /** Pages of 250 messages this run may fetch (1-10, default 10). */
+  maxPages?: number;
+}
+
+/** Job result of a sync run (worker `run_sync` snapshot). */
+export interface LinkedInSyncRunResult {
+  run_id: string;
+  kind: string;
+  outcome: 'exhausted' | 'bounded' | 'partial' | 'not_claimed';
+  needs_continuation: boolean;
+  provider_history: string;
+  pages: number;
+  requests: number;
+  messages_seen: number;
+  messages_inserted: number;
+  messages_updated: number;
+  conversations_inserted: number;
+  earliest_seen_at: string | null;
+  latest_seen_at: string | null;
+  has_next_cursor: boolean;
+  upstream_ms: number;
+  duration_ms: number;
+  [key: string]: unknown;
+}
+
+export interface LinkedInAttendee {
+  provider_id: string | null;
+  name: string | null;
+  is_self: boolean;
+  profile_url: string | null;
+  headline: string | null;
+  occupation: string | null;
+  location: string | null;
+  network_distance: string | null;
+}
+
+export interface LinkedInConversation {
+  id: string;
+  provider_chat_id: string;
+  name: string | null;
+  subject: string | null;
+  type: number | null;
+  attendees: LinkedInAttendee[];
+  unread_count: number;
+  archived: boolean;
+  read_only: number;
+  muted_until: string | null;
+  last_message_at: string;
+  attendees_synced: boolean;
+  updated_at: string;
+}
+
+export interface LinkedInMessage {
+  id: string;
+  conversation_id: string;
+  provider_message_id: string;
+  direction: 'inbound' | 'outbound';
+  sender_provider_id: string | null;
+  sender_name: string | null;
+  text: string | null;
+  sent_at: string;
+  seen: boolean;
+  edited: boolean;
+  deleted: boolean;
+  /** Metadata only; downloads are not available in v1. */
+  attachments: Array<{ id: string | null; type: string | null; mimetype: string | null; size: number | null; file_name: string | null }>;
+  source: 'sync' | 'webhook' | 'send';
+  ingested_at: string;
+  updated_at: string;
+}
+
+export interface LinkedInConversationsOptions {
+  accountId: string;
+  cursor?: string;
+  limit?: number;
+  /** ISO time: only conversations changed after this. */
+  since?: string;
+  unread?: boolean;
+  archived?: boolean;
+}
+
+export interface LinkedInMessagesOptions {
+  accountId: string;
+  conversationId?: string;
+  /** `inbound` = the human received it — use with `since` as a reply watermark. */
+  direction?: 'inbound' | 'outbound';
+  /** ISO time: only messages sent after this. */
+  since?: string;
+  /** ISO time: only messages edited/read/deleted after this. */
+  changedSince?: string;
+  cursor?: string;
+  limit?: number;
+  includeDeleted?: boolean;
+}
+
+export interface LinkedInConversationsPage {
+  conversations: LinkedInConversation[];
+  next_cursor: string | null;
+  has_more: boolean;
+  coverage: LinkedInCoverage;
+  sync_state: LinkedInSyncState;
+}
+
+export interface LinkedInMessagesPage {
+  messages: LinkedInMessage[];
+  next_cursor: string | null;
+  has_more: boolean;
+  coverage: LinkedInCoverage;
+  sync_state: LinkedInSyncState;
+}
+
+export interface LinkedInReplyOptions extends ToolOptions {
+  accountId: string;
+  conversationId: string;
+  /** 1-4000 characters. */
+  text: string;
+  /** Reuse to safely retry the same send; generated automatically when omitted. */
+  idempotencyKey?: string;
+}
+
+export interface LinkedInViewProfileOptions extends ToolOptions {
+  accountId: string;
+  /** Public identifier, provider id, or a linkedin.com/in/<slug> URL. */
+  identifier: string;
+  /** Default false. true = the profile owner sees the view (cannot be undone). */
+  notify?: boolean;
+  idempotencyKey?: string;
+}
+
+export type LinkedInReactionType = 'like' | 'celebrate' | 'support' | 'love' | 'insightful' | 'funny';
+
+export interface LinkedInReactOptions extends ToolOptions {
+  accountId: string;
+  /** LinkedIn post social id, e.g. urn:li:activity:… */
+  postId: string;
+  reactionType?: LinkedInReactionType;
+  idempotencyKey?: string;
+}
+
+/** Job result of a reply / react. `status` is `sent` on success; a failed job throws. */
+export interface LinkedInWriteResult {
+  action_request_id: string;
+  status: 'sent';
+  provider_message_id?: string;
+  message_id?: string | null;
+  sent_at?: string;
+  [key: string]: unknown;
+}
+
+export interface LinkedInProfileViewResult extends LinkedInWriteResult {
+  profile: {
+    provider_id: string | null;
+    public_identifier: string | null;
+    name: string | null;
+    headline: string | null;
+    location: string | null;
+    network_distance: string | null;
+    is_open_profile: boolean | null;
+  };
 }
