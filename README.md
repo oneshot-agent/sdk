@@ -283,7 +283,8 @@ await hosted.webSearch({ query: '…' });                        // billed to th
 An access-token session identifies the agent with the token (no `x-agent-proof`), **pays
 every call from the agent's prepaid credit balance**, and never signs x402. When credits
 can't cover a call it throws `InsufficientCreditsError` (`required`, `balance`,
-`shortfall`) — top up and retry. Budgets set on the agent still apply, with credit-funded
+`shortfall`) — top up from the wallet session with `agent.topUpCredits(amount)` (pays
+the same USDC via x402) and retry. Budgets set on the agent still apply, with credit-funded
 spend counted; they are **read-only** from a token session (`agent.budgets()` works,
 passing `budgets` to the constructor throws). A token cannot mint, list, or revoke
 tokens; do that from the wallet session (`listAccessTokens()`, `revokeAccessToken(id)`).

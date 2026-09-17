@@ -150,7 +150,7 @@ import type {
   BuildProduct, BuildLeadCapture, BuildBrand, BuildImages, BuildOptions,
   BuildQuote, BuildResult, BrowserTaskOptions, BrowserProfile, BrowserProfileCreateOptions, BrowserProfileSetup, BrowserQuote,
   BrowserResult, UpdateBuildOptions, SpendCategory, SpendBreakdown, RoCSResult, RoCSByGoalResult,
-  Receipt, ReceiptsListResult, UnifiedBalance, ComputeSchedule, ComputeOptions,
+  Receipt, ReceiptsListResult, UnifiedBalance, CreditsTopUpResult, ComputeSchedule, ComputeOptions,
   ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeTask,
   ComputeBudgetStatus,
   DomainPoolEntry, DomainPoolListResult, DomainPoolStatusResult,
@@ -1726,6 +1726,62 @@ export class OneShot {
     }
 
     const json = await fundResp.json() as { data: { goal_id: string; topped_up: number; total_budget: string; remaining: string } };
+    return json.data;
+  }
+
+  /**
+   * Add prepaid credits by paying the same amount in USDC via x402.
+   *
+   * Credits are what access-token (hosted MCP) sessions spend from. This is a
+   * wallet-session operation: the wallet pays `amount` USDC on-chain and
+   * `amount` lands on the agent's credit balance. A token session throws
+   * before any request (credits cannot be bought with credits).
+   *
+   * @example
+   * ```typescript
+   * const r = await agent.topUpCredits(25);
+   * console.log(r.credits_balance); // "25.000000"
+   * ```
+   */
+  async topUpCredits(amount: number): Promise<CreditsTopUpResult> {
+    this.assertWalletSession('top up credits');
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new ValidationError('amount must be a positive number', 'amount');
+    }
+    const path = '/v1/credits/top-up';
+    const payload = { amount };
+    // A top-up moves USDC out of the wallet like any other paid call, so the
+    // configured budgets apply: sync first, pre-flight the amount before signing.
+    await this.ensureBudgetsSynced();
+
+    const quoteResp = await this.makeRequest(path, payload);
+    if (quoteResp.status !== 402) {
+      await this.failFromResponse('Expected 402 for credit top-up', quoteResp);
+    }
+    const quoteData = await quoteResp.json() as {
+      payment_request: { chain_id: number; token_address: string; amount: string; recipient: string };
+    };
+    this.log(`Credit top-up: paying ${quoteData.payment_request.amount}`);
+
+    const paymentInfo: PaymentInfo = {
+      protocol: 'x402',
+      network: `eip155:${quoteData.payment_request.chain_id}`,
+      payTo: quoteData.payment_request.recipient,
+      amount: quoteData.payment_request.amount,
+      currency: 'USD',
+      facilitator_url: this.baseUrl,
+      token: { address: quoteData.payment_request.token_address, symbol: 'USDC', decimals: 6 },
+    };
+    // No quote id on this route: the 402 header carries the exact requirement.
+    const { accepted, resource, extensions } = this.parsePaymentRequired(quoteResp.headers.get("payment-required"));
+    paymentInfo.amount = this.chargeAmount(accepted, quoteData.payment_request.amount);
+    this.assertWithinBudget(paymentInfo.amount);
+    const signed = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
+    const resp = await this.makePaidRequest(signed, path, payload);
+    if (!resp.ok) {
+      await this.failFromResponse('Credit top-up failed', resp);
+    }
+    const json = await resp.json() as { data: CreditsTopUpResult };
     return json.data;
   }
 

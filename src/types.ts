@@ -1332,6 +1332,20 @@ export interface RoCSByGoalResult {
   period_days: number;
 }
 
+/** Result of `agent.topUpCredits(amount)` (POST /v1/credits/top-up). */
+export interface CreditsTopUpResult {
+  /** USDC credited, 6 decimals. */
+  topped_up: string;
+  /** Credit balance after the top-up. */
+  credits_balance: string;
+  /** agent_credits ledger row id. */
+  transaction_id: string;
+  /** On-chain settlement transaction hash (also the idempotency key). */
+  settlement_tx: string;
+  /** true when this settlement had already been credited (idempotent replay). */
+  already_credited: boolean;
+}
+
 export interface UnifiedBalance {
   on_chain_balance: string;
   credits_balance: string;
