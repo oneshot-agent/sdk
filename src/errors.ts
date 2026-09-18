@@ -33,13 +33,23 @@ export class ToolError extends OneShotError {
  * name the amounts when the two disagree — the case that produced a silent,
  * bodiless 402 before the server started reporting it.
  */
+export interface PaymentDiagnostics {
+  status: string;
+  observation_block?: string;
+  observation_time?: string;
+  findings: { code: string }[];
+}
+
 export class PaymentError extends OneShotError {
   constructor(
     message: string,
     public readonly reason: string,
     public readonly expected?: { amount?: string; asset?: string; network?: string; payTo?: string },
     public readonly received?: { amount?: string },
-    public readonly quoteId?: string
+    public readonly quoteId?: string,
+    public readonly paymentAttemptId?: string,
+    public readonly stage?: string,
+    public readonly diagnostics?: PaymentDiagnostics,
   ) {
     super(message);
     this.name = 'PaymentError';

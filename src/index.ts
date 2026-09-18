@@ -52,7 +52,7 @@ export * from './errors';
 // subpath directly if you need it.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.35.0';
+const SDK_VERSION = '0.36.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -2280,7 +2280,7 @@ export class OneShot {
     const text = await response.text();
     const credits = response.status === 402 ? this.parseInsufficientCredits(text) : undefined;
     if (credits) throw credits;
-    const rejection = response.status === 402 ? this.parsePaymentRejection(text) : undefined;
+    const rejection = [402, 500].includes(response.status) ? this.parsePaymentRejection(text) : undefined;
     if (rejection) throw rejection;
     const budget = response.status === 403 ? this.parseBudgetRejection(text) : undefined;
     if (budget) throw budget;
@@ -2401,13 +2401,16 @@ export class OneShot {
       expected?: { amount?: string; asset?: string; network?: string; pay_to?: string };
       received?: { amount?: string };
       quote_id?: string;
+      payment_attempt_id?: string;
+      stage?: string;
+      diagnostics?: import('./errors').PaymentDiagnostics;
     };
     try {
       data = JSON.parse(text);
     } catch {
       return undefined;
     }
-    if (data?.error !== 'payment_verification_failed') return undefined;
+    if (!['payment_verification_failed', 'payment_processing_error'].includes(data?.error ?? '')) return undefined;
 
     const reason = data.reason || 'unknown';
     const expectedAmount = data.expected?.amount;
@@ -2418,7 +2421,7 @@ export class OneShot {
     ].filter(Boolean).join(', ');
 
     return new PaymentError(
-      `payment rejected: ${reason}${detail ? ` — ${detail}` : ''}${data.message ? ` (${data.message})` : ''}`,
+      `payment rejected: ${reason}${detail ? ` — ${detail}` : ''}${data.message ? ` (${data.message})` : ''}${data.payment_attempt_id ? ` [payment attempt ${data.payment_attempt_id}]` : ''}`,
       reason,
       {
         amount: expectedAmount,
@@ -2428,6 +2431,9 @@ export class OneShot {
       },
       { amount: receivedAmount },
       data.quote_id,
+      data.payment_attempt_id,
+      data.stage,
+      data.diagnostics,
     );
   }
 
@@ -3476,3 +3482,5 @@ export class OneShot {
     } };
   }
 }
+
+export type { PaymentDiagnostics } from './errors';
