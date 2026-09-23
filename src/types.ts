@@ -1730,6 +1730,7 @@ export type LinkedInSyncState = 'reconnect_required' | 'never_synced' | 'syncing
 
 export interface LinkedInAccount {
   id: string;
+  /** deleted_upstream/revoked require a new connect; reconnect_required permits reconnect. */
   status: 'connected' | 'reconnect_required' | 'error' | 'revoked' | 'deleted_upstream';
   display_name: string | null;
   member_urn: string | null;
@@ -1739,6 +1740,7 @@ export interface LinkedInAccount {
   reconnected_at: string | null;
   last_status_at: string | null;
   revoked_at: string | null;
+  /** False for deleted_upstream: start a new connection instead of retrying reconnect. */
   reconnect_required: boolean;
   idle_revoke_at: string | null;
   sync: {

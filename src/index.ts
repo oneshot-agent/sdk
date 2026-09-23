@@ -1,7 +1,7 @@
 import { PhysicalMail } from './physical-mail';
 export * from './physical-mail';
 import { deadlineScope, abortable } from './deadline';
-import { RequestTimeoutError, InsufficientCreditsError } from './errors';
+import { RequestTimeoutError, InsufficientCreditsError, LinkedInConnectRequiredError } from './errors';
 import { ReadOnlyWalletProvider } from './providers/read-only';
 import { ethers } from 'ethers';
 import type { WalletProvider } from './wallet-provider';
@@ -1138,7 +1138,13 @@ export class OneShot {
       ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
       signal: AbortSignal.timeout(60_000),
     });
-    if (!response.ok) throw new ToolError(`LinkedIn ${opts.what} failed`, response.status, await response.text());
+    if (!response.ok) {
+      const body = await response.text();
+      let code: unknown;
+      try { code = JSON.parse(body)?.error; } catch { /* Non-JSON upstream error. */ }
+      if (response.status === 409 && code === 'connect_required') throw new LinkedInConnectRequiredError(body);
+      throw new ToolError(`LinkedIn ${opts.what} failed`, response.status, body);
+    }
     return response.json() as Promise<T>;
   }
 

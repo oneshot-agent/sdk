@@ -698,3 +698,27 @@ Create a browser profile, call `startBrowserProfileSetup(profile.id, loginUrl)`,
 The finish operation stops the session and inspects cookies in a fresh browser before website navigation. It returns cookie names/domains/paths, never values; a subsequent task must check whether the site accepts the login. Setup expires after 15 minutes and abandoned sessions are closed by the lifecycle sweep. Profiles are retained. Start setup again to reconnect an expired site login. Keep live URLs, passwords, and codes out of logs and agent prompts.
 
 Browser tasks reject the legacy `secrets` field and `max_steps` below 25 before payment. Use interactive setup or `createBrowserProfile(name, { cookies })` / `{ storage_state }` for authentication. `cost` is the provider cost; `billed_cost` is the final customer charge after reconciliation (null while pending). Failed `JobError`s expose `partialResult` for diagnostics.
+
+### Recovering a missing LinkedIn connection
+
+Use `reconnectLinkedInAccount(id)` for an existing upstream connection whose session needs renewal. A deleted upstream account needs a new `linkedinConnect()` intent and fresh human authorization.
+
+Account reads refresh disconnected accounts against the provider. Once an upstream account-read confirms `404`, the old connection is marked `deleted_upstream`, its grant is ended, and `reconnect_required` is false. It is omitted from the default active account list; use `includeRevoked: true` or fetch it by ID to inspect its terminal status. Authentication failures, timeouts, and provider outages do not trigger this transition.
+
+```ts
+import { LinkedInConnectRequiredError } from '@oneshot-agent/sdk';
+
+try {
+  const intent = await agent.reconnectLinkedInAccount(account.id);
+  // Show intent.url to the human.
+} catch (error) {
+  if (error instanceof LinkedInConnectRequiredError) {
+    // Show “Connect LinkedIn” and ask the human to choose grants again.
+    // On confirmation, call agent.linkedinConnect({ requestedActions: ['read'] }).
+  } else {
+    throw error;
+  }
+}
+```
+
+The HTTP equivalent is `409` with `error: "connect_required"` and `details.next_action: "connect"`. Existing SDK versions can inspect `ToolError.responseBody` for this contract.

@@ -23,6 +23,16 @@ export class ToolError extends OneShotError {
   }
 }
 
+/** The saved LinkedIn connection is gone; ask the human to authorize a new connect. */
+export class LinkedInConnectRequiredError extends ToolError {
+  readonly code = 'connect_required';
+  readonly nextAction = 'connect';
+  constructor(responseBody: string) {
+    super('This LinkedIn connection no longer exists. Start a new connection.', 409, responseBody);
+    this.name = 'LinkedInConnectRequiredError';
+  }
+}
+
 /**
  * The facilitator rejected the payment signed for this request.
  *
