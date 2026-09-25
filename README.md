@@ -629,6 +629,42 @@ const order = await agent.commerceBuy({
 });
 ```
 
+### Physical mail
+
+`agent.physicalMail` exposes `uploadArtwork`, `validateAddress`, `preview`, `getQuote`, `approve`, `send`, `getOrder`, `recover`, and `cancel` for U.S. letters and 4×6 postcards. Inspect the proof and price before explicitly approving each quote. Persist `idempotencyKey` before `send`; use `recover(key)` after uncertain responses. Approval is never inferred by automatic payment retries. Payment receipts and postal events are separate; delivery does not prove readership. See `docs/physical-mail.md` in the OneShot repository for configuration and examples.
+
+### Account login and 2FA (SDK 0.34.0+)
+
+Create a browser profile, call `startBrowserProfileSetup(profile.id, loginUrl)`, and poll `getBrowserProfileSetup(profile.id)` until `status` is `idle`. Open the returned `live_url` privately for the user to sign in and complete the site's verification. It currently uses the Browser-Use domain. After the user confirms completion, call `finishBrowserProfileSetup(profile.id)` and store the profile ID for later `browser({ profile_id, task })` calls.
+
+The finish operation stops the session and inspects cookies in a fresh browser before website navigation. It returns cookie names/domains/paths, never values; a subsequent task must check whether the site accepts the login. Setup expires after 15 minutes and abandoned sessions are closed by the lifecycle sweep. Profiles are retained. Start setup again to reconnect an expired site login. Keep live URLs, passwords, and codes out of logs and agent prompts.
+
+Browser tasks reject the legacy `secrets` field and `max_steps` below 25 before payment. Use interactive setup or `createBrowserProfile(name, { cookies })` / `{ storage_state }` for authentication. `cost` is the provider cost; `billed_cost` is the final customer charge after reconciliation (null while pending). Failed `JobError`s expose `partialResult` for diagnostics.
+
+
+### Recovering a missing LinkedIn connection
+
+Use `reconnectLinkedInAccount(id)` for an existing upstream connection whose session needs renewal. A deleted upstream account needs a new `linkedinConnect()` intent and fresh human authorization.
+
+Account reads refresh disconnected accounts against the provider. Once an upstream account-read confirms `404`, the old connection is marked `deleted_upstream`, its grant is ended, and `reconnect_required` is false. It is omitted from the default active account list; use `includeRevoked: true` or fetch it by ID to inspect its terminal status. Authentication failures, timeouts, and provider outages do not trigger this transition.
+
+```ts
+import { LinkedInConnectRequiredError } from '@oneshot-agent/sdk';
+
+try {
+  const intent = await agent.reconnectLinkedInAccount(account.id);
+  // Show intent.url to the human.
+} catch (error) {
+  if (error instanceof LinkedInConnectRequiredError) {
+    // Show “Connect LinkedIn” and ask the human to choose grants again.
+    // On confirmation, call agent.linkedinConnect({ requestedActions: ['read'] }).
+  } else {
+    throw error;
+  }
+}
+```
+
+The HTTP equivalent is `409` with `error: "connect_required"` and `details.next_action: "connect"`. Existing SDK versions can inspect `ToolError.responseBody` for this contract.
 ### Notifications
 
 ```typescript
@@ -685,40 +721,3 @@ The signal **cannot** cancel:
 ## License
 
 MIT
-
-### Physical mail
-
-`agent.physicalMail` exposes `uploadArtwork`, `validateAddress`, `preview`, `getQuote`, `approve`, `send`, `getOrder`, `recover`, and `cancel` for U.S. letters and 4×6 postcards. Inspect the proof and price before explicitly approving each quote. Persist `idempotencyKey` before `send`; use `recover(key)` after uncertain responses. Approval is never inferred by automatic payment retries. Payment receipts and postal events are separate; delivery does not prove readership. See `docs/physical-mail.md` in the OneShot repository for configuration and examples.
-
-
-### Account login and 2FA (SDK 0.34.0+)
-
-Create a browser profile, call `startBrowserProfileSetup(profile.id, loginUrl)`, and poll `getBrowserProfileSetup(profile.id)` until `status` is `idle`. Open the returned `live_url` privately for the user to sign in and complete the site's verification. It currently uses the Browser-Use domain. After the user confirms completion, call `finishBrowserProfileSetup(profile.id)` and store the profile ID for later `browser({ profile_id, task })` calls.
-
-The finish operation stops the session and inspects cookies in a fresh browser before website navigation. It returns cookie names/domains/paths, never values; a subsequent task must check whether the site accepts the login. Setup expires after 15 minutes and abandoned sessions are closed by the lifecycle sweep. Profiles are retained. Start setup again to reconnect an expired site login. Keep live URLs, passwords, and codes out of logs and agent prompts.
-
-Browser tasks reject the legacy `secrets` field and `max_steps` below 25 before payment. Use interactive setup or `createBrowserProfile(name, { cookies })` / `{ storage_state }` for authentication. `cost` is the provider cost; `billed_cost` is the final customer charge after reconciliation (null while pending). Failed `JobError`s expose `partialResult` for diagnostics.
-
-### Recovering a missing LinkedIn connection
-
-Use `reconnectLinkedInAccount(id)` for an existing upstream connection whose session needs renewal. A deleted upstream account needs a new `linkedinConnect()` intent and fresh human authorization.
-
-Account reads refresh disconnected accounts against the provider. Once an upstream account-read confirms `404`, the old connection is marked `deleted_upstream`, its grant is ended, and `reconnect_required` is false. It is omitted from the default active account list; use `includeRevoked: true` or fetch it by ID to inspect its terminal status. Authentication failures, timeouts, and provider outages do not trigger this transition.
-
-```ts
-import { LinkedInConnectRequiredError } from '@oneshot-agent/sdk';
-
-try {
-  const intent = await agent.reconnectLinkedInAccount(account.id);
-  // Show intent.url to the human.
-} catch (error) {
-  if (error instanceof LinkedInConnectRequiredError) {
-    // Show “Connect LinkedIn” and ask the human to choose grants again.
-    // On confirmation, call agent.linkedinConnect({ requestedActions: ['read'] }).
-  } else {
-    throw error;
-  }
-}
-```
-
-The HTTP equivalent is `409` with `error: "connect_required"` and `details.next_action: "connect"`. Existing SDK versions can inspect `ToolError.responseBody` for this contract.
