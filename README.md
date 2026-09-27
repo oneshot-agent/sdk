@@ -642,6 +642,28 @@ The finish operation stops the session and inspects cookies in a fresh browser b
 Browser tasks reject the legacy `secrets` field and `max_steps` below 25 before payment. Use interactive setup or `createBrowserProfile(name, { cookies })` / `{ storage_state }` for authentication. `cost` is the provider cost; `billed_cost` is the final customer charge after reconciliation (null while pending). Failed `JobError`s expose `partialResult` for diagnostics.
 
 
+### LinkedIn invitations and withdrawal
+
+Available in `@oneshot-agent/sdk` 0.38.0 and later. Both operations require a connected account with the `invite` grant.
+
+```typescript
+const invitation = await agent.linkedinInvite({
+  accountId,
+  profile: 'https://www.linkedin.com/in/jane-doe/',
+  note: 'Enjoyed your presentation.',
+  idempotencyKey: 'event-jane-invite',
+});
+
+// To withdraw that pending invitation later:
+await agent.linkedinWithdrawInvitation({
+  accountId,
+  invitationId: invitation.invitation_id,
+  idempotencyKey: 'event-jane-withdraw',
+});
+```
+
+Use the OneShot `invitation_id`, not the provider invitation ID. Withdrawal can also cancel a queued invitation; it never disconnects an established connection. Invitations default to 25 per account per UTC day, and withdrawing a sent invitation does not restore that day's capacity. Reuse the same idempotency key when retrying an operation.
+
 ### Recovering a missing LinkedIn connection
 
 Use `reconnectLinkedInAccount(id)` for an existing upstream connection whose session needs renewal. A deleted upstream account needs a new `linkedinConnect()` intent and fresh human authorization.
