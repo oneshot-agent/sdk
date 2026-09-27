@@ -52,7 +52,7 @@ export * from './errors';
 // subpath directly if you need it.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.38.0';
+const SDK_VERSION = '0.38.1';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -1178,7 +1178,7 @@ export class OneShot {
     return this.linkedinFree('GET', `/accounts/${encodeURIComponent(accountId)}`, { what: 'account' });
   }
 
-  /** Reconnect an existing account (keeps ownership; may narrow, never widen, the grant). */
+  /** Reconnect an existing account (preserves ownership and history; replaces the grant after fresh hosted authentication). */
   async reconnectLinkedInAccount(accountId: string, options: LinkedInReconnectOptions = {}): Promise<LinkedInConnectIntentIssued> {
     this.validate(accountId, 'accountId');
     return this.linkedinFree('POST', `/accounts/${encodeURIComponent(accountId)}/reconnect`, {

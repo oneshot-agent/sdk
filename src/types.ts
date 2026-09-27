@@ -1695,7 +1695,7 @@ export interface LinkedInConnectOptions {
 }
 
 export interface LinkedInReconnectOptions {
-  /** Subset of the current grant (never wider). Defaults to the current grant. */
+  /** Complete desired grant, including existing actions to retain. May add actions after fresh hosted authentication. Defaults to the current grant. */
   requestedActions?: LinkedInGrantAction[];
   successRedirectUrl?: string;
   failureRedirectUrl?: string;
