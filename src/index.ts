@@ -169,6 +169,7 @@ import type {
   LinkedInMessagesOptions,
   LinkedInMessagesPage,
   LinkedInReplyOptions,
+  LinkedInInviteOptions, LinkedInInviteResult, LinkedInWithdrawInvitationOptions, LinkedInWithdrawInvitationResult,
   LinkedInViewProfileOptions,
   LinkedInReactOptions,
   LinkedInWriteResult,
@@ -1225,6 +1226,22 @@ export class OneShot {
     this.validate(options.accountId, 'accountId');
     const { accountId, mode, maxPages, ...rest } = options;
     return this.tool('linkedin/sync', { ...rest, account_id: accountId, ...(mode ? { mode } : {}), ...(maxPages ? { max_pages: maxPages } : {}), timeout: options.timeout ?? 600 });
+  }
+
+  /** Send an invitation through the connected account (default cap: 25/day). */
+  async linkedinInvite(options: LinkedInInviteOptions): Promise<LinkedInInviteResult> {
+    this.validate(options.accountId, 'accountId');
+    this.validate(options.profile, 'profile');
+    const { accountId, profile, note, ...rest } = options;
+    return this.tool('linkedin/invite', { ...rest, account_id: accountId, profile, ...(note !== undefined ? { note } : {}), timeout: options.timeout ?? 180 });
+  }
+
+  /** Withdraw a tracked invitation; does not remove an established connection. */
+  async linkedinWithdrawInvitation(options: LinkedInWithdrawInvitationOptions): Promise<LinkedInWithdrawInvitationResult> {
+    this.validate(options.accountId, 'accountId');
+    this.validate(options.invitationId, 'invitationId');
+    const { accountId, invitationId, ...rest } = options;
+    return this.tool('linkedin/invite/withdraw', { ...rest, account_id: accountId, invitation_id: invitationId, timeout: options.timeout ?? 180 });
   }
 
   /** Send a reply in an existing conversation through the connected account. Paced; per-account daily cap. */
@@ -2497,7 +2514,7 @@ export class OneShot {
 
   private async executeToolRequest<T>(endpoint: string, options: ToolOptions & Record<string, unknown>, quoteId?: string): Promise<T> {
     // LinkedIn writes act through a human's account and cannot be recalled: always keyed.
-    const reliable = /(?:^|\/)(enrich\/(profile|email)|verify\/email|linkedin\/(reply|profile-view|react))$/.test(endpoint);
+    const reliable = /(?:^|\/)(enrich\/(profile|email)|verify\/email|linkedin\/(reply|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint);
     const key = options.idempotencyKey ?? (reliable ? ethers.hexlify(ethers.randomBytes(16)) : undefined);
     if (options.totalTimeoutMs !== undefined && (!Number.isFinite(options.totalTimeoutMs) || options.totalTimeoutMs <= 0)) {
       throw new ValidationError('totalTimeoutMs must be positive', 'totalTimeoutMs');
@@ -2600,6 +2617,14 @@ export class OneShot {
       }
     }
 
+    if (response.status === 409 && /(?:^|\/)linkedin\/invite(?:\/withdraw)?$/.test(endpoint)) {
+      const duplicate = await response.clone().json().catch(() => null) as any;
+      if (duplicate?.error === 'duplicate_request' && typeof duplicate.details?.request_id === 'string') {
+        response = Response.json({ request_id: duplicate.details.request_id, receipt_id: duplicate.details.receipt_id,
+          status: 'processing', tool: 'linkedin', linkedin: { action_request_id: duplicate.details.action_request_id,
+            invitation_id: duplicate.details.invitation_id } }, { status: 202 });
+      }
+    }
     if (!response.ok) {
       await this.failFromResponse('Tool request failed', response);
     }
@@ -3308,7 +3333,7 @@ export class OneShot {
       resp = await this.makeRequest(endpoint, data, signed.auth, quoteId, signal, timeoutMs, extraHeaders);
     } catch (err) {
       // Keyed writes may already be queued server-side after a transport failure: keep the reservation.
-      if (!/(enrich\/(profile|email)|verify\/email|physical-mail\/send|linkedin\/(reply|profile-view|react))$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
+      if (!/(enrich\/(profile|email)|verify\/email|physical-mail\/send|linkedin\/(reply|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
       throw err;
     }
     if (!resp.ok && !(extraHeaders?.['Idempotency-Key'] && resp.status >= 500)) this.releaseUsdcReservation(signed.reservation);

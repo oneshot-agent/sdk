@@ -713,7 +713,7 @@ The signal **cannot** cancel:
 
 - [Documentation](https://docs.oneshotagent.com)
 - [MCP Server](https://www.npmjs.com/package/@oneshot-agent/mcp-server) — Claude Desktop, Cursor, Claude Code (local), or the hosted endpoint at `https://win.oneshotagent.com/mcp` with an access token
-- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 43 tools as LangChain BaseTool
+- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 45 tools as LangChain BaseTool
 - [Python SDK (Core)](https://pypi.org/project/oneshot-python/) — HTTP client with x402 payments
 - [Pricing](https://docs.oneshotagent.com/pricing)
 - [GitHub](https://github.com/oneshot-agent/sdk)

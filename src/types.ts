@@ -1729,6 +1729,8 @@ export interface LinkedInCoverage {
 export type LinkedInSyncState = 'reconnect_required' | 'never_synced' | 'syncing' | 'partial' | 'complete';
 
 export interface LinkedInAccount {
+  /** Present on getLinkedInAccount; daily capacity shared across API callers. */
+  limits?: { invites: { limit: number; used: number; pending: number; remaining: number; resets_at: string } };
   id: string;
   /** deleted_upstream/revoked require a new connect; reconnect_required permits reconnect. */
   status: 'connected' | 'reconnect_required' | 'error' | 'revoked' | 'deleted_upstream';
@@ -1925,6 +1927,32 @@ export interface LinkedInMessagesPage {
   has_more: boolean;
   coverage: LinkedInCoverage;
   sync_state: LinkedInSyncState;
+}
+
+export interface LinkedInInviteOptions extends ToolOptions {
+  accountId: string;
+  profile: string;
+  note?: string;
+  idempotencyKey?: string;
+}
+export interface LinkedInWithdrawInvitationOptions extends ToolOptions {
+  accountId: string;
+  /** Stable OneShot invitation_id returned by linkedinInvite. */
+  invitationId: string;
+  idempotencyKey?: string;
+}
+export interface LinkedInInviteResult {
+  action_request_id: string;
+  invitation_id: string;
+  status: 'sent' | 'already_connected' | 'pending';
+  provider_invitation_id?: string | null;
+  tracked?: boolean;
+}
+export interface LinkedInWithdrawInvitationResult {
+  action_request_id: string;
+  invitation_id: string;
+  status: 'cancelled_before_send' | 'withdrawn' | 'already_withdrawn' | 'not_pending';
+  provider_invitation_id?: string;
 }
 
 export interface LinkedInReplyOptions extends ToolOptions {
