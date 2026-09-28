@@ -189,6 +189,12 @@ export interface DecisionContext {
 export interface ToolOptions {
   /** End-to-end deadline in milliseconds. Existing timeout remains the polling limit in seconds. */
   totalTimeoutMs?: number;
+  /**
+   * Release a call the agent's action policy held for approval. Pass the
+   * `approvalId` from the ApprovalRequiredError once a human approved it; the
+   * server runs the call once if it is the same action that was approved.
+   */
+  approvalId?: string;
   /** Called before submission, so the recovery key can be persisted immediately. */
   onRequestCreated?: (event: { idempotencyKey: string }) => void;
   /** Called when the server returns durable job and receipt handles. */
@@ -1016,6 +1022,108 @@ export interface SmsInboxMessage {
 export interface SmsInboxResult {
   messages: SmsInboxMessage[];
   count: number;
+}
+
+// ---------------------------------------------------------------------------
+// Inbound voice — an agent-owned number answers its own calls
+// ---------------------------------------------------------------------------
+
+export interface VoiceNumber {
+  id: string;
+  phone_number: string;
+  status: string;
+  voice_capable: boolean;
+  sms_capable: boolean;
+  inbound_enabled: boolean;
+  last_used_at: string | null;
+}
+
+/** Result of `provisionVoiceNumber`. */
+export interface ProvisionedVoiceNumber {
+  id: string;
+  phone_number: string;
+  voice_capable: boolean;
+  sms_capable: boolean;
+  /** True when the number has inbound settings (see `setInboundVoice`). */
+  inbound_configured: boolean;
+  inbound_enabled: boolean;
+  /** True only on the request that bought the number. */
+  is_new: boolean;
+  /** Amount debited from credits by this request ("0.000000" for an existing number). */
+  charged: string;
+  receipt_id: string | null;
+}
+
+export type InboundWeekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+
+export interface InboundBusinessHours {
+  /** IANA zone, e.g. "America/New_York". */
+  timezone: string;
+  /** Open windows; `end` must be after `start` ("HH:MM", 24h). */
+  windows: Array<{ days: InboundWeekday[]; start: string; end: string }>;
+}
+
+export interface InboundVoiceConfig {
+  /** How the assistant answers this number. */
+  prompt: string;
+  first_message?: string;
+  /** Voice id; omit for the default voice. */
+  voice_id?: string;
+  language?: 'en' | 'es' | 'fr' | 'de' | 'pt' | 'it' | 'nl' | 'multi';
+  /** Call tools the assistant may use. Default: ['end_call']. */
+  allowed_tools?: Array<'transfer_call' | 'end_call'>;
+  /** E.164. Required with transfer_call or after_hours: 'transfer'. */
+  transfer_number?: string;
+  /** Omit or null for always open. */
+  business_hours?: InboundBusinessHours | null;
+  /** Default 'take_message'. */
+  after_hours?: 'take_message' | 'transfer' | 'decline';
+  after_hours_message?: string;
+  /** 1–60, default 10. Calls also stop when prepaid credits run out. */
+  max_minutes?: number;
+  /** HTTPS, public host. Receives a signed `voice.inbound.completed` event after each call. */
+  webhook_url?: string | null;
+  enabled?: boolean;
+}
+
+export interface InboundVoiceConfigResult extends Required<Pick<InboundVoiceConfig, 'prompt'>> {
+  phone_number: string;
+  phone_number_id: string;
+  enabled: boolean;
+  webhook_url: string | null;
+  /** Returned once, when webhook_url is first set or changed. Verify `X-OneShot-Signature` with it. */
+  webhook_secret?: string;
+  updated_at: string;
+  [key: string]: unknown;
+}
+
+export interface InboundCall {
+  id: string;
+  phone_number_id: string | null;
+  from: string;
+  to: string;
+  /** 'in-progress' | 'ended' | 'declined' */
+  status: string;
+  /** 'in_hours' | 'take_message' | 'transfer' | 'decline' */
+  mode: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number;
+  summary: string | null;
+  transcript?: string | null;
+  recording_url?: string | null;
+  /** Debited from prepaid credits. */
+  charge_usdc: string | null;
+  receipt_id: string | null;
+  created_at: string;
+}
+
+export interface InboundCallsOptions {
+  limit?: number;
+  /** ISO timestamp; returns calls created before it (for paging). */
+  before?: string;
+  phone_number_id?: string;
+  include_transcript?: boolean;
 }
 
 export interface Notification {

@@ -196,3 +196,28 @@ export class InsufficientCreditsError extends OneShotError {
     this.name = 'InsufficientCreditsError';
   }
 }
+
+/**
+ * The agent's action policy held this call for a human decision. It was NOT
+ * run or charged. Wait for `approvalId` (agent.approvals.waitFor) and, if it
+ * is approved, repeat the same call with `{ approvalId }` — it then runs once.
+ */
+export class ApprovalRequiredError extends OneShotError {
+  constructor(
+    message: string,
+    public readonly approvalId: string,
+    public readonly approval?: Record<string, unknown>,
+    public readonly rule?: string,
+  ) {
+    super(message);
+    this.name = 'ApprovalRequiredError';
+  }
+}
+
+/** The agent's action policy denies this call outright. It was not run or charged. */
+export class ActionDeniedError extends OneShotError {
+  constructor(message: string, public readonly rule?: string) {
+    super(message);
+    this.name = 'ActionDeniedError';
+  }
+}

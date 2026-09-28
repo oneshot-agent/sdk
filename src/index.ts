@@ -1,5 +1,6 @@
 import { PhysicalMail } from './physical-mail';
 export * from './physical-mail';
+export * from './approvals';
 import { deadlineScope, abortable } from './deadline';
 import { RequestTimeoutError, InsufficientCreditsError, LinkedInConnectRequiredError } from './errors';
 import { ReadOnlyWalletProvider } from './providers/read-only';
@@ -17,6 +18,8 @@ import {
   PaymentError,
   BudgetExceededError,
   BudgetSyncError,
+  ApprovalRequiredError,
+  ActionDeniedError,
 } from './errors';
 
 export type { WalletProvider, TypedDataDomain, TypedDataField, TransactionRequest, TransactionResponse } from './wallet-provider';
@@ -26,6 +29,7 @@ export { ReadOnlyWalletProvider } from './providers/read-only';
 export { getSwapQuote, executeSwap } from './swap';
 export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
+import { Approvals, ActionPolicies } from './approvals';
 // Receipt verification (`canonicalizeReceipt`, `verifyReceipt`,
 // `receiptFromWire`, and their supporting types `SignableReceipt`,
 // `ReceiptSignatureFields`, `ReceiptJwk`, `ReceiptJwks`,
@@ -52,7 +56,7 @@ export * from './errors';
 // subpath directly if you need it.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.38.1';
+const SDK_VERSION = '0.41.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -147,6 +151,7 @@ import type {
   CommerceQuote, CommerceBuyResult, CommerceSearchProduct, CommerceSearchResult,
   VoiceQuote, VoiceCallResult, SmsQuote, SmsSendResult, SmsInboxMessage,
   SmsInboxResult, Notification, NotificationsListOptions, NotificationsResult,
+  VoiceNumber, ProvisionedVoiceNumber, InboundVoiceConfig, InboundVoiceConfigResult, InboundCall, InboundCallsOptions,
   BuildProduct, BuildLeadCapture, BuildBrand, BuildImages, BuildOptions,
   BuildQuote, BuildResult, BrowserTaskOptions, BrowserProfile, BrowserProfileCreateOptions, BrowserProfileSetup, BrowserQuote,
   BrowserResult, UpdateBuildOptions, SpendCategory, SpendBreakdown, RoCSResult, RoCSByGoalResult,
@@ -231,6 +236,11 @@ export class OneShot {
     if (!response.ok) await this.failFromResponse('Physical mail request failed', response);
     return await response.json() as T;
   }, input => this.executeToolRequest('/v1/tools/physical-mail/send', { ...input, wait: false }));
+
+  /** Ask a named human to decide, and read decisions. See ./approvals.ts. */
+  readonly approvals = new Approvals((path, method, body, scope) => this.agentJson(path, method, body, scope));
+  /** Which paid calls run, are denied, or wait for approval. Wallet sessions write it. */
+  readonly policy = new ActionPolicies((path, method, body, scope) => this.agentJson(path, method, body, scope));
 
   private readonly provider: WalletProvider;
   private readonly rpcProvider: ethers.JsonRpcProvider;
@@ -500,6 +510,11 @@ export class OneShot {
       payload.idempotencyKey = options.idempotencyKey;
     }
 
+    if (options.approvalId) {
+      // Releases a send the action policy held (see ApprovalRequiredError).
+      payload.approvalId = options.approvalId;
+    }
+
     return this.executeToolRequest<EmailResult>('/v1/tools/email/send', payload, quote.quote_id);
   }
 
@@ -716,6 +731,7 @@ export class OneShot {
       payload,
       signal: options.signal,
       maxCost: options.maxCost,
+      approvalId: options.approvalId,
       quoteTimeoutMs: 120000,
       execTimeoutMs: 60000,
       expectMsg: 'Expected 402 for quote',
@@ -794,6 +810,7 @@ export class OneShot {
       payload,
       signal: options.signal,
       maxCost: options.maxCost,
+      approvalId: options.approvalId,
       expectMsg: 'Expected 402 for quote',
       totalOf: (ctx) => ctx.total,
       onQuote: (ctx) => this.log(`Voice quote: $${ctx.total} for ${ctx.estimated_duration_minutes}min call`),
@@ -866,6 +883,7 @@ export class OneShot {
       payload,
       signal: options.signal,
       maxCost: options.maxCost,
+      approvalId: options.approvalId,
       expectMsg: 'Expected 402 for quote',
       totalOf: (ctx) => ctx.total,
       onQuote: (ctx) => this.log(`SMS quote: $${ctx.total} for ${ctx.segment_count} segment(s) to ${recipientCount} recipient(s)`),
@@ -1317,6 +1335,114 @@ export class OneShot {
       throw new ToolError('Failed to list SMS inbox', response.status, await response.text());
     }
     return response.json() as Promise<SmsInboxResult>;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Inbound voice — the agent's number answers its own calls
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Get this agent a voice number without placing a call. Returns the existing
+   * active number for free; otherwise buys one and charges the one-time phone
+   * registration fee from prepaid credits (see `topUpCredits`). Too little
+   * credit throws a 402 and buys nothing. Then configure it with
+   * `setInboundVoice`.
+   *
+   * @example
+   * ```typescript
+   * const number = await agent.provisionVoiceNumber();
+   * await agent.setInboundVoice(number.id, { prompt: 'You answer for Acme Dental.' });
+   * ```
+   */
+  async provisionVoiceNumber(): Promise<ProvisionedVoiceNumber> {
+    return this.signedJson('POST', '/v1/tools/voice/numbers', {}, 'write', 'Failed to provision a phone number');
+  }
+
+  /**
+   * List this agent's phone numbers. A number comes from `provisionVoiceNumber`
+   * or the agent's first outbound voice call.
+   *
+   * @example
+   * ```typescript
+   * const { numbers } = await agent.voiceNumbers();
+   * ```
+   */
+  async voiceNumbers(): Promise<{ numbers: VoiceNumber[] }> {
+    return this.signedJson('GET', '/v1/tools/voice/numbers', undefined, 'read', 'Failed to list phone numbers');
+  }
+
+  /**
+   * Answer calls to one of the agent's numbers. Replaces the whole config.
+   * Inbound calls are paid from prepaid credits (see `topUpCredits`), per
+   * started minute; a call is declined when credits cannot cover the minimum
+   * fee. Keep the returned `webhook_secret` if you set `webhook_url`.
+   *
+   * @example
+   * ```typescript
+   * await agent.setInboundVoice(numberId, {
+   *   prompt: 'You answer for Acme Dental. Book cleanings; take a message for anything else.',
+   *   business_hours: { timezone: 'America/New_York', windows: [{ days: ['mon','tue','wed','thu','fri'], start: '09:00', end: '17:00' }] },
+   *   after_hours: 'take_message',
+   * });
+   * ```
+   */
+  async setInboundVoice(phoneNumberId: string, config: InboundVoiceConfig): Promise<InboundVoiceConfigResult> {
+    this.validate(phoneNumberId, 'phoneNumberId');
+    return this.signedJson('PUT', `/v1/tools/voice/numbers/${encodeURIComponent(phoneNumberId)}/inbound`, config, 'write', 'Failed to set inbound voice config');
+  }
+
+  /** Current inbound config for a number (throws 404 when none is set). */
+  async getInboundVoice(phoneNumberId: string): Promise<InboundVoiceConfigResult> {
+    this.validate(phoneNumberId, 'phoneNumberId');
+    return this.signedJson('GET', `/v1/tools/voice/numbers/${encodeURIComponent(phoneNumberId)}/inbound`, undefined, 'read', 'Failed to get inbound voice config');
+  }
+
+  /** Stop answering calls to a number. The settings are kept, disabled. */
+  async disableInboundVoice(phoneNumberId: string): Promise<InboundVoiceConfigResult> {
+    this.validate(phoneNumberId, 'phoneNumberId');
+    return this.signedJson('DELETE', `/v1/tools/voice/numbers/${encodeURIComponent(phoneNumberId)}/inbound`, undefined, 'write', 'Failed to disable inbound voice');
+  }
+
+  /**
+   * List inbound calls, newest first.
+   *
+   * @example
+   * ```typescript
+   * const { calls } = await agent.inboundCalls({ limit: 20 });
+   * for (const c of calls) console.log(c.from, c.summary);
+   * ```
+   */
+  async inboundCalls(options: InboundCallsOptions = {}): Promise<{ calls: InboundCall[] }> {
+    const qs = this.buildQuery({
+      limit: options.limit || undefined,
+      before: options.before || undefined,
+      phone_number_id: options.phone_number_id || undefined,
+      include_transcript: options.include_transcript ? 'true' : undefined,
+    });
+    return this.signedJson('GET', `/v1/tools/voice/inbound${qs ? `?${qs}` : ''}`, undefined, 'read', 'Failed to list inbound calls');
+  }
+
+  /** One inbound call, with transcript. */
+  async inboundCall(callId: string): Promise<InboundCall> {
+    this.validate(callId, 'callId');
+    return this.signedJson('GET', `/v1/tools/voice/inbound/${encodeURIComponent(callId)}`, undefined, 'read', 'Failed to get inbound call');
+  }
+
+  /** Signed free request returning the `data` field of `{ success, data }`. */
+  private async signedJson<T>(method: string, path: string, body: unknown, scope: 'read' | 'write', failure: string): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method,
+      headers: {
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(await this.signedReadHeaders(scope)),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    if (!response.ok) {
+      throw new ToolError(failure, response.status, await response.text());
+    }
+    const json = await response.json() as { data?: T };
+    return (json.data ?? json) as T;
   }
 
   /**
@@ -2189,6 +2315,19 @@ export class OneShot {
    * console.log(`${b.spent_today_usdc} of ${b.daily_usdc} spent, resets ${b.resets_at}`);
    * ```
    */
+  /** Signed-proof JSON request to a free agent route; returns `data`. Errors map through failFromResponse. */
+  private async agentJson<T>(path: string, method: string, body?: unknown, scope: 'read' | 'write' = 'read'): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders(scope)) },
+      ...(body === undefined || method === 'GET' ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) await this.failFromResponse(`${method} ${path.split('?')[0]} failed`, response);
+    const json = await response.json() as { data?: T };
+    return (json && typeof json === 'object' && 'data' in json ? json.data : json) as T;
+  }
+
   async budgets(): Promise<AgentBudgetStatus> {
     const response = await fetch(`${this.baseUrl}/v1/agents/me/budgets`, {
       headers: await this.signedReadHeaders(),
@@ -2305,6 +2444,8 @@ export class OneShot {
     if (credits) throw credits;
     const rejection = [402, 500].includes(response.status) ? this.parsePaymentRejection(text) : undefined;
     if (rejection) throw rejection;
+    const policy = response.status === 403 ? this.parsePolicyRejection(text) : undefined;
+    if (policy) throw policy;
     const budget = response.status === 403 ? this.parseBudgetRejection(text) : undefined;
     if (budget) throw budget;
     throw new ToolError(message, response.status, text);
@@ -2394,6 +2535,19 @@ export class OneShot {
    * "my own budget stopped this" separately from an auth failure or a payment
    * rejection. Any other 403 falls through to ToolError.
    */
+  /** 403 from the action-policy gate: held for approval, or denied. */
+  private parsePolicyRejection(text: string): ApprovalRequiredError | ActionDeniedError | undefined {
+    let body: any;
+    try { body = JSON.parse(text); } catch { return undefined; }
+    if (body?.error === 'approval_required' && typeof body.approval_id === 'string') {
+      return new ApprovalRequiredError(body.message ?? 'This call needs a human approval', body.approval_id, body.approval, body.approval?.policy_rule ?? undefined);
+    }
+    if (body?.error === 'action_denied_by_policy') {
+      return new ActionDeniedError(body.message ?? 'Denied by the action policy', body.rule);
+    }
+    return undefined;
+  }
+
   private parseBudgetRejection(text: string): BudgetExceededError | undefined {
     try {
       const body = JSON.parse(text) as {
@@ -2490,6 +2644,12 @@ export class OneShot {
     return { 'Idempotency-Key': idempotencyKey };
   }
 
+  /** X-Approval-Id, sent on both legs; the server reads it only on the paid leg. */
+  private approvalHeader(approvalId?: string): Record<string, string> | undefined {
+    if (!approvalId) return undefined;
+    return { 'X-Approval-Id': approvalId };
+  }
+
   private async readReliabilityJson<T>(path: string, signed: boolean, allowDegraded = false): Promise<T> {
     const scope = deadlineScope(undefined, signed ? 10_000 : 5_000);
     try {
@@ -2539,11 +2699,13 @@ export class OneShot {
     quoteId?: string,
     context: { phase: string; requestId?: string; receiptId?: string } = { phase: "initialization" },
   ): Promise<T> {
-    const { totalTimeoutMs, onRequestCreated, onAccepted, signal, onStatusUpdate, wait = true, waitForPhones, phoneTimeoutSec, idempotencyKey, maxCost, ...payload } = options;
+    const { totalTimeoutMs, onRequestCreated, onAccepted, signal, onStatusUpdate, wait = true, waitForPhones, phoneTimeoutSec, idempotencyKey, approvalId, maxCost, ...payload } = options;
     const extraHeaders = {
       ...this.maxCostHeader(maxCost as number | undefined),
       ...this.idempotencyHeader(idempotencyKey as string | undefined),
     };
+    // Releases a call the action policy held (ToolOptions.approvalId).
+    Object.assign(extraHeaders, this.approvalHeader(approvalId as string | undefined));
 
     if (payload.memo !== undefined) {
       if (typeof payload.memo !== 'string' || payload.memo.trim().length === 0) {
@@ -2675,12 +2837,15 @@ export class OneShot {
     totalOf: (ctx: Q) => string;
     onQuote: (ctx: Q) => void;
     on400?: (resp: Response) => Promise<void>;
+    /** Release a policy-held call (ToolOptions.approvalId). */
+    approvalId?: string;
   }): Promise<{ context: Q; execResp: Response }> {
     await this.ensureBudgetsSynced();
 
+    const approval = this.approvalHeader(cfg.approvalId);
     const quoteResp = await this.makeRequest(
       cfg.endpoint, cfg.payload, undefined, undefined,
-      cfg.signal, cfg.quoteTimeoutMs, this.maxCostHeader(cfg.maxCost),
+      cfg.signal, cfg.quoteTimeoutMs, { ...this.maxCostHeader(cfg.maxCost), ...approval },
     );
 
     if (quoteResp.status === 400 && cfg.on400) {
@@ -2705,7 +2870,7 @@ export class OneShot {
     if (this._accessToken) {
       this.checkAbortBeforePayment(cfg.signal);
       const execResp = await this.retryAsCreditsSession(
-        quoteData as unknown as Record<string, unknown>, cfg.endpoint, cfg.payload, quoteData.context.quote_id, cfg.signal, cfg.execTimeoutMs,
+        quoteData as unknown as Record<string, unknown>, cfg.endpoint, cfg.payload, quoteData.context.quote_id, cfg.signal, cfg.execTimeoutMs, approval,
       );
       return { context: quoteData.context, execResp };
     }
@@ -2722,12 +2887,12 @@ export class OneShot {
 
     this.checkAbortBeforePayment(cfg.signal);
     const { accepted, resource, extensions } = await this.getAcceptedRequirements(
-      quoteResp, cfg.endpoint, cfg.payload, quoteData.context.quote_id, cfg.signal,
+      quoteResp, cfg.endpoint, cfg.payload, quoteData.context.quote_id, cfg.signal, approval,
     );
     paymentInfo.amount = this.chargeAmount(accepted, quoteData.payment_request.amount);
     const signed = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
     const execResp = await this.makePaidRequest(
-      signed, cfg.endpoint, cfg.payload, quoteData.context.quote_id, cfg.signal, cfg.execTimeoutMs,
+      signed, cfg.endpoint, cfg.payload, quoteData.context.quote_id, cfg.signal, cfg.execTimeoutMs, approval,
     );
 
     return { context: quoteData.context, execResp };
@@ -3388,7 +3553,8 @@ export class OneShot {
     endpoint: string,
     payload: Record<string, unknown>,
     quoteId: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    extraHeaders?: Record<string, string>,
   ): Promise<{
     accepted: PaymentRequirements;
     resource?: { url: string; description?: string; mimeType?: string };
@@ -3399,7 +3565,9 @@ export class OneShot {
       return this.parsePaymentRequired(header);
     }
     // Probe: send quote ID without payment to get x402 middleware's 402
-    const probeResp = await this.makeRequest(endpoint, payload, undefined, quoteId, signal);
+    // Carries X-Approval-Id: a policy-held call's probe must reach the 402,
+    // not be held again.
+    const probeResp = await this.makeRequest(endpoint, payload, undefined, quoteId, signal, undefined, extraHeaders);
     return this.parsePaymentRequired(probeResp.headers.get('payment-required'));
   }
 
