@@ -610,6 +610,23 @@ const profile = await agent.enrichProfile({
 });
 ```
 
+**Pagination:** `limit` (default 100, max 500) and `offset` (default 0,
+0-indexed) page through the result set — `{ limit: 100, offset: 100 }` gets
+the second page of 100. Large requests are paginated server-side, so one
+response can hold up to `limit` rows. The search runs under a time limit: if it
+is reached, you get the rows found so far (possibly fewer than `limit`) and can
+continue with `offset`. Rows whose phone lookup did not finish in time are
+returned with `_phone_enriched: false` and
+`_phone_enrich_reason: 'time_budget_exhausted'` rather than dropped.
+
+```typescript
+const page2 = await agent.peopleSearch({
+  job_titles: ['CEO'],
+  limit: 100,
+  offset: 100
+});
+```
+
 ### Commerce
 
 ```typescript

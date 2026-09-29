@@ -313,7 +313,18 @@ export interface PeopleSearchOptions extends ToolOptions {
   seniority?: string[];
   industry?: string[];
   company_size?: string;
+  /** Max rows to return, 1-500 (server default 100). Large requests are
+   * paginated server-side, so one response can hold up to `limit` rows.
+   * The search runs under a time limit: if it is reached, the response holds
+   * the rows found so far (possibly fewer than `limit`) — continue with
+   * `offset`. Rows whose phone lookup did not finish in time come back with
+   * `_phone_enriched: false` and `_phone_enrich_reason: 'time_budget_exhausted'`. */
   limit?: number;
+  /** Row offset into the result set, 0-indexed (server default 0). Combine
+   * with `limit` to page through results, e.g. `{ limit: 100, offset: 100 }`
+   * for the second page of 100. The offset addresses the same row boundary
+   * regardless of which provider answers the search. */
+  offset?: number;
 }
 
 export interface EnrichProfileOptions extends ToolOptions {
