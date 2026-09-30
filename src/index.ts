@@ -56,7 +56,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // subpath directly if you need it.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.42.0';
+const SDK_VERSION = '0.43.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -1954,7 +1954,7 @@ export class OneShot {
   async spendBreakdown(options?: { period?: number }): Promise<SpendBreakdown> {
     const qs = this.buildQuery({ period: options?.period || undefined });
     const response = await fetch(`${this.baseUrl}/v1/analytics/spend/breakdown${qs ? `?${qs}` : ''}`, {
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
@@ -1975,7 +1975,7 @@ export class OneShot {
   async rocs(options?: { period?: number }): Promise<RoCSResult> {
     const qs = this.buildQuery({ period: options?.period || undefined });
     const response = await fetch(`${this.baseUrl}/v1/analytics/rocs${qs ? `?${qs}` : ''}`, {
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
@@ -2020,7 +2020,7 @@ export class OneShot {
       until: toIso(options?.until),
     });
     const response = await fetch(`${this.baseUrl}/v1/analytics/receipts${qs ? `?${qs}` : ''}`, {
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
@@ -2064,7 +2064,7 @@ export class OneShot {
     if (typeof ref === 'object' && ref.goalId && !ref.receiptId && !ref.requestId) {
       const response = await fetch(`${this.baseUrl}/v1/analytics/outcomes`, {
         method: 'POST',
-        headers: this.jsonHeaders(),
+        headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
         body: JSON.stringify({ goal_id: ref.goalId, ...valueTag }),
       });
       if (!response.ok) {
@@ -2078,7 +2078,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/analytics/receipts/${id}/value`, {
       method: 'PATCH',
-      headers: this.jsonHeaders(),
+      headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
       body: JSON.stringify(valueTag)
     });
 
@@ -2110,7 +2110,7 @@ export class OneShot {
   async rocsByGoal(options?: { period?: number; goalId?: string }): Promise<RoCSByGoalResult> {
     const qs = this.buildQuery({ period: options?.period || undefined, goal_id: options?.goalId || undefined });
     const response = await fetch(`${this.baseUrl}/v1/analytics/rocs/by-goal${qs ? `?${qs}` : ''}`, {
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
@@ -3047,7 +3047,7 @@ export class OneShot {
       if (signal?.aborted) throw new OneShotError('Operation cancelled');
       try {
         const resp = await fetch(`${this.baseUrl}/v1/requests/${requestId}`, {
-          headers: this.headers(),
+          headers: await this.signedReadHeaders(),
           signal,
         });
         if (!resp.ok) {
@@ -3082,12 +3082,36 @@ export class OneShot {
    * "no push available" rather than as an outcome. There is no timeout here:
    * the HTTP branch owns the deadline and aborts this one when it settles.
    */
-  private waitViaWebSocket<T>(
+  private async waitViaWebSocket<T>(
     requestId: string,
     signal: AbortSignal,
     emit: (status: string) => void,
     wait: JobWaitState
   ): Promise<T> {
+    // Access-token sessions have no wallet signer to produce a signed proof,
+    // and the standard WebSocket constructor (browser and Node globals alike)
+    // cannot set a custom `Authorization` header on the handshake request —
+    // so there is no way to authenticate this upgrade without putting the
+    // reusable bearer token in the URL, which issue #971 round 1 (finding
+    // F-t_4d087f2a-5) forbids: a bearer secret must never ride in a URL that
+    // proxies, access logs, and telemetry can capture. These sessions skip
+    // the WebSocket accelerator entirely and rely on HTTP polling, which
+    // authenticates via the Authorization header on every request.
+    if (this.isAccessTokenSession) {
+      throw new Error('WebSocket push is not available for access-token sessions; falling back to HTTP polling');
+    }
+
+    // Build the signed, single-use read proof BEFORE opening the socket: the
+    // server authenticates the upgrade itself (not just the post-upgrade
+    // connection) the same as agentProofAuth does for every other free-read
+    // route (issue #971) — an unsigned ?wallet= alone is no longer
+    // sufficient. Unlike a bearer token, a proof is short-lived and single-use
+    // (5-minute TTL, Redis-enforced nonce), so passing it as a URL query
+    // param is an acceptable channel for it.
+    const authHeaders = await this.signedReadHeaders();
+    const authParams = new URLSearchParams();
+    if (authHeaders['x-agent-proof']) authParams.set('proof', authHeaders['x-agent-proof']);
+
     return new Promise((resolve, reject) => {
       if (typeof WebSocket === 'undefined') {
         return reject(new Error('WebSocket not available'));
@@ -3096,7 +3120,8 @@ export class OneShot {
         return reject(new OneShotError('Operation cancelled'));
       }
       const wsUrl = this.baseUrl.replace(/^http/, 'ws') +
-        `/v1/requests/subscribe?wallet=${encodeURIComponent(this.provider.address)}`;
+        `/v1/requests/subscribe?wallet=${encodeURIComponent(this.provider.address)}` +
+        (authParams.toString() ? `&${authParams.toString()}` : '');
 
       let ws: WebSocket;
       try {
@@ -3220,7 +3245,7 @@ export class OneShot {
 
       try {
         const resp = await fetch(`${this.baseUrl}/v1/requests/${requestId}`, {
-          headers: this.headers(),
+          headers: await this.signedReadHeaders(),
           signal
         });
 
