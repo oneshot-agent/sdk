@@ -56,7 +56,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // subpath directly if you need it.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.41.0';
+const SDK_VERSION = '0.42.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -247,6 +247,7 @@ export class OneShot {
   private readonly baseUrl: string;
   private readonly debug: boolean;
   private readonly logger: LoggerFn;
+  private readProofWarned = false;
   private readonly _currency: 'USDC' | 'ETH';
   private readonly _slippage: number;
   private readonly _budgets?: AgentBudgetConfig;
@@ -1510,7 +1511,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/tools/notifications/${notificationId}/read`, {
       method: 'PATCH',
-      headers: await this.signedReadHeaders()
+      headers: await this.signedReadHeaders('write')
     });
 
     if (response.status === 404) {
@@ -2188,7 +2189,7 @@ export class OneShot {
    * read another agent's data by supplying its address. The proof binds this
    * request to the wallet the SDK controls; the server verifies the signature
    * locally. A fresh nonce per call prevents replay. Signing failure falls back
-   * to plain headers (the server runs log-only until enforcement is enabled).
+   * to plain headers, with a one-time warning.
    */
   private async signedReadHeaders(scope: string = 'read'): Promise<Record<string, string>> {
     const base = this.headers();
@@ -2215,7 +2216,15 @@ export class OneShot {
       const proof = typeof Buffer !== 'undefined' ? Buffer.from(json).toString('base64') : btoa(json);
       return { ...base, 'x-agent-proof': proof };
     } catch (err) {
-      this.log(`Failed to sign read proof (continuing without): ${err}`);
+      // Once per client, even without debug: when the API enforces proofs,
+      // these requests will be rejected, and a silent fallback would leave
+      // the caller with a 401 and no idea why.
+      if (!this.readProofWarned) {
+        this.readProofWarned = true;
+        this.logger(`[OneShot] Warning: could not sign the x-agent-proof read proof, so requests go without it and will be rejected where the API enforces proofs. Pass a signer that supports signTypedData, or use an access token. Cause: ${err}`);
+      } else {
+        this.log(`Failed to sign read proof (continuing without): ${err}`);
+      }
       return base;
     }
   }
