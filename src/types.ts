@@ -1499,6 +1499,20 @@ export interface ComputeOptions extends ToolOptions {
   soul_service_slug?: string;
   /** Make this a recurring goal */
   schedule?: ComputeSchedule;
+  /**
+   * Enforced approvals: any single tool call costing more than
+   * `spend_over_usdc`, or using a tool in `tools`, waits for your approval
+   * (respond to its `human_approval` task) before anything is spent. Each
+   * approval covers exactly one call: that tool, those params, at most that amount.
+   */
+  approvals?: ComputeApprovals;
+}
+
+export interface ComputeApprovals {
+  /** Hold any single call whose cost exceeds this many USDC. */
+  spend_over_usdc?: number;
+  /** Hold every call of these tools, whatever the cost (e.g. ["commerce_buy", "physical_mail", "voice", "soul_hire"]). */
+  tools?: string[];
 }
 
 export interface ComputeQuote {

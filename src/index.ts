@@ -56,7 +56,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // subpath directly if you need it.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.43.0';
+const SDK_VERSION = '0.44.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -1592,6 +1592,7 @@ export class OneShot {
     if (options.soul_slug) payload.soul_slug = options.soul_slug;
     if (options.soul_service_slug) payload.soul_service_slug = options.soul_service_slug;
     if (options.schedule) payload.schedule = options.schedule;
+    if (options.approvals) payload.approvals = options.approvals;
 
     // Compute returns the goal directly on 202 — no job polling, unlike the
     // other paid tools.
@@ -1632,7 +1633,7 @@ export class OneShot {
     this.validate(goalId, 'goalId');
 
     const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}`, {
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (response.status === 404) {
@@ -1661,7 +1662,7 @@ export class OneShot {
     this.validate(goalId, 'goalId');
 
     const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/tasks`, {
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
@@ -1685,7 +1686,7 @@ export class OneShot {
     this.validate(goalId, 'goalId');
 
     const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/budget`, {
-      headers: this.headers()
+      headers: await this.signedReadHeaders()
     });
 
     if (response.status === 404) {
@@ -1713,7 +1714,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/cancel`, {
       method: 'POST',
-      headers: this.jsonHeaders(),
+      headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
       body: JSON.stringify({ reason })
     });
 
@@ -1746,7 +1747,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/respond`, {
       method: 'POST',
-      headers: this.jsonHeaders(),
+      headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
       body: JSON.stringify(input)
     });
 
@@ -1774,7 +1775,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/pause`, {
       method: 'POST',
-      headers: this.jsonHeaders(),
+      headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
       body: JSON.stringify({ reason })
     });
 
@@ -1800,7 +1801,7 @@ export class OneShot {
 
     const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/resume`, {
       method: 'POST',
-      headers: this.jsonHeaders(),
+      headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
       body: JSON.stringify({})
     });
 
