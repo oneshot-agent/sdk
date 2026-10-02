@@ -5,9 +5,6 @@
 
 import type { WalletProvider } from './wallet-provider';
 
-// ============================================================================
-// Types
-// ============================================================================
 
 export interface TokenInfo {
   address: string;
@@ -491,7 +488,7 @@ export interface SmsInboxOptions {
   from?: string;
 }
 
-// Result types
+
 export interface Experience {
   company?: { name?: string; website?: string };
   title?: { name?: string };
@@ -739,7 +736,7 @@ export interface AsyncJobResult {
   status: string;
 }
 
-// Person Intelligence result types
+
 
 /** Enrichment data nested inside deep research and enrichment responses. */
 export interface PersonEnrichment {
@@ -1160,7 +1157,7 @@ export interface NotificationsResult {
   count: number;
 }
 
-// Build types
+
 export interface BuildProduct {
   /** Product or business name */
   name: string;
@@ -1195,6 +1192,17 @@ export interface BuildImages {
   logo?: string;
 }
 
+export interface BuildPage {
+  /** Route, e.g. `/pricing` or `/blog/launch` (lowercase, hyphens) */
+  path: string;
+  /** Nav label, e.g. `Pricing` */
+  name: string;
+  /** What the page is for; steers its content */
+  purpose?: string;
+  /** Specific sections for this page */
+  sections?: string[];
+}
+
 export interface BuildOptions extends ToolOptions {
   /** Website type */
   type?: 'saas' | 'portfolio' | 'agency' | 'personal' | 'product' | 'funnel' | 'restaurant' | 'event';
@@ -1204,6 +1212,8 @@ export interface BuildOptions extends ToolOptions {
   source_url?: string;
   /** Specific sections to include */
   sections?: string[];
+  /** Extra pages beyond the home page (max 8), each priced separately */
+  pages?: BuildPage[];
   /** Lead capture configuration */
   lead_capture?: BuildLeadCapture;
   /** Brand customization */
@@ -1220,6 +1230,10 @@ export interface BuildQuote {
   quote_id: string;
   type: string;
   product_name: string;
+  /** Routes the site will have, home first */
+  pages?: string[];
+  /** True when the quote applies `changes` to an existing build */
+  is_refine?: boolean;
   analysis: {
     inferred_type: string;
     estimated_sections: number;
@@ -1233,6 +1247,7 @@ export interface BuildQuote {
   pricing: {
     base_price: string;
     extra_sections_fee: string;
+    extra_pages_fee?: string;
     ai_images_fee: string;
     video_embed_fee: string;
     lead_capture_fee: string;
@@ -1262,7 +1277,7 @@ export interface BuildResult {
   cost?: number;
 }
 
-// Browser types
+
 export interface BrowserTaskOptions extends ToolOptions {
   /** Natural language instruction for what to do in the browser (min 10 chars) */
   task: string;
@@ -1345,6 +1360,13 @@ export interface BrowserResult {
 
 }
 
+export interface RefineBuildOptions extends ToolOptions {
+  /** The build to change (its request_id) */
+  build_id: string;
+  /** What to change, in plain language (max 5000 chars) */
+  changes: string;
+}
+
 export interface UpdateBuildOptions extends ToolOptions {
   /** Existing build ID to update (required) */
   build_id: string;
@@ -1356,6 +1378,8 @@ export interface UpdateBuildOptions extends ToolOptions {
   source_url?: string;
   /** Specific sections to include */
   sections?: string[];
+  /** Extra pages beyond the home page (max 8) */
+  pages?: BuildPage[];
   /** Lead capture configuration */
   lead_capture?: BuildLeadCapture;
   /** Brand customization */
@@ -1366,9 +1390,6 @@ export interface UpdateBuildOptions extends ToolOptions {
   domain?: string;
 }
 
-// ============================================================================
-// Analytics Types
-// ============================================================================
 
 export interface SpendCategory {
   category: string;
@@ -1473,7 +1494,7 @@ export interface UnifiedBalance {
   chain_id: number;
 }
 
-// Compute types
+
 
 export interface ComputeSchedule {
   /** Cron expression (UTC). Minimum interval: 15 minutes. */
@@ -1613,7 +1634,6 @@ export interface ComputeBudgetStatus {
   }>;
 }
 
-// ── Local businesses (local/search, local/resolve) ──────────────────
 
 export interface LocalSearchOptions extends ToolOptions {
   /** Business categories, e.g. ['hvac contractor', 'dental practice']. category or keywords required. */
@@ -1705,7 +1725,6 @@ export interface LocalResolveResult {
   cost?: number;
 }
 
-// ── Government solicitations (gov/solicitations) ────────────────────
 
 /** SAM.gov notice type codes: r=Sources Sought, p=Presolicitation, o=Solicitation,
  *  k=Combined Synopsis/Solicitation, s=Special Notice, a=Award Notice, u=Justification,
@@ -1813,9 +1832,6 @@ export interface BrowserProfileSetup {
   verification?: 'fresh_browser_before_navigation';
 }
 
-// ============================================================================
-// LinkedIn — messaging through a human-connected account (issue #756)
-// ============================================================================
 
 export type LinkedInGrantAction = 'read' | 'reply' | 'view_profile' | 'react' | 'invite' | 'comment';
 

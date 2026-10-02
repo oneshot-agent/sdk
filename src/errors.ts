@@ -1,9 +1,3 @@
-// Custom error hierarchy. Every SDK-thrown error is a subclass of OneShotError
-// so consumers can `catch (err instanceof OneShotError)` once and inspect
-// `err.name` for the specific type. Each subclass carries the structured fields
-// that drove the throw (statusCode/responseBody, jobId, field, categories, …)
-// so error handlers don't need to re-parse strings.
-
 export class OneShotError extends Error {
   constructor(message: string) {
     super(message);

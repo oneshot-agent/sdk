@@ -10,9 +10,6 @@
 import { ethers } from 'ethers';
 import type { WalletProvider } from './wallet-provider';
 
-// ============================================================================
-// Contract Addresses
-// ============================================================================
 
 export interface UniswapAddresses {
   swapRouter: string;
@@ -34,9 +31,6 @@ export function getAddresses(chainId: number): UniswapAddresses {
   return BASE_MAINNET_ADDRESSES;
 }
 
-// ============================================================================
-// ABI Fragments
-// ============================================================================
 
 const QUOTER_V2_ABI = [
   'function quoteExactOutputSingle(tuple(address tokenIn, address tokenOut, uint256 amount, uint24 fee, uint160 sqrtPriceLimitX96) params) external returns (uint256 amountIn, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)',
@@ -57,9 +51,6 @@ function validateSlippage(slippage: number): void {
   }
 }
 
-// ============================================================================
-// Quote
-// ============================================================================
 
 export interface SwapQuote {
   /** USDC amount to receive (in USDC decimals, e.g. "100000" = $0.10) */
@@ -120,9 +111,6 @@ export async function getSwapQuote(
   };
 }
 
-// ============================================================================
-// Execute Swap
-// ============================================================================
 
 export interface SwapResult {
   /** Transaction hash of the swap */

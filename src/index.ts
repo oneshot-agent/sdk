@@ -30,33 +30,14 @@ export { getSwapQuote, executeSwap } from './swap';
 export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 import { Approvals, ActionPolicies } from './approvals';
-// Receipt verification (`canonicalizeReceipt`, `verifyReceipt`,
-// `receiptFromWire`, and their supporting types `SignableReceipt`,
-// `ReceiptSignatureFields`, `ReceiptJwk`, `ReceiptJwks`,
-// `ReceiptVerificationResult`, `ReceiptVerificationFailureReason`) is
-// intentionally NOT re-exported here, values OR types. `./receipt`
-// statically imports `node:crypto`, and this file is the SDK's main entry —
-// re-exporting its values would give every consumer (including browser/edge
-// bundles, which this file otherwise avoids requiring Node builtins for;
-// see the deliberate `btoa` fallback below) a hard Node-only dependency
-// with no way to opt out. Import from the `@oneshot-agent/sdk/receipt`
-// subpath instead (see package.json `exports` and the README's
-// "Verifying Receipts" section).
-//
-// Types alone erase at compile time and carry no runtime import, so a
-// type-only re-export here would be runtime-safe — but `SignableReceipt`
-// declares `providerCost` (libs/agent-sdk/src/receipt.ts), the field whose
-// removal from the public SDK surface `tests/unit/sdk-provider-cost-removed
-// .test.ts` guards. Re-exporting it from the main entry would put it back
-// on the surface that guard exists to keep clean, just via the type system
-// instead of a runtime value. `providerCost` must stay inside
-// `SignableReceipt` itself (it's part of what the signer actually signs —
-// see `canonicalizeReceipt`), so the fix is not exposing that type here,
-// not removing the field. Import `SignableReceipt` from the `./receipt`
-// subpath directly if you need it.
+// `./receipt` is NOT re-exported here, values or types: it statically imports
+// `node:crypto`, which would force a hard Node dependency on every consumer
+// including browser bundles; and its `SignableReceipt.providerCost` field must
+// stay off this public surface (see tests/unit/sdk-provider-cost-removed.test.ts).
+// Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.44.0';
+const SDK_VERSION = '0.46.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -73,9 +54,6 @@ const HTTP_POLL_BACKOFF_MS = [300, 600, 1000, 2000] as const;
 /** HTTP poll cadence once the WebSocket has delivered for this request. */
 const HTTP_POLL_RELAXED_MS = 5000;
 
-// ============================================================================
-// Environment Configuration
-// ============================================================================
 
 const BASE_URL = 'https://win.oneshotagent.com';
 const RPC_URL = 'https://mainnet.base.org';
@@ -121,12 +99,6 @@ function validateSwapBufferMultiplier(m: number | undefined): number {
   return m;
 }
 
-// ============================================================================
-// Public types — defined in ./types.ts. Re-exported below so existing
-// consumer imports (`import { EmailToolOptions, ... } from '@oneshot-agent/sdk'`)
-// keep resolving unchanged. The OneShot class below pulls the names it needs
-// for internal use via the import block.
-// ============================================================================
 
 export * from './types';
 
@@ -154,7 +126,7 @@ import type {
   VoiceNumber, ProvisionedVoiceNumber, InboundVoiceConfig, InboundVoiceConfigResult, InboundCall, InboundCallsOptions,
   BuildProduct, BuildLeadCapture, BuildBrand, BuildImages, BuildOptions,
   BuildQuote, BuildResult, BrowserTaskOptions, BrowserProfile, BrowserProfileCreateOptions, BrowserProfileSetup, BrowserQuote,
-  BrowserResult, UpdateBuildOptions, SpendCategory, SpendBreakdown, RoCSResult, RoCSByGoalResult,
+  BrowserResult, UpdateBuildOptions, RefineBuildOptions, SpendCategory, SpendBreakdown, RoCSResult, RoCSByGoalResult,
   Receipt, ReceiptsListResult, UnifiedBalance, CreditsTopUpResult, ComputeSchedule, ComputeOptions,
   ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeTask,
   ComputeBudgetStatus,
@@ -182,9 +154,6 @@ import type {
 } from './types';
 
 
-// ============================================================================
-// OneShot SDK
-// ============================================================================
 
 /**
  * OneShot Agent SDK - Execute commercial transactions with automatic x402 payments.
@@ -383,9 +352,6 @@ export class OneShot {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Public getters
-  // ---------------------------------------------------------------------------
 
   get address(): string {
     return this.provider.address;
@@ -417,9 +383,6 @@ export class OneShot {
     return this._budgets;
   }
 
-  // ---------------------------------------------------------------------------
-  // Public methods
-  // ---------------------------------------------------------------------------
 
   async tool<T = unknown>(toolName: string, options: ToolOptions & Record<string, unknown>): Promise<T> {
     return this.executeToolRequest<T>(`/v1/tools/${toolName}`, options);
@@ -945,12 +908,35 @@ export class OneShot {
 
     if (options.source_url) payload.source_url = options.source_url;
     if (options.sections) payload.sections = options.sections;
+    if (options.pages?.length) payload.pages = options.pages;
     if (options.lead_capture) payload.lead_capture = options.lead_capture;
     if (options.brand) payload.brand = options.brand;
     if (options.images) payload.images = options.images;
     if (options.domain) payload.domain = options.domain;
     if (options.build_id) payload.build_id = options.build_id;
 
+    return this.submitBuild(payload, options);
+  }
+
+  /**
+   * Apply natural-language changes to one of your builds. The site's existing
+   * code is edited (not regenerated) and redeployed to the same URL.
+   *
+   * @example
+   * ```typescript
+   * const result = await agent.refineBuild({
+   *   build_id: previous.request_id,
+   *   changes: 'Make the hero darker and add an FAQ page at /faq',
+   * });
+   * ```
+   */
+  async refineBuild(options: RefineBuildOptions): Promise<BuildResult> {
+    this.validate(options.build_id, 'build_id');
+    this.validate(options.changes, 'changes');
+    return this.submitBuild({ build_id: options.build_id, changes: options.changes }, options);
+  }
+
+  private async submitBuild(payload: Record<string, unknown>, options: ToolOptions): Promise<BuildResult> {
     const { execResp: buildResp } = await this.runQuoteToPay<BuildQuote>({
       endpoint: '/v1/tools/build',
       payload,
@@ -962,7 +948,7 @@ export class OneShot {
       totalOf: (ctx) => ctx.pricing.total,
       onQuote: (ctx) => {
         this.log(`Build quote: $${ctx.pricing.total} for "${ctx.product_name}"`);
-        this.log(`Type: ${ctx.analysis.inferred_type}, Sections: ${ctx.analysis.estimated_sections}`);
+        if (!ctx.is_refine) this.log(`Type: ${ctx.analysis.inferred_type}, Sections: ${ctx.analysis.estimated_sections}`);
       },
       on400: async (resp) => {
         const errorData = await resp.json() as { error: string; message: string; details?: unknown };
@@ -1141,13 +1127,6 @@ export class OneShot {
     }
   }
 
-  // ── LinkedIn — messaging through a human-connected account (issue #756) ──
-  //
-  // The human connects THEIR OWN LinkedIn account through a hosted login link
-  // and grants specific actions. Connection/reads are free (signed proof);
-  // sync, reply, profile view and react are paid fixed-price tools. Every
-  // write is idempotency-keyed automatically — a message LinkedIn accepted
-  // cannot be recalled.
 
   private async linkedinFree<T>(method: 'GET' | 'POST' | 'DELETE', path: string, opts: { body?: unknown; query?: Record<string, string | undefined>; scope?: string; what: string }): Promise<T> {
     const url = new URL(`${this.baseUrl}/v1/tools/linkedin${path}`);
@@ -1338,9 +1317,6 @@ export class OneShot {
     return response.json() as Promise<SmsInboxResult>;
   }
 
-  // ---------------------------------------------------------------------------
-  // Inbound voice — the agent's number answers its own calls
-  // ---------------------------------------------------------------------------
 
   /**
    * Get this agent a voice number without placing a call. Returns the existing
@@ -1556,9 +1532,6 @@ export class OneShot {
     return ethers.formatUnits(balance, decimals);
   }
 
-  // ---------------------------------------------------------------------------
-  // Compute methods
-  // ---------------------------------------------------------------------------
 
   /**
    * Create a compute goal — the orchestrator will plan, execute, and iterate autonomously.
@@ -1936,9 +1909,6 @@ export class OneShot {
     return json.data;
   }
 
-  // ---------------------------------------------------------------------------
-  // Analytics methods
-  // ---------------------------------------------------------------------------
 
   /**
    * Get spend breakdown by category
@@ -2120,9 +2090,6 @@ export class OneShot {
     return response.json() as Promise<RoCSByGoalResult>;
   }
 
-  // ---------------------------------------------------------------------------
-  // Private helpers
-  // ---------------------------------------------------------------------------
 
   private log(msg: string): void {
     if (this.debug) this.logger(`[OneShot] ${msg}`);
@@ -2349,9 +2316,6 @@ export class OneShot {
     return (body.data ?? body) as AgentBudgetStatus;
   }
 
-  // ---------------------------------------------------------------------------
-  // Access tokens (wallet sessions only)
-  // ---------------------------------------------------------------------------
 
   private assertWalletSession(action: string): void {
     if (this._accessToken) {
@@ -3369,9 +3333,6 @@ export class OneShot {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // ETH-currency mode: USDC ledger + buffered swaps
-  // ---------------------------------------------------------------------------
 
   /**
    * ETH mode only. Make sure the wallet's *effective* USDC (on-chain balance
@@ -3413,7 +3374,7 @@ export class OneShot {
     });
   }
 
-  /** ETH mode is Base-mainnet-only (that is where the Uniswap route lives); fail clearly before any RPC. */
+  /** ETH mode is Base-mainnet-only; fail clearly before any RPC. */
   private assertEthModeSupported(paymentInfo: PaymentInfo): { chainId: number; usdcAddress: string } {
     const chainId = chainIdFromNetwork(paymentInfo.network) ?? CHAIN_ID;
     if (chainId !== CHAIN_ID) {
@@ -3439,7 +3400,7 @@ export class OneShot {
     return run;
   }
 
-  /** On-chain USDC balance (atomic units), deduped within one block. Overridable in tests. */
+  /** On-chain USDC balance (atomic units), deduped within one block. */
   private async readUsdcBalance(usdcAddress: string): Promise<bigint> {
     const cached = this._usdcBalanceCache;
     if (cached && Date.now() - cached.at < USDC_BALANCE_CACHE_MS) return cached.balance;
@@ -3501,14 +3462,14 @@ export class OneShot {
     return amount;
   }
 
-  /** Max ETH the buffered swap could cost (quote), or undefined if unavailable. Overridable in tests. */
+  /** Max ETH the buffered swap could cost (quote), or undefined if unavailable. */
   private async quoteSwapAmountInMax(usdcAmount: string, chainId: number): Promise<bigint | undefined> {
     const { getSwapQuote } = await import('./swap');
     const quote = await getSwapQuote(this.rpcProvider, usdcAmount, chainId, this._slippage);
     return quote?.amountInMax;
   }
 
-  /** Perform the on-chain swap. Overridable in tests. */
+  /** Perform the on-chain swap. */
   private async executeUsdcSwap(usdcAmount: string, chainId: number) {
     const { executeSwap } = await import('./swap');
     return executeSwap(this.provider, this.rpcProvider, usdcAmount, chainId, this._slippage);

@@ -17,11 +17,7 @@ export class CdpWalletProvider implements WalletProvider {
     this._address = address;
   }
 
-  /**
-   * Create a CDP wallet provider.
-   * If address is provided, reuses an existing CDP account.
-   * Otherwise creates a new one.
-   */
+  /** Creates a CDP wallet provider; reuses an account if `address` is given, otherwise creates one. */
   static async create(opts?: { address?: string }): Promise<CdpWalletProvider> {
     let CdpClient: any;
     try {
@@ -47,7 +43,6 @@ export class CdpWalletProvider implements WalletProvider {
     types: Record<string, TypedDataField[]>,
     value: Record<string, unknown>
   ): Promise<string> {
-    // Build EIP712Domain type array from the domain fields that are present
     const eip712DomainFields: TypedDataField[] = [];
     if (domain.name !== undefined) eip712DomainFields.push({ name: 'name', type: 'string' });
     if (domain.version !== undefined) eip712DomainFields.push({ name: 'version', type: 'string' });

@@ -86,7 +86,7 @@ export interface ActionPolicy {
 
 type Request = <T>(path: string, method: string, body?: unknown, scope?: 'read' | 'write') => Promise<T>;
 
-/** Wait `ms`, rejecting at once if `signal` aborts; the listener is removed either way. */
+/** Wait `ms`, rejecting at once if `signal` aborts. */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (signal?.aborted) return reject(new OneShotError('Operation cancelled'));

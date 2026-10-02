@@ -70,29 +70,16 @@ export interface SignableReceipt {
   metadata?: unknown;
 }
 
-/**
- * Deterministic JSON serialization used ONLY to derive `metadata_digest` — it
- * is never itself part of the signed bytes. Object keys are sorted
- * recursively (arrays keep their order) so two semantically equal metadata
- * objects with differently-ordered keys hash identically, at any nesting
- * depth. `undefined` values inside objects are dropped (mirrors
- * `JSON.stringify`'s own behavior for object properties) so an
- * explicitly-`undefined` key and an absent key digest the same way.
- */
+/** Deterministic JSON serialization used ONLY to derive `metadata_digest`. Object keys are sorted recursively, undefined values are dropped. */
 function canonicalizeMetadataValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalizeMetadataValue);
   if (value && typeof value === 'object' && !(value instanceof Date)) {
     // A plain `{}` accumulator is unsafe here: `Object.prototype` defines
-    // `__proto__` as an ACCESSOR, so `sorted['__proto__'] = x` on an
-    // ordinary object sets the object's prototype instead of creating an
-    // own data property — and JSON.stringify only serializes own
-    // properties, so the assigned value would silently vanish from the
-    // digest input. `JSON.parse` itself creates a genuine own `__proto__`
-    // property (via CreateDataProperty, not the setter), so a caller
-    // sending `decisionContext: { "__proto__": {...} }` in a JSON request
-    // body reaches this function with a real own key — a null-prototype
-    // accumulator has no inherited `__proto__` accessor to intercept the
-    // assignment, so it is preserved as an ordinary own property instead.
+    // `__proto__` as an accessor, so `sorted['__proto__'] = x` on an ordinary
+    // object would set the prototype instead of creating an own data
+    // property, and JSON.stringify only serializes own properties — the
+    // value would silently vanish from the digest input. `Object.create(null)`
+    // avoids this.
     const sorted: Record<string, unknown> = Object.create(null);
     for (const key of Object.keys(value as Record<string, unknown>).sort()) {
       const entry = (value as Record<string, unknown>)[key];
@@ -104,15 +91,7 @@ function canonicalizeMetadataValue(value: unknown): unknown {
   return value;
 }
 
-/**
- * SHA-256 hex digest of a receipt's `metadata`, key-order-independent.
- *
- * `metadata: null` (and `metadata: undefined`, treated identically —
- * `receipts.metadata` is a nullable jsonb column, and the two never carry
- * different meaning here) canonicalize to the literal 4-byte string `null`,
- * exactly like every other nested `null`/absent value, rather than a special
- * case — this is the stable, documented digest for a metadata-less receipt.
- */
+/** SHA-256 hex digest of a receipt's `metadata`. `null` and `undefined` canonicalize to the string "null". */
 export function computeMetadataDigest(metadata: unknown): string {
   const canonical = JSON.stringify(canonicalizeMetadataValue(metadata ?? null));
   return createHash('sha256').update(canonical, 'utf8').digest('hex');

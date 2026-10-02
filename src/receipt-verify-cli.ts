@@ -1,18 +1,10 @@
 /**
- * Verify a signed OneShot receipt from the command line (issue #745).
+ * Verify a signed OneShot receipt from the command line.
  *
- * Usage:
- *   oneshot-verify-receipt <receipt.json> [jwksUrlOrPath]
+ * Usage: oneshot-verify-receipt <receipt.json> [jwksUrlOrPath]
  *
- * `receipt.json` is a receipt object as returned by the API (e.g. one entry
- * from `GET /v1/analytics/receipts`, or the `.well-known` JWKS-adjacent
- * export). `jwksUrlOrPath` may be an http(s) URL (fetched) or a local file
- * path (read from disk) — it defaults to the production well-known path,
- * `https://win.oneshotagent.com/.well-known/oneshot-receipts.json`.
- *
- * Kept as a pure, importable function (`verifyReceiptCli`) so it can be
- * exercised directly in the test suite instead of only by hand — see
- * `tests/unit/receipt-verify.test.ts`.
+ * `jwksUrlOrPath` may be an http(s) URL or a local file path; defaults to
+ * the production well-known JWKS.
  */
 import { readFileSync } from 'node:fs';
 import {
@@ -40,11 +32,7 @@ async function loadJwks(jwksArg: string, fetchImpl: typeof fetch): Promise<Recei
   return JSON.parse(readFileSync(jwksArg, 'utf8')) as ReceiptJwks;
 }
 
-/**
- * Run the CLI logic against explicit argv (excluding the node/script argv0/1
- * entries — pass e.g. `process.argv.slice(2)`). Never calls `process.exit`
- * itself so it stays testable; the bin entrypoint does that.
- */
+/** Runs against explicit argv (e.g. `process.argv.slice(2)`); never calls `process.exit` itself so it stays testable. */
 export async function verifyReceiptCli(
   argv: string[],
   opts: { fetch?: typeof fetch } = {},
