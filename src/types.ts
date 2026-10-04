@@ -81,6 +81,8 @@ export interface OneShotConfig {
   stagingKey?: string;
   /** Override API URL */
   baseUrl?: string;
+  /** Override Hunt API URL (default: https://api.soulhunt.ai) */
+  huntUrl?: string;
   /** Override RPC URL */
   rpcUrl?: string;
   /** Enable debug logging */

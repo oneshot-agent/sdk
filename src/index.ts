@@ -1,3 +1,5 @@
+import { Hunts } from './hunts';
+export * from './hunts';
 import { PhysicalMail } from './physical-mail';
 export * from './physical-mail';
 export * from './approvals';
@@ -37,7 +39,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.46.0';
+const SDK_VERSION = '0.47.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -196,6 +198,7 @@ function validateBudgetConfig(budgets: AgentBudgetConfig | undefined): AgentBudg
 }
 
 export class OneShot {
+  readonly hunts = new Hunts(this);
   readonly physicalMail = new PhysicalMail(async <T>(path: string, method: string, body?: unknown, mime?: string): Promise<T> => {
     const response = await fetch(`${this.baseUrl}/v1/tools/physical-mail${path}`, {
       method, headers: { ...await this.signedReadHeaders(method === 'GET' ? 'read' : 'write'), 'Content-Type': mime ?? 'application/json' },
@@ -214,6 +217,8 @@ export class OneShot {
   private readonly provider: WalletProvider;
   private readonly rpcProvider: ethers.JsonRpcProvider;
   private readonly baseUrl: string;
+  /** Override for the Soul Hunt API origin (default: https://api.soulhunt.ai). */
+  readonly huntUrl?: string;
   private readonly debug: boolean;
   private readonly logger: LoggerFn;
   private readProofWarned = false;
@@ -291,6 +296,7 @@ export class OneShot {
    */
   constructor(config: OneShotConfig, walletProvider?: WalletProvider) {
     this.baseUrl = config.baseUrl ?? BASE_URL;
+    this.huntUrl = config.huntUrl;
     this.debug = config.debug ?? false;
     this.logger = config.logger ?? console.log;
     this._currency = config.currency ?? 'USDC';
@@ -942,6 +948,7 @@ export class OneShot {
       payload,
       signal: options.signal,
       maxCost: options.maxCost,
+      approvalId: options.approvalId,
       // Build analysis can be slow server-side; bound the quote leg client-side.
       quoteTimeoutMs: 120000,
       expectMsg: 'Expected 402 for quote',
@@ -1975,7 +1982,7 @@ export class OneShot {
    */
   async receiptsList(options?: {
     period?: number;
-    category?: string;
+    category?: 'data' | 'verification' | 'communication' | 'commerce' | 'infrastructure' | 'agent_to_agent';
     limit?: number;
     offset?: number;
     since?: string | Date;
@@ -2159,7 +2166,7 @@ export class OneShot {
    * locally. A fresh nonce per call prevents replay. Signing failure falls back
    * to plain headers, with a one-time warning.
    */
-  private async signedReadHeaders(scope: string = 'read'): Promise<Record<string, string>> {
+  private async signedReadHeaders(scope: string = 'read', domainName: string = 'OneShot Agent Auth'): Promise<Record<string, string>> {
     const base = this.headers();
     // The bearer token already binds the request to the agent (and is
     // revocable); the API accepts it in place of the signed proof.
@@ -2169,7 +2176,13 @@ export class OneShot {
       const issuedAt = Math.floor(Date.now() / 1000);
       const nonce = ethers.hexlify(ethers.randomBytes(32));
       const signature = await this.provider.signTypedData(
-        { name: 'OneShot Agent Auth', version: '1' },
+        // `domainName` lets a different origin (e.g. Soul Hunt, which keeps
+        // its own nonce store — see hunts.ts) use a DIFFERENT EIP-712 domain
+        // than api-service's. EIP-712 mixes the domain into the signed hash,
+        // so a proof is only valid for the one origin it was signed for and
+        // can't be replayed across service boundaries (security finding
+        // F-t_d4805d6f-3, round 2).
+        { name: domainName, version: '1' },
         {
           AgentReadAuth: [
             { name: 'agent', type: 'address' },
