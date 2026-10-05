@@ -32,7 +32,8 @@
   ],
   "scripts": {
     "build": "tsc",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit --incremental false"
   },
   "keywords": [
     "ai",
@@ -81,5 +82,19 @@
   "homepage": "https://docs.oneshotagent.com/sdk/overview",
   "bugs": {
     "url": "https://github.com/oneshot-agent/sdk/issues"
+  },
+  "nx": {
+    "targets": {
+      "build": {
+        "cache": true,
+        "inputs": [
+          "default",
+          "^default"
+        ],
+        "outputs": [
+          "{projectRoot}/dist"
+        ]
+      }
+    }
   }
 }
