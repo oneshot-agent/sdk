@@ -287,6 +287,17 @@ export interface EmailToolOptions extends ToolOptions {
    * domain from `listDomains()` to see which of yours charge.
    */
   mailbox_mode?: 'relay' | 'mailbox';
+  /**
+   * Only meaningful when `from_domain` is a domain the agent doesn't own yet.
+   * A call with such a `from_domain` always stops after quoting — no charge,
+   * no send — and returns `status: 'confirmation_required'` with the exact
+   * total and its `quote_id`. Pass that `quote_id` here on the repeat call to
+   * register the domain, pay exactly that quote's total, and send in one call:
+   * the SDK sends against the stored quote instead of quoting again, so the
+   * amount charged is the amount shown (#1070). A bare `true` names no amount
+   * and only re-quotes. An expired or used quote is refused by the server.
+   */
+  confirmNewDomain?: string;
   /** Display name shown to the recipient, e.g. "Jane Doe" → "Jane Doe <jane@domain>". */
   from_name?: string;
   attachments?: Array<{
@@ -562,6 +573,10 @@ export interface ResearchResult {
 
 export interface EmailResult {
   request_id?: string;
+  /** On `status: 'confirmation_required'`: the quote to pass back as `confirmNewDomain` to accept exactly this cost. */
+  quote_id?: string;
+  /** On `status: 'confirmation_required'`: the explanation to relay, with the exact cost and the confirming call. */
+  message?: string;
   /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
   receipt_id?: string;
   status: string;
@@ -1523,6 +1538,13 @@ export interface ComputeOptions extends ToolOptions {
   /** Make this a recurring goal */
   schedule?: ComputeSchedule;
   /**
+   * What "done" means, written before the goal runs. The agent running the
+   * goal can propose that it is complete; this check, evaluated in code, or
+   * you as the owner decide. Omit it and the goal waits in
+   * `awaiting_confirmation` until you call `confirmComputeGoal`.
+   */
+  done_check?: ComputeDoneCheck;
+  /**
    * Enforced approvals: any single tool call costing more than
    * `spend_over_usdc`, or using a tool in `tools`, waits for your approval
    * (respond to its `human_approval` task) before anything is spent. Each
@@ -1530,6 +1552,32 @@ export interface ComputeOptions extends ToolOptions {
    */
   approvals?: ComputeApprovals;
 }
+
+export type ComputeDoneCheck =
+  /** At least `at_least` calls of `tool` that reached `status` (default `completed`). */
+  | { kind: 'count'; of: 'tasks'; tool: string; status?: 'completed' | 'failed'; at_least: number }
+  /** At least `at_least` events of one type, e.g. replies to the goal's emails. */
+  | { kind: 'count'; of: 'events'; event_type: 'email_reply' | 'sms_reply' | 'voice_completed' | 'task_completed' | 'task_failed'; at_least: number }
+  /** At least `at_least` of the goal's emails that got at least as far as `status` (default `sent`). */
+  | { kind: 'count'; of: 'emails'; status?: 'sent' | 'delivered' | 'opened'; at_least: number }
+  /** The latest completed result of `tool`, at `path` (dot-separated; omit for the whole result). Give `equals` or `at_least`. */
+  | { kind: 'tool_result'; tool: string; path?: string; equals?: string | number | boolean; at_least?: number }
+  /** No check can be written: you confirm with `confirmComputeGoal`. */
+  | { kind: 'owner' };
+
+/** What an evaluation of the done-check found. */
+export interface ComputeCheckResult {
+  kind: 'count' | 'tool_result' | 'owner';
+  /** `null` while waiting for the owner. */
+  passed: boolean | null;
+  observed?: unknown;
+  required?: unknown;
+  detail: string;
+  evaluated_at: string;
+  attempt?: number;
+}
+
+export type ComputeEndReason = 'check_passed' | 'owner_confirmed' | 'check_failed' | 'budget_exhausted' | 'deadline_passed' | 'planner_failed';
 
 export interface ComputeApprovals {
   /** Hold any single call whose cost exceeds this many USDC. */
@@ -1587,6 +1635,12 @@ export interface ComputeGoalStatus {
   } | null;
   soul_agent_id: string | null;
   deadline: string | null;
+  /** What "done" means for this goal. `null` = its owner confirms. */
+  done_check?: ComputeDoneCheck | null;
+  /** The latest evaluation of the done-check. */
+  check_result?: ComputeCheckResult | null;
+  /** Why the goal ended. A goal that ran out of budget is `budget_exhausted`, never completed. */
+  end_reason?: ComputeEndReason | null;
   started_at: string | null;
   completed_at: string | null;
   last_wake_at: string | null;
@@ -2113,6 +2167,50 @@ export interface LinkedInReplyOptions extends ToolOptions {
   text: string;
   /** Reuse to safely retry the same send; generated automatically when omitted. */
   idempotencyKey?: string;
+}
+
+export interface LinkedInMessageOptions extends ToolOptions {
+  accountId: string;
+  /** The connection: a linkedin.com/in/<slug> URL, a slug or a provider id (what linkedinInvite takes). */
+  profile: string;
+  /** 1-4000 characters. */
+  text: string;
+  /** Reuse to safely retry the same send; generated automatically when omitted. */
+  idempotencyKey?: string;
+}
+
+/** A sent message. `conversation_id` is the 1:1 conversation it went into (existing or new). */
+export interface LinkedInMessageResult extends LinkedInWriteResult {
+  conversation_id?: string | null;
+}
+
+export type LinkedInInvitationStatus = 'pending' | 'accepted' | 'withdrawn' | 'declined_or_unknown' | 'not_sent';
+
+export interface LinkedInInvitation {
+  invitation_id: string;
+  account_id: string;
+  status: LinkedInInvitationStatus;
+  /** The identifier the invitation was sent to. */
+  profile: string | null;
+  sent_at: string | null;
+  /** When the recipient became a connection. Null for `accepted` only when they were already connected. */
+  accepted_at: string | null;
+  updated_at: string;
+}
+
+export interface LinkedInInvitationOptions {
+  accountId: string;
+  /** The `invitation_id` returned by linkedinInvite. */
+  invitationId: string;
+}
+
+export interface LinkedInInvitationsOptions {
+  accountId: string;
+  status?: LinkedInInvitationStatus;
+  /** ISO time: only invitations whose status changed after this. */
+  changedSince?: string;
+  /** 1-100, default 50. */
+  limit?: number;
 }
 
 export interface LinkedInViewProfileOptions extends ToolOptions {

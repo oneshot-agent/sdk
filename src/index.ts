@@ -148,6 +148,11 @@ import type {
   LinkedInMessagesOptions,
   LinkedInMessagesPage,
   LinkedInReplyOptions,
+  LinkedInMessageOptions,
+  LinkedInMessageResult,
+  LinkedInInvitation,
+  LinkedInInvitationOptions,
+  LinkedInInvitationsOptions,
   LinkedInInviteOptions, LinkedInInviteResult, LinkedInWithdrawInvitationOptions, LinkedInWithdrawInvitationResult,
   LinkedInViewProfileOptions,
   LinkedInReactOptions,
@@ -423,9 +428,30 @@ export class OneShot {
       ? undefined
       : `${options.from_mailbox ?? 'agent'}@${options.from_domain}`;
 
+    // Confirming a new-domain registration (#1070): the caller passes back the
+    // quote_id of the `confirmation_required` result it was shown. That quote
+    // is sent as-is — no second quote — so the server charges the stored total
+    // of the quote the user saw (x402-legacy validates the id and takes the
+    // amount from the stored quote). A bare `true` is not a confirmation: it
+    // names no amount, so it falls through to the quote-only path below. An
+    // expired or already-used quote is refused by the server, and the next
+    // unconfirmed call produces a fresh quote to show again.
+    const confirmedQuote = typeof options.confirmNewDomain === 'string' && options.confirmNewDomain.trim()
+      ? options.confirmNewDomain.trim() : undefined;
+    if (confirmedQuote) {
+      this.log(`Email: sending against confirmed quote ${confirmedQuote}`);
+      return this.executeToolRequest<EmailResult>('/v1/tools/email/send',
+        this.emailSendPayload(options, fromAddress), confirmedQuote);
+    }
+
     // `mailbox_provisioning_fee` (>0) means `from_address` is a new address that
     // provisions a mailbox on first send — a one-time fee folded into `total_cost`.
-    const quote = await this.tool<{ total_cost: string; quote_id: string; from_address?: string; mailbox_provisioning_fee?: number }>('email/quote', {
+    // `is_new` (true) means this quote would register a brand-new domain, which
+    // drives the confirm-before-charge gate below (#1070 round 2).
+    const quote = await this.tool<{
+      total_cost: string; quote_id: string; from_address?: string; mailbox_provisioning_fee?: number;
+      is_new?: boolean; domain?: string; registration_fee?: number; service_fee?: number;
+    }>('email/quote', {
       ...(fromAddress ? { from_address: fromAddress } : {}),
       ...(options.to !== undefined ? { to_address: options.to } : {}),
       ...(options.subject !== undefined ? { subject: options.subject } : {}),
@@ -447,8 +473,35 @@ export class OneShot {
     // wants the local guard to apply).
     this.assertWithinMaxCost(quote.total_cost, options.maxCost);
 
-    const resolvedFromAddress = fromAddress ?? quote.from_address;
+    // Registering a brand-new domain is charged only after its exact quote has
+    // been shown and explicitly authorized (#1070 round 2) — this call stops
+    // here, before /email/send, and charges nothing. Pass confirmNewDomain:
+    // true (with the same from_domain) to register the domain, pay the quoted
+    // total, and send the email in one follow-up call.
+    if (quote.is_new) {
+      const domainName = quote.domain ?? options.from_domain ?? '';
+      const breakdown = quote.registration_fee !== undefined && quote.service_fee !== undefined
+        ? ` (registration $${quote.registration_fee} + service fee $${quote.service_fee}` +
+          `${quote.mailbox_provisioning_fee ? ` + mailbox fee $${quote.mailbox_provisioning_fee}` : ''})`
+        : '';
+      return {
+        status: 'confirmation_required',
+        cost: parseFloat(quote.total_cost),
+        quote_id: quote.quote_id,
+        domain: { domain: domainName, status: 'quote_only', was_provisioned: false },
+        message: `Registering ${domainName} costs $${quote.total_cost} total${breakdown}. ` +
+          `Nothing has been charged yet. Show the user this exact amount; once they agree, call this again with the same ` +
+          `arguments and confirm_new_domain: '${quote.quote_id}' (SDK: confirmNewDomain) to register the domain, ` +
+          `charge exactly $${quote.total_cost}, and send this email. true only re-quotes; a wrong or expired quote id is refused without charge.`,
+      } as EmailResult;
+    }
 
+    return this.executeToolRequest<EmailResult>('/v1/tools/email/send',
+      this.emailSendPayload(options, fromAddress ?? quote.from_address), quote.quote_id);
+  }
+
+  /** The /email/send body for `email()`: the same whether it follows a fresh quote or a confirmed one. */
+  private emailSendPayload(options: EmailToolOptions, resolvedFromAddress: string | undefined): Record<string, unknown> {
     const payload: Record<string, unknown> = {
       // Server replays the locked address from the quote when from_address
       // is absent, but sending it anyway is harmless and forward-compatible
@@ -485,7 +538,10 @@ export class OneShot {
       payload.approvalId = options.approvalId;
     }
 
-    return this.executeToolRequest<EmailResult>('/v1/tools/email/send', payload, quote.quote_id);
+    // Forward maxCost so the server-side X-Max-Cost-USDC header also guards
+    // the send, which matters on a confirmed send that skipped the quote.
+    if (options.maxCost !== undefined) payload.maxCost = options.maxCost;
+    return payload;
   }
 
   /** List the caller's domain pool with warmup and rotation metadata. */
@@ -1258,6 +1314,38 @@ export class OneShot {
     return this.tool('linkedin/reply', { ...rest, account_id: accountId, conversation_id: conversationId, text, timeout: options.timeout ?? 180 });
   }
 
+  /**
+   * Message a first-degree connection: into the 1:1 conversation the account
+   * already has with them, or a new one. Use it once an invitation is accepted,
+   * or for a connection the account has never messaged. Needs the `reply`
+   * grant; shares the reply daily cap and pacing. A failed send carries an
+   * error code: `not_connected` (invite them first) and `rate_limited` mean
+   * "defer", not "give up".
+   */
+  async linkedinMessage(options: LinkedInMessageOptions): Promise<LinkedInMessageResult> {
+    this.validate(options.accountId, 'accountId');
+    this.validate(options.profile, 'profile');
+    this.validate(options.text, 'text');
+    const { accountId, profile, text, ...rest } = options;
+    return this.tool('linkedin/message', { ...rest, account_id: accountId, profile, text, timeout: options.timeout ?? 180 });
+  }
+
+  /** One invitation sent through linkedinInvite: `accepted` (with `accepted_at`) as soon as the person is a connection. Free. */
+  async linkedinInvitation(options: LinkedInInvitationOptions): Promise<LinkedInInvitation> {
+    this.validate(options.accountId, 'accountId');
+    this.validate(options.invitationId, 'invitationId');
+    return this.linkedinFree('GET', `/accounts/${encodeURIComponent(options.accountId)}/invitations/${encodeURIComponent(options.invitationId)}`, { what: 'invitation' });
+  }
+
+  /** Invitations sent through linkedinInvite, most recently changed first. Poll with `changedSince`. Free. */
+  async linkedinInvitations(options: LinkedInInvitationsOptions): Promise<{ invitations: LinkedInInvitation[] }> {
+    this.validate(options.accountId, 'accountId');
+    return this.linkedinFree('GET', `/accounts/${encodeURIComponent(options.accountId)}/invitations`, {
+      what: 'invitations',
+      query: { status: options.status, changed_since: options.changedSince, limit: options.limit?.toString() },
+    });
+  }
+
   /** View a profile through the connected account. `notify: true` is visible to the target and cannot be undone. */
   async linkedinViewProfile(options: LinkedInViewProfileOptions): Promise<LinkedInProfileViewResult> {
     this.validate(options.accountId, 'accountId');
@@ -1573,6 +1661,7 @@ export class OneShot {
     if (options.soul_service_slug) payload.soul_service_slug = options.soul_service_slug;
     if (options.schedule) payload.schedule = options.schedule;
     if (options.approvals) payload.approvals = options.approvals;
+    if (options.done_check) payload.done_check = options.done_check;
 
     // Compute returns the goal directly on 202 — no job polling, unlike the
     // other paid tools.
@@ -1739,6 +1828,32 @@ export class OneShot {
     }
 
     const json = await response.json() as { data: { task_id: string; goal_id: string; task_status: string; orchestrator_action: string } };
+    return json.data;
+  }
+
+  /**
+   * Answer whether a goal in `awaiting_confirmation` is done. A goal with no
+   * done-check completes only when its owner confirms: the agent that ran it
+   * cannot. `approved: false` sends it back with `response` as what is missing.
+   *
+   * @example
+   * ```typescript
+   * const goal = await agent.getComputeGoal(goalId);
+   * if (goal.status === 'awaiting_confirmation') {
+   *   await agent.confirmComputeGoal(goalId, { approved: true });
+   * }
+   * ```
+   */
+  async confirmComputeGoal(goalId: string, input: { approved: boolean; response?: string }): Promise<{ goal_id: string; status: 'completed' | 'active'; end_reason: string | null; orchestrator_action: string }> {
+    this.validate(goalId, 'goalId');
+    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
+      body: JSON.stringify({ confirm_done: input.approved, ...(input.response ? { response: input.response } : {}) }),
+    });
+    if (response.status === 404) throw new ToolError('Goal not found', 404, await response.text());
+    if (!response.ok) throw new ToolError('Failed to confirm compute goal', response.status, await response.text());
+    const json = await response.json() as { data: { goal_id: string; status: 'completed' | 'active'; end_reason: string | null; orchestrator_action: string } };
     return json.data;
   }
 
@@ -2661,7 +2776,7 @@ export class OneShot {
 
   private async executeToolRequest<T>(endpoint: string, options: ToolOptions & Record<string, unknown>, quoteId?: string): Promise<T> {
     // LinkedIn writes act through a human's account and cannot be recalled: always keyed.
-    const reliable = /(?:^|\/)(enrich\/(profile|email)|verify\/email|linkedin\/(reply|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint);
+    const reliable = /(?:^|\/)(enrich\/(profile|email)|verify\/email|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint);
     const key = options.idempotencyKey ?? (reliable ? ethers.hexlify(ethers.randomBytes(16)) : undefined);
     if (options.totalTimeoutMs !== undefined && (!Number.isFinite(options.totalTimeoutMs) || options.totalTimeoutMs <= 0)) {
       throw new ValidationError('totalTimeoutMs must be positive', 'totalTimeoutMs');
@@ -3507,7 +3622,7 @@ export class OneShot {
       resp = await this.makeRequest(endpoint, data, signed.auth, quoteId, signal, timeoutMs, extraHeaders);
     } catch (err) {
       // Keyed writes may already be queued server-side after a transport failure: keep the reservation.
-      if (!/(enrich\/(profile|email)|verify\/email|physical-mail\/send|linkedin\/(reply|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
+      if (!/(enrich\/(profile|email)|verify\/email|physical-mail\/send|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
       throw err;
     }
     if (!resp.ok && !(extraHeaders?.['Idempotency-Key'] && resp.status >= 500)) this.releaseUsdcReservation(signed.reservation);

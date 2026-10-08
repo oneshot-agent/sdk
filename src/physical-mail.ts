@@ -60,6 +60,11 @@ export interface MailSendInput extends MailApproval {
   maxCost?: number;
   memo?: string;
   decisionContext?: Record<string, unknown>;
+  /**
+   * Releases a send the agent's action policy held (sent as X-Approval-Id; see
+   * ApprovalRequiredError). Not the quote's own `approval_id`.
+   */
+  approvalId?: string;
 }
 export type MailRequest = <T>(
   path: string,

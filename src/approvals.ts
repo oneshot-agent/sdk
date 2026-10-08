@@ -1,7 +1,8 @@
 /**
  * Approvals and action policies.
  *
- * An action policy decides which paid calls (email, SMS, voice, commerce) run,
+ * An action policy decides which paid calls with an outside side effect (email,
+ * SMS, voice, commerce, physical mail, LinkedIn actions, builds, browser tasks) run,
  * are denied, or wait for a named human. A held call throws
  * `ApprovalRequiredError` carrying an `approvalId`; once the approver says yes,
  * repeat the same call with `{ approvalId }` and it runs once.
@@ -28,7 +29,7 @@ export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired' | 'ca
 export interface Approval {
   approval_id: string;
   source: 'policy' | 'api' | 'compute';
-  tool: 'email' | 'sms' | 'voice' | 'commerce' | null;
+  tool: PolicyTool | null;
   status: ApprovalStatus;
   action_summary: string;
   preview: Record<string, unknown> | null;
@@ -60,7 +61,11 @@ export interface CreateApprovalOptions {
   expires_in_seconds?: number;
 }
 
-export type PolicyTool = 'email' | 'sms' | 'voice' | 'commerce';
+export type PolicyTool =
+  | 'email' | 'sms' | 'voice' | 'commerce'
+  | 'physical_mail'
+  | 'linkedin_invite' | 'linkedin_invite_withdraw' | 'linkedin_react' | 'linkedin_reply' | 'linkedin_message'
+  | 'build' | 'browser';
 
 export interface ActionPolicyRule {
   id?: string;
