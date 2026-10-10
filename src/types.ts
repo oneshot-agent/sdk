@@ -320,7 +320,11 @@ export interface PeopleSearchOptions extends ToolOptions {
   company_domains?: string[];
   location?: string[];
   skills?: string[];
+  /** Seniority levels: owner, founder, c_suite, partner, vp, head, director, manager, senior, entry, intern. Common variants ("Vice President",
+   * "C-Level", "executive") are accepted. A value that matches no level fails
+   * the search with `invalid_input`. */
   seniority?: string[];
+  /** Industries as free text, e.g. `['fintech', 'software']`. */
   industry?: string[];
   company_size?: string;
   /** Max rows to return, 1-500 (server default 100). Large requests are

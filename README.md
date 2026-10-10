@@ -610,6 +610,16 @@ const profile = await agent.enrichProfile({
 });
 ```
 
+**Filters:** `seniority` takes any of `owner`, `founder`, `c_suite`, `partner`, `vp`, `head`, `director`, `manager`, `senior`, `entry`, `intern`.
+Common variants (`'Vice President'`, `'C-Level'`, `'executive'`) are accepted;
+a value that matches no level fails the search with `invalid_input`. `industry`
+is free text (`['fintech', 'software']`).
+
+**Empty vs. failed:** an empty `results` array means the search ran and nobody
+matched. If the search could not be run, the call throws a `JobError` with a
+retryable upstream code (`provider_unavailable`, `provider_auth`,
+`rate_limited`) instead of returning an empty result.
+
 **Pagination:** `limit` (default 100, max 500) and `offset` (default 0,
 0-indexed) page through the result set — `{ limit: 100, offset: 100 }` gets
 the second page of 100. Large requests are paginated server-side, so one
