@@ -1645,6 +1645,9 @@ export interface ComputeGoalStatus {
   check_result?: ComputeCheckResult | null;
   /** Why the goal ended. A goal that ran out of budget is `budget_exhausted`, never completed. */
   end_reason?: ComputeEndReason | null;
+  /** The goal's answer in the planner's words, written when it finished. What its tasks produced: `getComputeOutputs`. */
+  result?: string | null;
+  result_at?: string | null;
   started_at: string | null;
   completed_at: string | null;
   last_wake_at: string | null;
@@ -1660,6 +1663,25 @@ export interface ComputeGoalStatus {
   };
 }
 
+/** One thing a goal's task produced: a file a sandbox task left, or a tool result too large for the task row. */
+export interface ComputeOutput {
+  /** Path-like key, e.g. `artifacts/<task_id>/result.txt`. */
+  key: string;
+  task_id: string | null;
+  content_type: string;
+  size_bytes: number | null;
+  summary: string | null;
+  /** False when the content was too large to keep: only this description exists. */
+  readable: boolean;
+  updated_at: string;
+}
+
+/** An output with its text. `content` is null when `readable` is false; `truncated` when it was cut to the read limit. */
+export interface ComputeOutputContent extends ComputeOutput {
+  content: string | null;
+  truncated: boolean;
+}
+
 export interface ComputeTask {
   id: string;
   task_type: string;
@@ -1671,6 +1693,8 @@ export interface ComputeTask {
   progress_pct: number | null;
   progress_message: string | null;
   result: unknown;
+  /** What this task produced, by key. Read one with `getComputeOutput(goalId, key)`. */
+  outputs?: Array<Pick<ComputeOutput, 'key' | 'content_type' | 'size_bytes' | 'readable'>>;
   quoted_usdc: string | null;
   actual_usdc: string | null;
   run_number: number | null;
@@ -1755,7 +1779,6 @@ export interface LocalSearchResult {
   total_found: number;
   /** true when the vendor-call cap stopped the search before `limit`. */
   truncated: boolean;
-  vendor_calls: number;
   filters?: Record<string, unknown>;
   request_id?: string;
   /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
@@ -1864,7 +1887,6 @@ export interface GovSolicitationsResult {
   /** true when some rows have no description because the per-search fetch cap was hit or fetching stopped. */
   truncated: boolean;
   description_fetches: number;
-  vendor_calls: number;
   /**
    * ISO timestamp of the data snapshot behind `results`: the publish time of
    * SAM.gov's daily extract when served from it (the common case — same-day

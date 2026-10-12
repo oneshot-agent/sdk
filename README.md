@@ -167,6 +167,7 @@ mainnet only.
 | `compute()` | Launch autonomous multi-step goal |
 | `getComputeGoal()` | Get goal status and progress |
 | `getComputeTasks()` | List tasks for a goal |
+| `getComputeOutputs()` / `getComputeOutput()` | List what a goal's tasks produced, and read one output by key |
 | `getComputeBudget()` | Check remaining budget for a goal |
 | `respondToComputeTask()` | Provide input to a pending task |
 | `pauseComputeGoal()` | Pause a running goal |

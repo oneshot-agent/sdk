@@ -39,7 +39,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.48.0';
+const SDK_VERSION = '0.49.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -130,7 +130,7 @@ import type {
   BuildQuote, BuildResult, BrowserTaskOptions, BrowserProfile, BrowserProfileCreateOptions, BrowserProfileSetup, BrowserQuote,
   BrowserResult, UpdateBuildOptions, RefineBuildOptions, SpendCategory, SpendBreakdown, RoCSResult, RoCSByGoalResult,
   Receipt, ReceiptsListResult, UnifiedBalance, CreditsTopUpResult, ComputeSchedule, ComputeOptions,
-  ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeTask,
+  ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeTask, ComputeOutput, ComputeOutputContent,
   ComputeBudgetStatus,
   DomainPoolEntry, DomainPoolListResult, DomainPoolStatusResult,
   AgentBudgetConfig, AgentBudgetStatus, AccessTokenCreated, AccessTokenInfo,
@@ -547,7 +547,7 @@ export class OneShot {
   /** List the caller's domain pool with warmup and rotation metadata. */
   async listDomains(): Promise<DomainPoolListResult> {
     const response = await fetch(`${this.baseUrl}/v1/tools/email/domains`, {
-      headers: this.headers(),
+      headers: await this.signedReadHeaders(),
     });
     if (!response.ok) {
       throw new ToolError('Failed to list domains', response.status, await response.text());
@@ -560,7 +560,7 @@ export class OneShot {
     this.validate(domain, 'domain');
     const response = await fetch(`${this.baseUrl}/v1/tools/email/domains/${encodeURIComponent(domain)}/pause`, {
       method: 'POST',
-      headers: this.headers(),
+      headers: await this.signedReadHeaders('write'),
     });
     if (!response.ok) {
       throw new ToolError('Failed to pause domain', response.status, await response.text());
@@ -573,7 +573,7 @@ export class OneShot {
     this.validate(domain, 'domain');
     const response = await fetch(`${this.baseUrl}/v1/tools/email/domains/${encodeURIComponent(domain)}/resume`, {
       method: 'POST',
-      headers: this.headers(),
+      headers: await this.signedReadHeaders('write'),
     });
     if (!response.ok) {
       throw new ToolError('Failed to resume domain', response.status, await response.text());
@@ -1739,6 +1739,52 @@ export class OneShot {
     }
 
     const json = await response.json() as { data: ComputeTask[] };
+    return json.data;
+  }
+
+  /**
+   * List what a compute goal produced: the files its sandbox tasks left and
+   * the tool results too large for a task row. The goal's short answer is
+   * `result` on `getComputeGoal`.
+   *
+   * @example
+   * ```typescript
+   * for (const out of await agent.getComputeOutputs(goalId)) {
+   *   if (out.readable) console.log(out.key, (await agent.getComputeOutput(goalId, out.key)).content);
+   * }
+   * ```
+   */
+  async getComputeOutputs(goalId: string): Promise<ComputeOutput[]> {
+    this.validate(goalId, 'goalId');
+
+    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/outputs`, {
+      headers: await this.signedReadHeaders()
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to list compute outputs', response.status, await response.text());
+    }
+
+    const json = await response.json() as { data: ComputeOutput[] };
+    return json.data;
+  }
+
+  /** Read one output of a compute goal by the `key` from `getComputeOutputs` (or a task's `outputs`). */
+  async getComputeOutput(goalId: string, key: string): Promise<ComputeOutputContent> {
+    this.validate(goalId, 'goalId');
+    this.validate(key, 'key');
+
+    // The key is a path: keep its slashes, escape everything else.
+    const path = key.split('/').map(encodeURIComponent).join('/');
+    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/outputs/${path}`, {
+      headers: await this.signedReadHeaders()
+    });
+
+    if (!response.ok) {
+      throw new ToolError('Failed to read compute output', response.status, await response.text());
+    }
+
+    const json = await response.json() as { data: ComputeOutputContent };
     return json.data;
   }
 
@@ -3426,12 +3472,24 @@ export class OneShot {
     timeoutMs?: number,
     extraHeaders?: Record<string, string>
   ): Promise<Response> {
+    // A leg with no payment attached proves the wallet with a signed agent
+    // proof: the API spends an agent's credits, and shows them on a quote, only
+    // for a caller that has proven it holds the wallet (a bare X-Agent-ID is a
+    // public address). A leg that carries a payment signature needs none. The
+    // endpoints with durable admission read a 'submit' proof; a caller that
+    // asked for a proof explicitly keeps the scope it always had.
+    const askedForProof = !!extraHeaders?.['x-agent-proof'];
+    const proofScope = /(enrich\/(profile|email)|verify\/email|physical-mail\/send)$/.test(endpoint)
+      ? 'submit'
+      : askedForProof ? 'read' : 'write';
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...this.headers(),
       ...(extraHeaders ?? {}),
-      ...(extraHeaders?.['x-agent-proof'] ? await this.signedReadHeaders(/(enrich\/(profile|email)|verify\/email|physical-mail\/send)$/.test(endpoint) ? 'submit' : 'read') : {})
+      ...(askedForProof || !payment ? await this.signedReadHeaders(proofScope) : {})
     };
+    // 'required' is this SDK's own marker for "sign this leg"; never send it as a proof.
+    if (headers['x-agent-proof'] === 'required') delete headers['x-agent-proof'];
 
     if (payment) {
       const paymentJson = JSON.stringify(payment);
