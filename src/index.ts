@@ -39,7 +39,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.49.0';
+const SDK_VERSION = '0.49.1';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -3478,6 +3478,12 @@ export class OneShot {
     // public address). A leg that carries a payment signature needs none. The
     // endpoints with durable admission read a 'submit' proof; a caller that
     // asked for a proof explicitly keeps the scope it always had.
+    //
+    // One payment leg does need a proof: when credits cover the whole cost the
+    // "payment" is the zero-cost authorization, an unsigned stub (signature
+    // '0x'). It proves nothing, and the API refuses to spend credits on it
+    // alone (401 proof_required).
+    const unsignedStub = payment?.payload?.signature === '0x';
     const askedForProof = !!extraHeaders?.['x-agent-proof'];
     const proofScope = /(enrich\/(profile|email)|verify\/email|physical-mail\/send)$/.test(endpoint)
       ? 'submit'
@@ -3486,7 +3492,7 @@ export class OneShot {
       'Content-Type': 'application/json',
       ...this.headers(),
       ...(extraHeaders ?? {}),
-      ...(askedForProof || !payment ? await this.signedReadHeaders(proofScope) : {})
+      ...(askedForProof || !payment || unsignedStub ? await this.signedReadHeaders(proofScope) : {})
     };
     // 'required' is this SDK's own marker for "sign this leg"; never send it as a proof.
     if (headers['x-agent-proof'] === 'required') delete headers['x-agent-proof'];
