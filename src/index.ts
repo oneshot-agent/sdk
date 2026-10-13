@@ -1824,7 +1824,7 @@ export class OneShot {
    * console.log(`Cancelled. Remaining: $${result.remaining_budget}`);
    * ```
    */
-  async cancelComputeGoal(goalId: string, reason?: string): Promise<{ goal_id: string; status: string; remaining_budget: string }> {
+  async cancelComputeGoal(goalId: string, reason?: string): Promise<{ goal_id?: string; status: string; remaining_budget?: string; message?: string }> {
     this.validate(goalId, 'goalId');
 
     const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/cancel`, {
@@ -1835,6 +1835,11 @@ export class OneShot {
 
     if (response.status === 404) {
       throw new ToolError('Goal not found', 404, 'Goal not found');
+    }
+    // 202: cancellation is recorded, the refund waits for reservations to settle. A result, not an error.
+    if (response.status === 202) {
+      const pending = await response.json() as { status?: string; message?: string };
+      return { goal_id: goalId, status: pending.status ?? 'pending_settlement', message: pending.message };
     }
     if (!response.ok) {
       throw new ToolError('Failed to cancel compute goal', response.status, await response.text());

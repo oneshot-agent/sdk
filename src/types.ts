@@ -1976,6 +1976,8 @@ export interface LinkedInAccount {
   /** False for deleted_upstream: start a new connection instead of retrying reconnect. */
   reconnect_required: boolean;
   idle_revoke_at: string | null;
+  /** Why the grant ended: `agent`, `idle`, `ops` or `upstream_missing`. Null while active. */
+  revoked_reason: string | null;
   sync: {
     history_sync_status: string;
     history_sync_completed_at: string | null;
