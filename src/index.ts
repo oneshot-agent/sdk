@@ -39,7 +39,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.49.1';
+const SDK_VERSION = '0.50.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -1350,8 +1350,17 @@ export class OneShot {
   async linkedinViewProfile(options: LinkedInViewProfileOptions): Promise<LinkedInProfileViewResult> {
     this.validate(options.accountId, 'accountId');
     this.validate(options.identifier, 'identifier');
-    const { accountId, identifier, notify, ...rest } = options;
-    return this.tool('linkedin/profile-view', { ...rest, account_id: accountId, identifier, notify: !!notify, timeout: options.timeout ?? 180 });
+    const { accountId, identifier, notify, sections, ...rest } = options;
+    const body: Record<string, unknown> = { ...rest, account_id: accountId, identifier, notify: !!notify, timeout: options.timeout ?? 180 };
+    // Left off the wire when empty, so a view without sections is the request it always was.
+    if (sections?.length) body.sections = sections;
+    const result = await this.tool('linkedin/profile-view', body) as LinkedInProfileViewResult;
+    // The server leaves both fields out when the section was not requested; surface that as null.
+    if (result?.profile) {
+      result.profile.experience = result.profile.experience ?? null;
+      result.profile.experience_complete = result.profile.experience_complete ?? null;
+    }
+    return result;
   }
 
   /** React to a post through the connected account. */
@@ -3469,6 +3478,45 @@ export class OneShot {
   }
 
   private async makeRequest(
+    endpoint: string,
+    data: Record<string, unknown>,
+    payment?: PaymentAuthorization,
+    quoteId?: string,
+    signal?: AbortSignal,
+    timeoutMs?: number,
+    extraHeaders?: Record<string, string>
+  ): Promise<Response> {
+    let resp = await this.sendLeg(endpoint, data, payment, quoteId, signal, timeoutMs, extraHeaders);
+    // The API refuses a request whose wallet proof it rejected, saying why (#1437).
+    // A stale clock window or a proof sent twice is cured by signing a new proof:
+    // send the leg again once. Nothing is paid in answer to this refusal.
+    for (let attempt = 0; resp.status === 401; attempt++) {
+      const refusal = await this.readInvalidProof(resp);
+      if (!refusal) break;
+      if (attempt > 0 || (refusal.reason !== 'expired' && refusal.reason !== 'already_used')) {
+        throw new OneShotError(`The API refused the wallet proof (${refusal.reason}): ${refusal.message}`);
+      }
+      this.log(`Wallet proof refused (${refusal.reason}); signing a new proof and retrying once`);
+      resp = await this.sendLeg(endpoint, data, payment, quoteId, signal, timeoutMs, extraHeaders);
+    }
+    return resp;
+  }
+
+  /** `{ reason, message }` when a 401 is the API's `invalid_proof` refusal; the response body stays readable. */
+  private async readInvalidProof(resp: Response): Promise<{ reason: string; message: string } | undefined> {
+    try {
+      const body = await resp.clone().json() as { error?: unknown; reason?: unknown; message?: unknown };
+      if (body?.error !== 'invalid_proof') return undefined;
+      return {
+        reason: typeof body.reason === 'string' ? body.reason : 'invalid',
+        message: typeof body.message === 'string' ? body.message : 'The agent proof could not be verified.',
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async sendLeg(
     endpoint: string,
     data: Record<string, unknown>,
     payment?: PaymentAuthorization,

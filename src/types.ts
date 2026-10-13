@@ -2247,8 +2247,12 @@ export interface LinkedInViewProfileOptions extends ToolOptions {
   identifier: string;
   /** Default false. true = the profile owner sees the view (cannot be undone). */
   notify?: boolean;
+  /** Extra profile sections to return. Only `'experience'` today. Omitted or empty = the summary only. */
+  sections?: LinkedInProfileSection[];
   idempotencyKey?: string;
 }
+
+export type LinkedInProfileSection = 'experience';
 
 export type LinkedInReactionType = 'like' | 'celebrate' | 'support' | 'love' | 'insightful' | 'funny';
 
@@ -2279,5 +2283,19 @@ export interface LinkedInProfileViewResult extends LinkedInWriteResult {
     location: string | null;
     network_distance: string | null;
     is_open_profile: boolean | null;
+    /** `null` when `sections` did not include `'experience'`. `[]` means the profile lists no experience. In LinkedIn's order. */
+    experience: LinkedInExperienceEntry[] | null;
+    /** `false` when LinkedIn held the experience section back (throttled), returned no readable list or fewer positions than it reports, or a position with no company was dropped, so `experience` is not proof of what the person lists. Only the throttled case may clear on retry. `null` when not requested. */
+    experience_complete: boolean | null;
   };
+}
+
+export interface LinkedInExperienceEntry {
+  company: string;
+  title: string | null;
+  /** As LinkedIn gives it (string or null). */
+  start: string | null;
+  end: string | null;
+  current: boolean;
+  location: string | null;
 }
