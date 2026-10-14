@@ -39,7 +39,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.50.0';
+const SDK_VERSION = '0.51.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -110,8 +110,8 @@ import type {
   EmailToolOptions, ResearchToolOptions, PeopleSearchOptions,
   EnrichProfileOptions, FindEmailOptions, VerifyEmailOptions,
   CompanySearchOptions, CompanySearchResult, EnrichCompanyOptions, EnrichCompanyResult,
-  LocalSearchOptions, LocalSearchResult, LocalResolveOptions, LocalResolveResult,
-  GovSolicitationsOptions, GovSolicitationsResult,
+  BusinessFindOptions, BusinessFindResult, BusinessResolveOptions, BusinessResolveResult,
+  RecordSolicitationsFindOptions, RecordSolicitationsFindResult,
   DeepResearchPersonOptions, SocialProfilesOptions, ArticleSearchOptions,
   PersonNewsfeedOptions, PersonInterestsOptions, PersonInteractionsOptions,
   InboxListOptions, ShippingAddress, CommerceBuyOptions, CommerceSearchOptions,
@@ -615,14 +615,14 @@ export class OneShot {
    * Discover local businesses (restaurants, contractors, practices) by
    * category/keywords × location. Flat price per search, not per row.
    */
-  async localSearch(options: LocalSearchOptions): Promise<LocalSearchResult> {
+  async businessFind(options: BusinessFindOptions): Promise<BusinessFindResult> {
     if (!options.location || options.location.length === 0) {
       throw new ValidationError('location is required (e.g. ["Austin, TX"])', 'location');
     }
     if (!(options.category && options.category.length) && !(options.keywords && options.keywords.length)) {
       throw new ValidationError('At least one of category or keywords is required', 'category');
     }
-    return this.tool('local/search', { ...options, limit: options.limit ?? 100 });
+    return this.tool('find/business', { ...options, limit: options.limit ?? 100 });
   }
 
   /**
@@ -630,12 +630,12 @@ export class OneShot {
    * category and operating status. A miss resolves with `found: false`
    * (a completed job), never a rejection.
    */
-  async localResolve(options: LocalResolveOptions): Promise<LocalResolveResult> {
+  async businessResolve(options: BusinessResolveOptions): Promise<BusinessResolveResult> {
     this.validate(options.name, 'name');
     if (!options.address && !options.city && !options.postal_code && !options.phone) {
       throw new ValidationError('name plus at least one of address, city, postal_code, or phone is required', 'address');
     }
-    return this.tool('local/resolve', { ...options });
+    return this.tool('resolve/business', { ...options });
   }
 
   /**
@@ -645,7 +645,7 @@ export class OneShot {
    * `data_as_of` on the result is the snapshot behind the rows (SAM.gov's
    * daily extract publish time, or "now" when the live API served).
    */
-  async govSolicitations(options: GovSolicitationsOptions): Promise<GovSolicitationsResult> {
+  async recordSolicitationsFind(options: RecordSolicitationsFindOptions): Promise<RecordSolicitationsFindResult> {
     if (!options.naics || options.naics.length === 0) {
       throw new ValidationError('naics is required (one or more 6-digit codes, e.g. ["541511"])', 'naics');
     }
@@ -653,7 +653,7 @@ export class OneShot {
     if (bad !== undefined) {
       throw new ValidationError(`NAICS codes are 6 digits (got ${JSON.stringify(bad)})`, 'naics');
     }
-    return this.tool('gov/solicitations', {
+    return this.tool('find/record-solicitations', {
       ...options,
       notice_types: options.notice_types ?? ['r', 'p'],
       limit: options.limit ?? 100,

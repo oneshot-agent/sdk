@@ -1736,7 +1736,7 @@ export interface ComputeBudgetStatus {
 }
 
 
-export interface LocalSearchOptions extends ToolOptions {
+export interface BusinessFindOptions extends ToolOptions {
   /** Business categories, e.g. ['hvac contractor', 'dental practice']. category or keywords required. */
   category?: string[];
   /** Free-text keywords (alternative to category). */
@@ -1755,7 +1755,7 @@ export interface LocalSearchOptions extends ToolOptions {
   limit?: number;
 }
 
-export interface LocalResolveOptions extends ToolOptions {
+export interface BusinessResolveOptions extends ToolOptions {
   name: string;
   address?: string;
   city?: string;
@@ -1790,7 +1790,7 @@ export interface LocalResult {
   longitude: number | null;
 }
 
-export interface LocalSearchResult {
+export interface BusinessFindResult {
   status: string;
   results: LocalResult[];
   total_found: number;
@@ -1805,7 +1805,7 @@ export interface LocalSearchResult {
   cost?: number;
 }
 
-export interface LocalResolveResult {
+export interface BusinessResolveResult {
   status: string;
   /** false is a completed job, not an error — the same contract as findEmail. */
   found: boolean;
@@ -1831,7 +1831,7 @@ export interface LocalResolveResult {
  *  i=Intent to Bundle, g=Surplus Property. */
 export type GovNoticeTypeCode = 'r' | 'p' | 'o' | 'k' | 's' | 'a' | 'u' | 'i' | 'g';
 
-export interface GovSolicitationsOptions extends ToolOptions {
+export interface RecordSolicitationsFindOptions extends ToolOptions {
   /** 6-digit NAICS codes, 1-20. Required. */
   naics: string[];
   /** Default ['r', 'p'] — Sources Sought + Presolicitation, the window where the requirement is still being written. */
@@ -1897,7 +1897,7 @@ export interface Solicitation {
   id: string;
 }
 
-export interface GovSolicitationsResult {
+export interface RecordSolicitationsFindResult {
   status: string;
   results: Solicitation[];
   total_found: number;
