@@ -106,7 +106,7 @@ export * from './types';
 
 import type {
   TokenInfo, PaymentInfo, PaymentRequirements, PaymentAuthorization,
-  LoggerFn, StatusUpdateFn, OneShotConfig, DecisionContext, ToolOptions,
+  LoggerFn, StatusUpdateFn, OneShotConfig, DecisionContext, ToolOptions, RouteMethod, RouteOptions,
   EmailToolOptions, ResearchToolOptions, PeopleSearchOptions,
   EnrichProfileOptions, FindEmailOptions, VerifyEmailOptions,
   CompanySearchOptions, CompanySearchResult, EnrichCompanyOptions, EnrichCompanyResult,
@@ -201,6 +201,9 @@ function validateBudgetConfig(budgets: AgentBudgetConfig | undefined): AgentBudg
   fraction(budgets.pauseAt, 'pauseAt');
   return budgets;
 }
+
+/** The keys executeToolRequestImpl takes out of a request as SDK options, so they never reach the API body. */
+const PAID_ROUTE_OPTION_KEYS = ['totalTimeoutMs', 'onRequestCreated', 'onAccepted', 'signal', 'onStatusUpdate', 'wait', 'waitForPhones', 'phoneTimeoutSec', 'idempotencyKey', 'approvalId', 'maxCost'] as const;
 
 export class OneShot {
   readonly hunts = new Hunts(this);
@@ -1509,6 +1512,86 @@ export class OneShot {
     return this.signedJson('GET', `/v1/tools/voice/inbound/${encodeURIComponent(callId)}`, undefined, 'read', 'Failed to get inbound call');
   }
 
+  /**
+   * Call a declared route of the API by method and path (#1580), the one generic call for a route that has no
+   * typed method. Follows the Python client's `call_free_get/post/patch/put/delete`:
+   *
+   * - `path` is the route, with `{name}` (or `:name`) for a path parameter, filled from `params` and URL-encoded
+   *   (`/v1/compute/{goal_id}/budget`). It must start with `/v1/` and hold no `..` or `?`.
+   * - `query` is the query string (null/undefined left out; booleans `true`/`false`; objects and arrays as JSON).
+   * - `body` is the JSON body of a `POST`, `PUT` or `PATCH` (an object field is sent as it is); a `GET` or
+   *   `DELETE` sends none.
+   * - A free route is authorised like the other free calls: a signed proof (read scope for `GET`, write scope for
+   *   any other method) or, in an access-token session, the bearer token. Returns the `data` field of
+   *   `{ success, data }`, or the whole body when there is none; an empty answer is `{ success: true }`.
+   * - `paid: true` sends the route through the quote-to-pay flow of {@link OneShot.tool} (a `POST` only), with the
+   *   {@link ToolOptions} (`maxCost`, `idempotencyKey`, `wait`, `signal`, ...) given in `options`.
+   *
+   * @example
+   * ```typescript
+   * const budget = await agent.route('GET', '/v1/compute/{goal_id}/budget', { params: { goal_id: 'goal_01HX' } });
+   * const changes = await agent.route('POST', '/v1/tools/changes', { paid: true, body: { attribute: 'vehicle_identification', key: '1HGCM82633A004352', since: '2026-01-01' } });
+   * ```
+   */
+  async route<T = unknown>(method: RouteMethod, path: string, options: RouteOptions = {}): Promise<T> {
+    const { params = {}, query = {}, body, paid = false, ...toolOptions } = options;
+    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) throw new ValidationError(`Not an HTTP method of the API: ${method}`, 'method');
+    if (!path.startsWith('/v1/') || path.includes('..') || path.includes('?') || path.includes('#')) {
+      throw new ValidationError(`Not a route of the API: ${path}`, 'path');
+    }
+    const filled = path.replace(/\{([A-Za-z0-9_]+)\}|:([A-Za-z0-9_]+)/g, (_match, braced?: string, colon?: string) => {
+      const name = braced ?? colon!;
+      const value = params[name];
+      if ((typeof value !== 'string' && typeof value !== 'number') || String(value) === '') {
+        throw new ValidationError(`${name} is required to call ${method} ${path}`, name);
+      }
+      return encodeURIComponent(String(value));
+    });
+    const qs = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined || value === null) continue;
+      qs.set(key, typeof value === 'boolean' ? (value ? 'true' : 'false') : typeof value === 'object' ? JSON.stringify(value) : String(value));
+    }
+    const target = qs.size ? `${filled}?${qs.toString()}` : filled;
+
+    if (paid) {
+      if (method !== 'POST') throw new ValidationError(`A paid route is called with POST, not ${method}`, 'method');
+      // executeToolRequestImpl strips these keys out of the payload as SDK options, so a body field of the same
+      // name would be dropped silently: refuse it, and tell the caller to send it as an option or rename it.
+      for (const name of PAID_ROUTE_OPTION_KEYS) {
+        if (body && name in body) throw new ValidationError(`The body field "${name}" of ${path} is an option of the SDK call and would not reach the API`, name);
+      }
+      return this.executeToolRequest<T>(target, { ...(body ?? {}), ...toolOptions } as ToolOptions & Record<string, unknown>);
+    }
+
+    const sendsBody = method !== 'GET' && method !== 'DELETE';
+    const scope = deadlineScope(toolOptions.signal, filled.startsWith('/v1/tools/browser/profiles') ? 150_000 : 30_000);
+    try {
+      const request = (async () => {
+        const response = await fetch(`${this.baseUrl}${target}`, {
+          method,
+          headers: { ...(sendsBody ? { 'Content-Type': 'application/json' } : {}), ...(await this.signedReadHeaders(method === 'GET' ? 'read' : 'write')) },
+          ...(sendsBody ? { body: JSON.stringify(body ?? {}) } : {}),
+          signal: scope.signal,
+        });
+        if (!response.ok) {
+          if (response.status === 409 && filled.startsWith('/v1/tools/linkedin/')) {
+            const text = await response.clone().text();
+            let code: unknown;
+            try { code = JSON.parse(text)?.error; } catch { /* Not JSON. */ }
+            if (code === 'connect_required') throw new LinkedInConnectRequiredError(text);
+          }
+          await this.failFromResponse(`${method} ${filled} failed`, response);
+        }
+        const text = await response.text();
+        if (response.status === 204 || !text) return { success: true } as T;
+        const json = JSON.parse(text) as { data?: T };
+        return (json && typeof json === 'object' && 'data' in json ? json.data : json) as T;
+      })();
+      return await abortable(request, scope.signal);
+    } finally { scope.close(); }
+  }
+
   /** Signed free request returning the `data` field of `{ success, data }`. */
   private async signedJson<T>(method: string, path: string, body: unknown, scope: 'read' | 'write', failure: string): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
@@ -1969,10 +2052,16 @@ export class OneShot {
   }
 
   /**
-   * Top up budget for a recurring compute goal.
+   * Top up budget for a recurring compute goal, or for a goal (one-off or recurring) that
+   * ended because it ran out of budget (`end_reason: 'budget_exhausted'`).
    *
    * Uses the quote-then-pay flow: the first call gets a 402 with the top-up price,
    * the second call (with payment) credits the budget. The amount IS the price.
+   *
+   * Funding a goal that ran out of budget sets it back to `active` and wakes it; it keeps its
+   * id, tasks, workspace, outputs, done-check and deadline. A goal that ended any other way, or
+   * whose deadline has passed, is refused (`invalid_state` / `deadline_passed`). While the first
+   * ending's refund is still settling the call fails with a retryable `refund_pending` (409).
    *
    * @example
    * ```typescript

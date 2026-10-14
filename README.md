@@ -181,6 +181,8 @@ mainnet only.
 | `rocs()` | Return on compute stats |
 | `receiptsList()` | List payment receipts (`limit`/`offset` or `since`/`until` window) |
 | `tagReceiptValue()` | Tag a receipt with business value (by `receipt_id` or `request_id`) |
+| **Any route** | |
+| `route(method, path, { params, query, body, paid })` | Call a declared route by method and path, with `{name}` path parameters, a query and a JSON body (an object field is sent as it is). A free route is signed like the other free calls (read proof for `GET`, write proof otherwise; the bearer token in an access-token session). `paid: true` (POST) goes through the quote-to-pay flow of `tool()`. The generated MCP route tools use it |
 
 ## Configuration
 

@@ -185,6 +185,21 @@ export interface DecisionContext {
   [key: string]: unknown;
 }
 
+/** The HTTP methods a declared route of the API uses. */
+export type RouteMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+/** What {@link OneShot.route} sends to a declared route, besides the {@link ToolOptions} of a paid one. */
+export interface RouteOptions extends ToolOptions {
+  /** Values for the `{name}` (or `:name`) parameters of the path; each is URL-encoded. */
+  params?: Record<string, string | number>;
+  /** The query string. null/undefined are left out; booleans are `true`/`false`; objects and arrays are JSON. */
+  query?: Record<string, unknown>;
+  /** The JSON body of a POST, PUT or PATCH. An object field is sent as it is. */
+  body?: Record<string, unknown>;
+  /** The route is paid for (fixed or quoted): go through the quote-to-pay flow. POST only. */
+  paid?: boolean;
+}
+
 export interface ToolOptions {
   /** End-to-end deadline in milliseconds. Existing timeout remains the polling limit in seconds. */
   totalTimeoutMs?: number;
