@@ -151,7 +151,7 @@ mainnet only.
 | `webSearch()` | Search the web |
 | `webRead()` | Read any URL as markdown + screenshot |
 | `commerceBuy()` | Purchase products |
-| `commerceSearch()` | Search products |
+| `productFind()` | Search products |
 | **Browser** | |
 | `browser()` | Autonomous browser — navigate, click, extract |
 | `createBrowserProfile()` | Create a persistent browser profile |
@@ -773,3 +773,17 @@ The signal **cannot** cancel:
 ## License
 
 MIT
+
+## Optional phone lookup
+
+Phone lookup is off by default. Source-returned numbers and published business or record numbers still appear. `includePhone: true` adds $0.10 × the requested search limit (default 100 → $10), or $0.10 for profile/dossier, for up to that many people with no guaranteed hit. Fallbacks and callbacks cost nothing extra. A completed lookup with no phone match is charged; a failed job is refunded.
+
+`maxCost` and per-transaction budgets apply to the full quote before authorization, even when credits cover it. The SDK obtains the quote without execution, retries with its quote ID and payment or credit session, and returns the result and receipt.
+
+```typescript
+const people = await agent.personFind({ job_titles: ['CTO'], limit: 3, includePhone: true, maxCost: 1, waitForPhones: true });
+const profile = await agent.personProfile({ email: 'jane@example.com', includePhone: true, maxCost: 1, waitForPhones: true });
+const dossier = await agent.personDossier({ email: 'jane@example.com', includePhone: true, maxCost: 1, waitForPhones: true, timeout: 600 });
+```
+
+`waitForPhones` waits for pending callbacks; it does not purchase phones by itself. On timeout the latest result can still have `phones_pending: true`.

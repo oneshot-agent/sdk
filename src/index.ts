@@ -39,7 +39,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.52.0';
+const SDK_VERSION = '0.53.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -114,7 +114,7 @@ import type {
   RecordSolicitationsFindOptions, RecordSolicitationsFindResult,
   PersonDossierOptions, PersonSocialAccountsOptions, PersonArticlesOptions,
   PersonPostsOptions, PersonInterestsOptions, PersonFollowersOptions,
-  InboxListOptions, ShippingAddress, CommerceBuyOptions, CommerceSearchOptions,
+  InboxListOptions, ShippingAddress, CommerceBuyOptions, ProductFindOptions,
   WebSearchOptions, WebSearchResult, WebReadOptions, WebReadResult,
   VoiceCallOptions, SmsOptions, SmsInboxOptions,
   Experience, Education, PersonResult, PersonFindResult, ResearchResult,
@@ -122,7 +122,7 @@ import type {
   PersonEnrichment, PersonDossierResult, PersonDossierPost, PersonSocialAccountsResult, SocialAccount, DossierSection,
   PersonArticlesResult, PersonPostsResult, PersonInterestsResult,
   PersonFollowersResult, PersonEmailStatusResult, InboxEmail, InboxListResult,
-  CommerceQuote, CommerceBuyResult, CommerceSearchProduct, CommerceSearchResult,
+  CommerceQuote, CommerceBuyResult, ProductFindProduct, ProductFindResult,
   VoiceQuote, VoiceCallResult, SmsQuote, SmsSendResult, SmsInboxMessage,
   SmsInboxResult, Notification, NotificationsListOptions, NotificationsResult,
   VoiceNumber, ProvisionedVoiceNumber, InboundVoiceConfig, InboundVoiceConfigResult, InboundCall, InboundCallsOptions,
@@ -590,14 +590,16 @@ export class OneShot {
   }
 
   async personFind(options: PersonFindOptions): Promise<PersonFindResult> {
-    return this.tool('find/person', { ...options, limit: options.limit ?? 100 });
+    const { includePhone, ...payload } = options;
+    return this.tool('find/person', { ...payload, include_phone: includePhone, limit: options.limit ?? 100 });
   }
 
   async personProfile(options: PersonProfileOptions): Promise<PersonProfileResult> {
     if (!options.linkedin_url && !options.email && !options.name) {
       throw new ValidationError('At least one of linkedin_url, email, or name is required', 'identifier');
     }
-    return this.tool('lookup/person-profile', { ...options });
+    const { includePhone, ...payload } = options;
+    return this.tool('lookup/person-profile', { ...payload, include_phone: includePhone });
   }
 
   async companyFind(options: CompanyFindOptions = {}): Promise<CompanyFindResult> {
@@ -677,7 +679,8 @@ export class OneShot {
     if (!options.email && !options.social_media_url && !options.name) {
       throw new ValidationError('At least one of email, social_media_url, or name is required', 'identifier');
     }
-    return this.tool('lookup/person-dossier', { ...options });
+    const { includePhone, ...payload } = options;
+    return this.tool('lookup/person-dossier', { ...payload, include_phone: includePhone });
   }
 
   async personSocialAccounts(options: PersonSocialAccountsOptions): Promise<PersonSocialAccountsResult> {
@@ -781,9 +784,9 @@ export class OneShot {
     return result as unknown as CommerceBuyResult;
   }
 
-  async commerceSearch(options: CommerceSearchOptions): Promise<CommerceSearchResult> {
+  async productFind(options: ProductFindOptions): Promise<ProductFindResult> {
     this.validate(options.query, 'query');
-    return this.tool('commerce/search', { ...options, limit: options.limit ?? 10 });
+    return this.tool('find/product', { ...options, limit: options.limit ?? 10 });
   }
 
   async webSearch(options: WebSearchOptions): Promise<WebSearchResult> {
@@ -2995,7 +2998,14 @@ export class OneShot {
     let response = await this.makeRequest(endpoint, payload, undefined, quoteId, signal, undefined, extraHeaders);
 
     // Handle 402 Payment Required
-    if (response.status === 402) {
+    if (response.status === 402 && /\/v1\/tools\/(find\/person|lookup\/person-(profile|dossier))$/.test(endpoint)) {
+      ({ execResp: response } = await this.runQuoteToPay<{ quote_id: string; total: string }>({
+        endpoint, payload, signal, maxCost, quoteResponse: response, extraHeaders,
+        expectMsg: 'Expected a person quote', totalOf: quote => quote.total,
+        onQuote: () => { context.phase = 'payment'; },
+      }));
+      context.phase = 'submission';
+    } else if (response.status === 402) {
       // Parse x402 v2 PaymentRequired from PAYMENT-REQUIRED header
       const paymentRequiredHeader = response.headers.get('payment-required');
       const { accepted, resource, extensions } = this.parsePaymentRequired(paymentRequiredHeader);
@@ -3092,11 +3102,14 @@ export class OneShot {
     on400?: (resp: Response) => Promise<void>;
     /** Release a policy-held call (ToolOptions.approvalId). */
     approvalId?: string;
+    /** Reuse an already fetched quote and preserve submission identity on both legs. */
+    quoteResponse?: Response;
+    extraHeaders?: Record<string, string>;
   }): Promise<{ context: Q; execResp: Response }> {
     await this.ensureBudgetsSynced();
 
-    const approval = this.approvalHeader(cfg.approvalId);
-    const quoteResp = await this.makeRequest(
+    const approval = { ...cfg.extraHeaders, ...this.approvalHeader(cfg.approvalId) };
+    const quoteResp = cfg.quoteResponse ?? await this.makeRequest(
       cfg.endpoint, cfg.payload, undefined, undefined,
       cfg.signal, cfg.quoteTimeoutMs, { ...this.maxCostHeader(cfg.maxCost), ...approval },
     );
@@ -3255,17 +3268,20 @@ export class OneShot {
    * has a pending async webhook and the webhook URL is configured; the webhook
    * handler flips it to false (or removes it) once phones arrive.
    *
-   * Accepts legacy flat results and person_dossier's result.profile.data.
+   * Accepts worker search rows, profile objects, dossier sections and legacy results.
    */
   private _isPhonesPending(result: unknown): boolean {
     if (!result || typeof result !== 'object') return false;
     const r = result as Record<string, unknown>;
-    if (r.phones_pending === true) return true;
-    const inner = r.result as Record<string, unknown> | undefined;
-    if (inner && typeof inner === 'object' && inner.phones_pending === true) return true;
-    const profile = inner?.profile as { data?: { phones_pending?: unknown } } | undefined;
-    if (profile?.data?.phones_pending === true) return true;
-    return false;
+    const pending = (value: unknown) => !!value && typeof value === 'object'
+      && (value as Record<string, unknown>).phones_pending === true;
+    return [r, r.result].some(value => {
+      if (!value || typeof value !== 'object') return false;
+      const body = value as Record<string, unknown>;
+      const profile = body.profile as { data?: unknown } | undefined;
+      return pending(body) || pending(profile) || pending(profile?.data)
+        || (Array.isArray(body.results) && body.results.some(pending));
+    });
   }
 
   /**

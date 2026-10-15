@@ -329,6 +329,8 @@ export interface ResearchToolOptions extends ToolOptions {
 }
 
 export interface PersonFindOptions extends ToolOptions {
+  /** Off by default. Adds $0.10 × requested limit (default 100 → $10) for up to that many people; no phone hit guaranteed. */
+  includePhone?: boolean;
   job_titles?: string[];
   keywords?: string[];
   companies?: string[];
@@ -357,6 +359,8 @@ export interface PersonFindOptions extends ToolOptions {
 }
 
 export interface PersonProfileOptions extends ToolOptions {
+  /** Off by default. Adds $0.10 for up to one person; no phone hit guaranteed. */
+  includePhone?: boolean;
   linkedin_url?: string;
   email?: string;
   name?: string;
@@ -395,6 +399,8 @@ export interface PersonEmailStatusOptions extends ToolOptions {
 }
 
 export interface PersonDossierOptions extends ToolOptions {
+  /** Off by default. Adds $0.10 for up to one person; no phone hit guaranteed. */
+  includePhone?: boolean;
   email?: string;
   social_media_url?: string;
   name?: string;
@@ -455,7 +461,7 @@ export interface CommerceBuyOptions extends ToolOptions {
   variant_id?: string;
 }
 
-export interface CommerceSearchOptions extends ToolOptions {
+export interface ProductFindOptions extends ToolOptions {
   query: string;
   limit?: number;
 }
@@ -985,7 +991,7 @@ export interface CommerceBuyResult {
   cost?: number;
 }
 
-export interface CommerceSearchProduct {
+export interface ProductFindProduct {
   product_url: string;
   title: string;
   price: number;
@@ -998,13 +1004,13 @@ export interface CommerceSearchProduct {
   description?: string;
 }
 
-export interface CommerceSearchResult {
+export interface ProductFindResult {
   request_id?: string;
   /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
   receipt_id?: string;
   status: string;
   query: string;
-  products: CommerceSearchProduct[];
+  products: ProductFindProduct[];
   count: number;
   memo?: string;
   cost?: number;
