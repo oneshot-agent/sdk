@@ -39,7 +39,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.51.0';
+const SDK_VERSION = '0.52.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -107,21 +107,21 @@ export * from './types';
 import type {
   TokenInfo, PaymentInfo, PaymentRequirements, PaymentAuthorization,
   LoggerFn, StatusUpdateFn, OneShotConfig, DecisionContext, ToolOptions, RouteMethod, RouteOptions,
-  EmailToolOptions, ResearchToolOptions, PeopleSearchOptions,
-  EnrichProfileOptions, FindEmailOptions, VerifyEmailOptions,
-  CompanySearchOptions, CompanySearchResult, EnrichCompanyOptions, EnrichCompanyResult,
+  EmailToolOptions, ResearchToolOptions, PersonFindOptions,
+  PersonProfileOptions, PersonEmailOptions, PersonEmailStatusOptions,
+  CompanyFindOptions, CompanyFindResult, CompanyProfileOptions, CompanyProfileResult,
   BusinessFindOptions, BusinessFindResult, BusinessResolveOptions, BusinessResolveResult,
   RecordSolicitationsFindOptions, RecordSolicitationsFindResult,
-  DeepResearchPersonOptions, SocialProfilesOptions, ArticleSearchOptions,
-  PersonNewsfeedOptions, PersonInterestsOptions, PersonInteractionsOptions,
+  PersonDossierOptions, PersonSocialAccountsOptions, PersonArticlesOptions,
+  PersonPostsOptions, PersonInterestsOptions, PersonFollowersOptions,
   InboxListOptions, ShippingAddress, CommerceBuyOptions, CommerceSearchOptions,
   WebSearchOptions, WebSearchResult, WebReadOptions, WebReadResult,
   VoiceCallOptions, SmsOptions, SmsInboxOptions,
-  Experience, Education, PersonResult, PeopleSearchResult, ResearchResult,
-  EmailResult, EnrichProfileResult, FindEmailResult, AsyncJobResult,
-  PersonEnrichment, DeepResearchPersonResult, SocialProfilesResult,
-  ArticleSearchResult, PersonNewsfeedResult, PersonInterestsResult,
-  PersonInteractionsResult, VerifyEmailResult, InboxEmail, InboxListResult,
+  Experience, Education, PersonResult, PersonFindResult, ResearchResult,
+  EmailResult, PersonProfileResult, PersonEmailResult, AsyncJobResult,
+  PersonEnrichment, PersonDossierResult, PersonDossierPost, PersonSocialAccountsResult, SocialAccount, DossierSection,
+  PersonArticlesResult, PersonPostsResult, PersonInterestsResult,
+  PersonFollowersResult, PersonEmailStatusResult, InboxEmail, InboxListResult,
   CommerceQuote, CommerceBuyResult, CommerceSearchProduct, CommerceSearchResult,
   VoiceQuote, VoiceCallResult, SmsQuote, SmsSendResult, SmsInboxMessage,
   SmsInboxResult, Notification, NotificationsListOptions, NotificationsResult,
@@ -203,7 +203,7 @@ function validateBudgetConfig(budgets: AgentBudgetConfig | undefined): AgentBudg
 }
 
 /** The keys executeToolRequestImpl takes out of a request as SDK options, so they never reach the API body. */
-const PAID_ROUTE_OPTION_KEYS = ['totalTimeoutMs', 'onRequestCreated', 'onAccepted', 'signal', 'onStatusUpdate', 'wait', 'waitForPhones', 'phoneTimeoutSec', 'idempotencyKey', 'approvalId', 'maxCost'] as const;
+const PAID_ROUTE_OPTION_KEYS = ['timeout', 'totalTimeoutMs', 'onRequestCreated', 'onAccepted', 'signal', 'onStatusUpdate', 'wait', 'waitForPhones', 'phoneTimeoutSec', 'idempotencyKey', 'approvalId', 'maxCost'] as const;
 
 export class OneShot {
   readonly hunts = new Hunts(this);
@@ -589,26 +589,26 @@ export class OneShot {
     return this.tool('research', { ...options });
   }
 
-  async peopleSearch(options: PeopleSearchOptions): Promise<PeopleSearchResult> {
-    return this.tool('research/people', { ...options, limit: options.limit ?? 100 });
+  async personFind(options: PersonFindOptions): Promise<PersonFindResult> {
+    return this.tool('find/person', { ...options, limit: options.limit ?? 100 });
   }
 
-  async enrichProfile(options: EnrichProfileOptions): Promise<EnrichProfileResult> {
+  async personProfile(options: PersonProfileOptions): Promise<PersonProfileResult> {
     if (!options.linkedin_url && !options.email && !options.name) {
       throw new ValidationError('At least one of linkedin_url, email, or name is required', 'identifier');
     }
-    return this.tool('enrich/profile', { ...options });
+    return this.tool('lookup/person-profile', { ...options });
   }
 
-  async companySearch(options: CompanySearchOptions = {}): Promise<CompanySearchResult> {
-    return this.tool('research/company', { ...options, limit: options.limit ?? 10 });
+  async companyFind(options: CompanyFindOptions = {}): Promise<CompanyFindResult> {
+    return this.tool('find/company', { ...options, limit: options.limit ?? 10 });
   }
 
-  async enrichCompany(options: EnrichCompanyOptions): Promise<EnrichCompanyResult> {
+  async companyProfile(options: CompanyProfileOptions): Promise<CompanyProfileResult> {
     if (!options.domain && !options.name && !options.linkedin_url && !options.ticker) {
       throw new ValidationError('At least one of domain, name, linkedin_url, or ticker is required', 'identifier');
     }
-    return this.tool('enrich/company', { ...options });
+    return this.tool('lookup/company-profile', { ...options });
   }
 
   /**
@@ -660,54 +660,54 @@ export class OneShot {
     });
   }
 
-  async findEmail(options: FindEmailOptions): Promise<FindEmailResult> {
+  async personEmail(options: PersonEmailOptions): Promise<PersonEmailResult> {
     this.validate(options.company_domain, 'company_domain');
     if (!options.full_name && !(options.first_name && options.last_name)) {
       throw new ValidationError('Either full_name or both first_name and last_name required', 'name');
     }
-    return this.tool('enrich/email', { ...options });
+    return this.tool('lookup/person-email', { ...options });
   }
 
-  async verifyEmail(options: VerifyEmailOptions): Promise<VerifyEmailResult> {
+  async personEmailStatus(options: PersonEmailStatusOptions): Promise<PersonEmailStatusResult> {
     this.validate(options.email, 'email');
-    return this.tool('verify/email', { ...options });
+    return this.tool('lookup/person-email-status', { ...options });
   }
 
-  async deepResearchPerson(options: DeepResearchPersonOptions): Promise<DeepResearchPersonResult> {
+  async personDossier(options: PersonDossierOptions): Promise<PersonDossierResult> {
     if (!options.email && !options.social_media_url && !options.name) {
       throw new ValidationError('At least one of email, social_media_url, or name is required', 'identifier');
     }
-    return this.tool('research/person', { ...options });
+    return this.tool('lookup/person-dossier', { ...options });
   }
 
-  async socialProfiles(options: SocialProfilesOptions): Promise<SocialProfilesResult> {
+  async personSocialAccounts(options: PersonSocialAccountsOptions): Promise<PersonSocialAccountsResult> {
     if (!options.email && !options.social_media_url) {
       throw new ValidationError('At least one of email or social_media_url is required', 'identifier');
     }
-    return this.tool('research/social', { ...options });
+    return this.tool('lookup/person-social-accounts', { ...options });
   }
 
-  async articleSearch(options: ArticleSearchOptions): Promise<ArticleSearchResult> {
+  async personArticles(options: PersonArticlesOptions): Promise<PersonArticlesResult> {
     this.validate(options.name, 'name');
     this.validate(options.company, 'company');
-    return this.tool('research/articles', { ...options });
+    return this.tool('lookup/person-articles', { ...options });
   }
 
-  async personNewsfeed(options: PersonNewsfeedOptions): Promise<PersonNewsfeedResult> {
+  async personPosts(options: PersonPostsOptions): Promise<PersonPostsResult> {
     this.validate(options.social_media_url, 'social_media_url');
-    return this.tool('research/newsfeed', { ...options });
+    return this.tool('lookup/person-posts', { ...options });
   }
 
   async personInterests(options: PersonInterestsOptions): Promise<PersonInterestsResult> {
     if (!options.email && !options.phone && !options.social_media_url) {
       throw new ValidationError('At least one of email, phone, or social_media_url is required', 'identifier');
     }
-    return this.tool('research/interests', { ...options });
+    return this.tool('lookup/person-interests', { ...options });
   }
 
-  async personInteractions(options: PersonInteractionsOptions): Promise<PersonInteractionsResult> {
+  async personFollowers(options: PersonFollowersOptions): Promise<PersonFollowersResult> {
     this.validate(options.social_media_url, 'social_media_url');
-    return this.tool('research/interactions', { ...options });
+    return this.tool('lookup/person-followers', { ...options });
   }
 
   async inboxList(options: InboxListOptions = {}): Promise<InboxListResult> {
@@ -2289,7 +2289,7 @@ export class OneShot {
    * await agent.tagReceiptValue('rcpt_01HX...', { type: 'revenue', amount: 5.00, label: 'Sale from lead' });
    *
    * // By the request_id you already kept from the call:
-   * const r = await agent.verifyEmail({ email: 'x@y.com' });
+   * const r = await agent.personEmailStatus({ email: 'x@y.com' });
    * await agent.tagReceiptValue({ requestId: r.request_id }, { type: 'lead', amount: 1 });
    *
    * // By cadence correlation key — one call attributes a closed deal to the whole sequence:
@@ -2914,7 +2914,7 @@ export class OneShot {
     } finally { scope.close(); }
   }
 
-  async recoverRequest(options: { endpoint: 'enrich/profile' | 'enrich/email' | 'verify/email'; idempotencyKey: string }): Promise<{ request_id: string; receipt_id: string; status: string; settlement_status: string }> {
+  async recoverRequest(options: { endpoint: 'lookup/person-profile' | 'lookup/person-email' | 'lookup/person-email-status' | 'lookup/place-permits'; idempotencyKey: string }): Promise<{ request_id: string; receipt_id: string; status: string; settlement_status: string }> {
     const query = new URLSearchParams({ endpoint: options.endpoint, key: options.idempotencyKey });
     return this.readReliabilityJson(`/v1/submissions/recover?${query}`, true);
   }
@@ -2925,7 +2925,7 @@ export class OneShot {
 
   private async executeToolRequest<T>(endpoint: string, options: ToolOptions & Record<string, unknown>, quoteId?: string): Promise<T> {
     // LinkedIn writes act through a human's account and cannot be recalled: always keyed.
-    const reliable = /(?:^|\/)(enrich\/(profile|email)|verify\/email|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint);
+    const reliable = /(?:^|\/)(lookup\/person-(profile|email|email-status)|lookup\/place-permits|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint);
     const key = options.idempotencyKey ?? (reliable ? ethers.hexlify(ethers.randomBytes(16)) : undefined);
     if (options.totalTimeoutMs !== undefined && (!Number.isFinite(options.totalTimeoutMs) || options.totalTimeoutMs <= 0)) {
       throw new ValidationError('totalTimeoutMs must be positive', 'totalTimeoutMs');
@@ -2950,7 +2950,7 @@ export class OneShot {
     quoteId?: string,
     context: { phase: string; requestId?: string; receiptId?: string } = { phase: "initialization" },
   ): Promise<T> {
-    const { totalTimeoutMs, onRequestCreated, onAccepted, signal, onStatusUpdate, wait = true, waitForPhones, phoneTimeoutSec, idempotencyKey, approvalId, maxCost, ...payload } = options;
+    const { timeout, totalTimeoutMs, onRequestCreated, onAccepted, signal, onStatusUpdate, wait = true, waitForPhones, phoneTimeoutSec, idempotencyKey, approvalId, maxCost, ...payload } = options;
     const extraHeaders = {
       ...this.maxCostHeader(maxCost as number | undefined),
       ...this.idempotencyHeader(idempotencyKey as string | undefined),
@@ -3003,7 +3003,9 @@ export class OneShot {
       // Fallback: parse legacy body format for amount display
       const data = await response.json() as {
         payment_request?: { chain_id: number; token_address: string; amount: string; recipient: string };
+        context?: { quote_id?: string };
       };
+      quoteId ??= data.context?.quote_id;
       if (this._accessToken) {
         // Credits-only session: never sign. Let the server settle it.
         this.checkAbortBeforePayment(signal);
@@ -3056,7 +3058,7 @@ export class OneShot {
       }
       const completed = await this.pollJob<Record<string, unknown>>(
         result.request_id as string,
-        options.timeout,
+        timeout,
         signal,
         onStatusUpdate,
         waitForPhones ? { waitForPhones, phoneTimeoutSec } : undefined,
@@ -3253,8 +3255,7 @@ export class OneShot {
    * has a pending async webhook and the webhook URL is configured; the webhook
    * handler flips it to false (or removes it) once phones arrive.
    *
-   * Tolerates two shapes: the unwrapped result `{phones_pending}` and the
-   * deep_research_person wrapper `{result: {phones_pending}}`.
+   * Accepts legacy flat results and person_dossier's result.profile.data.
    */
   private _isPhonesPending(result: unknown): boolean {
     if (!result || typeof result !== 'object') return false;
@@ -3262,6 +3263,8 @@ export class OneShot {
     if (r.phones_pending === true) return true;
     const inner = r.result as Record<string, unknown> | undefined;
     if (inner && typeof inner === 'object' && inner.phones_pending === true) return true;
+    const profile = inner?.profile as { data?: { phones_pending?: unknown } } | undefined;
+    if (profile?.data?.phones_pending === true) return true;
     return false;
   }
 
@@ -3627,7 +3630,7 @@ export class OneShot {
     // alone (401 proof_required).
     const unsignedStub = payment?.payload?.signature === '0x';
     const askedForProof = !!extraHeaders?.['x-agent-proof'];
-    const proofScope = /(enrich\/(profile|email)|verify\/email|physical-mail\/send)$/.test(endpoint)
+    const proofScope = /(lookup\/person-(profile|email|email-status)|lookup\/place-permits|physical-mail\/send)$/.test(endpoint)
       ? 'submit'
       : askedForProof ? 'read' : 'write';
     const headers: Record<string, string> = {
@@ -3828,7 +3831,7 @@ export class OneShot {
       resp = await this.makeRequest(endpoint, data, signed.auth, quoteId, signal, timeoutMs, extraHeaders);
     } catch (err) {
       // Keyed writes may already be queued server-side after a transport failure: keep the reservation.
-      if (!/(enrich\/(profile|email)|verify\/email|physical-mail\/send|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
+      if (!/(lookup\/person-(profile|email|email-status)|lookup\/place-permits|physical-mail\/send|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
       throw err;
     }
     if (!resp.ok && !(extraHeaders?.['Idempotency-Key'] && resp.status >= 500)) this.releaseUsdcReservation(signed.reservation);

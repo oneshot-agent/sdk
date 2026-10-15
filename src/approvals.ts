@@ -40,7 +40,7 @@ export interface Approval {
   /** After approval: the held call must be retried before this time. */
   use_by: string | null;
   decided_at: string | null;
-  decided_via: 'link' | 'api' | 'timeout' | null;
+  decided_via: 'link' | 'api' | 'org' | 'timeout' | null;
   decision_note: string | null;
   /** Signed $0 receipt recording the decision. */
   decision_receipt_id: string | null;

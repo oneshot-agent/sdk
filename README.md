@@ -132,21 +132,21 @@ mainnet only.
 | `resumeDomain()` | Put a paused domain back into rotation |
 | **Research & People** | |
 | `research()` | Deep web research |
-| `peopleSearch()` | Search people by criteria |
-| `enrichProfile()` | Enrich from LinkedIn/email |
-| `findEmail()` | Find email for a person |
-| `verifyEmail()` | Verify email deliverability |
-| `companySearch()` | Search companies by name, domain, industry, location, size, funding |
-| `enrichCompany()` | Enrich a company from domain, name, LinkedIn URL, or ticker |
+| `personFind()` | Search people by criteria |
+| `personProfile()` | Enrich from LinkedIn/email |
+| `personEmail()` | Find email for a person |
+| `personEmailStatus()` | Verify email deliverability |
+| `companyFind()` | Search companies by name, domain, industry, location, size, funding |
+| `companyProfile()` | Enrich a company from domain, name, LinkedIn URL, or ticker |
 | `businessFind()` | Discover local businesses (restaurants, contractors, practices) by category × location |
 | `businessResolve()` | Business name + address → website domain, phone, status, confidence |
 | `recordSolicitationsFind()` | Federal Sources Sought / Presolicitation notices by NAICS with the contracting officer's contact |
-| `deepResearchPerson()` | Full dossier on a person |
-| `socialProfiles()` | Find all social accounts |
-| `articleSearch()` | Find articles about a person |
-| `personNewsfeed()` | Recent social posts with engagement |
+| `personDossier()` | Person profile, known social accounts, articles, posts and written summary |
+| `personSocialAccounts()` | Find all social accounts |
+| `personArticles()` | Find articles about a person |
+| `personPosts()` | Recent social posts with engagement |
 | `personInterests()` | Analyze interests across categories |
-| `personInteractions()` | Map followers, following, replies |
+| `personFollowers()` | Map followers, following, replies |
 | **Web & Commerce** | |
 | `webSearch()` | Search the web |
 | `webRead()` | Read any URL as markdown + screenshot |
@@ -301,7 +301,7 @@ All methods accept these common options:
 ```typescript
 interface ToolOptions {
   maxCost?: number;      // Max USDC willing to pay (see supported tools below)
-  timeout?: number;      // Timeout in seconds
+  timeout?: number;      // Client polling wait in seconds; never sent in the API body
   signal?: AbortSignal;  // Cancel before payment (see Cancellation section)
   wait?: boolean;        // Wait for async jobs (default: true)
   onStatusUpdate?: (status: string, requestId: string) => void;
@@ -398,7 +398,7 @@ try {
         console.log('Fix the request — retrying as-is will not help');
         break;
       case 'rate_limited':
-      case 'provider_unavailable':
+      case 'service_unavailable':
       case 'internal_error':
         console.log('Transient — safe to retry');
         break;
@@ -413,7 +413,7 @@ try {
 
 When a `JobError` is thrown, `error.code` is one of:
 `insufficient_funds`, `payment_failed`, `invalid_input`, `content_blocked`,
-`rate_limited`, `provider_unavailable`, `provider_auth`, `enrichment_exhausted`,
+`rate_limited`, `service_unavailable`, `service_auth`, `enrichment_exhausted`,
 `target_unreachable`, `source_unsupported`, `checkout_failed`,
 `internal_error`. See the
 [Check Job Status](https://docs.oneshotagent.com/api-reference/status#error-codes)
@@ -602,13 +602,13 @@ if (res.warning) {
 ### People Search & Enrichment
 
 ```typescript
-const results = await agent.peopleSearch({
+const results = await agent.personFind({
   job_titles: ['CEO', 'CTO'],
   companies: ['Stripe'],
   limit: 10
 });
 
-const profile = await agent.enrichProfile({
+const profile = await agent.personProfile({
   linkedin_url: results.results[0].linkedin_url
 });
 ```
@@ -620,7 +620,7 @@ is free text (`['fintech', 'software']`).
 
 **Empty vs. failed:** an empty `results` array means the search ran and nobody
 matched. If the search could not be run, the call throws a `JobError` with a
-retryable upstream code (`provider_unavailable`, `provider_auth`,
+retryable upstream code (`service_unavailable`, `service_auth`,
 `rate_limited`) instead of returning an empty result.
 
 **Pagination:** `limit` (default 100, max 500) and `offset` (default 0,
@@ -633,7 +633,7 @@ returned with `_phone_enriched: false` and
 `_phone_enrich_reason: 'time_budget_exhausted'` rather than dropped.
 
 ```typescript
-const page2 = await agent.peopleSearch({
+const page2 = await agent.personFind({
   job_titles: ['CEO'],
   limit: 100,
   offset: 100
@@ -698,7 +698,7 @@ Use the OneShot `invitation_id`, not the provider invitation ID. Withdrawal can 
 
 Use `reconnectLinkedInAccount(id)` for an existing upstream connection whose session needs renewal. A deleted upstream account needs a new `linkedinConnect()` intent and fresh human authorization.
 
-Account reads refresh disconnected accounts against the provider. Once an upstream account-read confirms `404`, the old connection is marked `deleted_upstream`, its grant is ended, and `reconnect_required` is false. It is omitted from the default active account list; use `includeRevoked: true` or fetch it by ID to inspect its terminal status. Authentication failures, timeouts, and provider outages do not trigger this transition.
+Account reads refresh disconnected accounts against the provider. Once an upstream account-read confirms `404`, the old connection is marked `connection_deleted`, its grant is ended, and `reconnect_required` is false. It is omitted from the default active account list; use `includeRevoked: true` or fetch it by ID to inspect its terminal status. Authentication failures, timeouts, and provider outages do not trigger this transition.
 
 ```ts
 import { LinkedInConnectRequiredError } from '@oneshot-agent/sdk';

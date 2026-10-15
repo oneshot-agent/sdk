@@ -240,7 +240,7 @@ export interface ToolOptions {
    * `waitForPhones: true` to keep polling at a slower cadence (every 5s)
    * until phones land or `phoneTimeoutSec` expires (default 360s = 6 min).
    * Only meaningful for tools whose upstream enrichment supports async
-   * phone reveals (research/person, enrich/profile, …). For other tools
+   * phone reveals (person-dossier, person-profile, …). For other tools
    * the flag is a no-op.
    */
   waitForPhones?: boolean;
@@ -252,8 +252,8 @@ export interface ToolOptions {
    * idempotency. Those endpoints reject a conflicting body with 422.
    * Access-token enrichment requests do not receive replay or conflict
    * checks. Replay window and requirement differ by endpoint: email.send
-   * is optional with a 24h cached-response replay window; enrichProfile /
-   * findEmail / verifyEmail are honored when durable enrichment is enabled
+   * is optional with a 24h cached-response replay window; personProfile /
+   * personEmail / personEmailStatus are honored when durable enrichment is enabled
    * on the server AND the session authenticates with a wallet, not an
    * `accessToken` — an access-token session skips the durable-replay check
    * on these three routes entirely and always dispatches a fresh job, even
@@ -328,7 +328,7 @@ export interface ResearchToolOptions extends ToolOptions {
   depth?: 'deep' | 'quick';
 }
 
-export interface PeopleSearchOptions extends ToolOptions {
+export interface PersonFindOptions extends ToolOptions {
   job_titles?: string[];
   keywords?: string[];
   companies?: string[];
@@ -356,14 +356,14 @@ export interface PeopleSearchOptions extends ToolOptions {
   offset?: number;
 }
 
-export interface EnrichProfileOptions extends ToolOptions {
+export interface PersonProfileOptions extends ToolOptions {
   linkedin_url?: string;
   email?: string;
   name?: string;
   company_domain?: string;
 }
 
-export interface CompanySearchOptions extends ToolOptions {
+export interface CompanyFindOptions extends ToolOptions {
   name?: string;
   domain?: string;
   industry?: string[];
@@ -376,44 +376,44 @@ export interface CompanySearchOptions extends ToolOptions {
   limit?: number;
 }
 
-export interface EnrichCompanyOptions extends ToolOptions {
+export interface CompanyProfileOptions extends ToolOptions {
   domain?: string;
   name?: string;
   linkedin_url?: string;
   ticker?: string;
 }
 
-export interface FindEmailOptions extends ToolOptions {
+export interface PersonEmailOptions extends ToolOptions {
   full_name?: string;
   first_name?: string;
   last_name?: string;
   company_domain: string;
 }
 
-export interface VerifyEmailOptions extends ToolOptions {
+export interface PersonEmailStatusOptions extends ToolOptions {
   email: string;
 }
 
-export interface DeepResearchPersonOptions extends ToolOptions {
+export interface PersonDossierOptions extends ToolOptions {
   email?: string;
   social_media_url?: string;
   name?: string;
   company?: string;
 }
 
-export interface SocialProfilesOptions extends ToolOptions {
+export interface PersonSocialAccountsOptions extends ToolOptions {
   email?: string;
   social_media_url?: string;
 }
 
-export interface ArticleSearchOptions extends ToolOptions {
+export interface PersonArticlesOptions extends ToolOptions {
   name: string;
   company: string;
   sort?: 'recent' | 'popular';
   limit?: number;
 }
 
-export interface PersonNewsfeedOptions extends ToolOptions {
+export interface PersonPostsOptions extends ToolOptions {
   social_media_url: string;
 }
 
@@ -423,7 +423,7 @@ export interface PersonInterestsOptions extends ToolOptions {
   social_media_url?: string;
 }
 
-export interface PersonInteractionsOptions extends ToolOptions {
+export interface PersonFollowersOptions extends ToolOptions {
   social_media_url: string;
   type?: 'replies' | 'followers' | 'following' | 'followers,following';
   max_results?: number;
@@ -537,19 +537,24 @@ export interface Education {
   end_date?: string;
 }
 
+/**
+ * A normalized person record. The worker returns every scalar field below and
+ * uses `null`, not a missing key, for a value the provider did not have; the
+ * declared person_dossier schema requires exactly that shape (#1789).
+ */
 export interface PersonResult {
   company_address?: BusinessAddress | null;
-  full_name?: string;
-  first_name?: string;
-  last_name?: string;
-  title?: string;
-  company?: string;
-  company_domain?: string;
-  linkedin_url?: string;
-  location?: string;
-  email?: string;
-  phone?: string;
-  summary?: string;
+  full_name?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  title?: string | null;
+  company?: string | null;
+  company_domain?: string | null;
+  linkedin_url?: string | null;
+  location?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  summary?: string | null;
   skills?: string[];
   experience?: Experience[];
   education?: Education[];
@@ -560,7 +565,7 @@ export interface PersonResult {
   best_personal_email?: string | null;
 }
 
-export interface PeopleSearchResult {
+export interface PersonFindResult {
   status: string;
   results: PersonResult[];
   total_found: number;
@@ -694,9 +699,20 @@ export interface DomainPoolStatusResult {
   pause_reason: DomainPauseReason;
 }
 
-export interface EnrichProfileResult {
+export interface SocialAccount {
+  platform: string;
+  url: string;
+  handle: string | null;
+}
+
+export interface DossierSection<T> {
+  state: 'found' | 'none' | 'unavailable';
+  data: T;
+}
+
+export interface PersonProfileResult {
   status: string;
-  profile: PersonResult;
+  profile: PersonResult & { social_accounts: SocialAccount[] };
   request_id?: string;
   /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
   receipt_id?: string;
@@ -729,7 +745,7 @@ export interface CompanyResult {
   [key: string]: unknown;
 }
 
-export interface CompanySearchResult {
+export interface CompanyFindResult {
   status: string;
   results: CompanyResult[];
   total_found: number;
@@ -742,7 +758,7 @@ export interface CompanySearchResult {
   cost?: number;
 }
 
-export interface EnrichCompanyResult {
+export interface CompanyProfileResult {
   status: string;
   company: CompanyResult;
   request_id?: string;
@@ -753,7 +769,7 @@ export interface EnrichCompanyResult {
   cost?: number;
 }
 
-export interface FindEmailResult {
+export interface PersonEmailResult {
   status: string;
   email: string | null;
   found: boolean;
@@ -774,7 +790,7 @@ export interface AsyncJobResult {
 
 
 
-/** Enrichment data nested inside deep research and enrichment responses. */
+/** Legacy enrichment fields retained for consumers of earlier result shapes. */
 export interface PersonEnrichment {
   displayname?: string;
   firstname?: string;
@@ -807,27 +823,41 @@ export interface PersonEnrichment {
   }>;
 }
 
-export interface DeepResearchPersonResult {
+/** A post can retain null metadata when the collector had no value. */
+export type PersonDossierPost = Omit<PersonPostsResult['result'][number],
+  'platform' | 'content' | 'url' | 'posted_at'> & {
+  platform?: string | null;
+  content?: string | null;
+  url?: string | null;
+  posted_at?: string | null;
+};
+
+export interface PersonDossierResult {
   status: string;
   result: {
-    enrichment: PersonEnrichment;
-    following?: Record<string, unknown>[];
-    articles?: Array<{
-      title?: string;
-      url?: string;
-      source?: string;
-      published_date?: string;
-      snippet?: string;
-    }>;
-    dossier?: Record<string, unknown>;
+    profile: { state: 'found'; data: PersonProfileResult['profile'] };
+    social_accounts: DossierSection<SocialAccount[]>;
+    articles: DossierSection<Array<{
+      title: string | null;
+      url: string | null;
+      source: string | null;
+      published_date: string | null;
+      snippet: string | null;
+    }>>;
+    /** At most ten recent posts, using the person_posts representation. */
+    posts: DossierSection<PersonDossierPost[]>;
+    /** Section-grounded prose; one line when only the profile was found. */
+    summary: string;
   };
   request_id: string;
   completed_at: string;
+  receipt_id?: string;
+  decisionContext?: Record<string, unknown>;
   memo?: string;
   cost?: number;
 }
 
-export interface SocialProfilesResult {
+export interface PersonSocialAccountsResult {
   status: string;
   result: Record<string, {
     url?: string;
@@ -841,7 +871,7 @@ export interface SocialProfilesResult {
   cost?: number;
 }
 
-export interface ArticleSearchResult {
+export interface PersonArticlesResult {
   status: string;
   result: Array<{
     title?: string;
@@ -856,7 +886,7 @@ export interface ArticleSearchResult {
   cost?: number;
 }
 
-export interface PersonNewsfeedResult {
+export interface PersonPostsResult {
   status: string;
   result: Array<{
     platform?: string;
@@ -882,7 +912,7 @@ export interface PersonInterestsResult {
   cost?: number;
 }
 
-export interface PersonInteractionsResult {
+export interface PersonFollowersResult {
   status: string;
   result: {
     followers?: Array<Record<string, unknown>>;
@@ -895,7 +925,7 @@ export interface PersonInteractionsResult {
   cost?: number;
 }
 
-export interface VerifyEmailResult {
+export interface PersonEmailStatusResult {
   status: string;
   email: string;
   valid: boolean;
@@ -1749,7 +1779,7 @@ export interface BusinessFindOptions extends ToolOptions {
   is_chain?: boolean;
   /** Default 'open' drops closed businesses. */
   operating_status?: 'open' | 'any';
-  /** true = only rows with a resolvable website domain (contactable via findEmail). */
+  /** true = only rows with a resolvable website domain (contactable via personEmail). */
   has_domain?: boolean;
   /** 1-500, default 100. Effective max is bounded by the vendor-call cap; see `truncated`. */
   limit?: number;
@@ -1807,7 +1837,7 @@ export interface BusinessFindResult {
 
 export interface BusinessResolveResult {
   status: string;
-  /** false is a completed job, not an error — the same contract as findEmail. */
+  /** false is a completed job, not an error — the same contract as personEmail. */
   found: boolean;
   /** 0..1 confidence of the best candidate (0 when nothing was returned). */
   confidence: number;
@@ -1960,8 +1990,8 @@ export interface LinkedInConnectIntentIssued {
 }
 
 export interface LinkedInCoverage {
-  provider_history: 'never' | 'requested' | 'running' | 'done' | 'error';
-  provider_history_completed_at: string | null;
+  history_sync_status: 'never' | 'requested' | 'running' | 'done' | 'error';
+  history_sync_completed_at: string | null;
   enumerated_as_of: string | null;
   enumerated_back_to: string | null;
   latest_message_at: string | null;
@@ -1969,8 +1999,7 @@ export interface LinkedInCoverage {
   message_count: number;
   conversation_count: number;
   last_incremental_at: string | null;
-  last_webhook_at: string | null;
-  /** provider_history done AND a windowless enumeration finished after it AND no pending cursor. */
+  /** history_sync_status done AND a windowless enumeration finished after it AND no pending cursor. */
   complete: boolean;
 }
 
@@ -1980,8 +2009,8 @@ export interface LinkedInAccount {
   /** Present on getLinkedInAccount; daily capacity shared across API callers. */
   limits?: { invites: { limit: number; used: number; pending: number; remaining: number; resets_at: string } };
   id: string;
-  /** deleted_upstream/revoked require a new connect; reconnect_required permits reconnect. */
-  status: 'connected' | 'reconnect_required' | 'error' | 'revoked' | 'deleted_upstream';
+  /** connection_deleted/revoked require a new connect; reconnect_required permits reconnect. */
+  status: 'connected' | 'reconnect_required' | 'error' | 'revoked' | 'connection_deleted';
   display_name: string | null;
   member_urn: string | null;
   allowed_actions: string[];
@@ -1990,19 +2019,18 @@ export interface LinkedInAccount {
   reconnected_at: string | null;
   last_status_at: string | null;
   revoked_at: string | null;
-  /** False for deleted_upstream: start a new connection instead of retrying reconnect. */
+  /** False for connection_deleted: start a new connection instead of retrying reconnect. */
   reconnect_required: boolean;
   idle_revoke_at: string | null;
-  /** Why the grant ended: `agent`, `idle`, `ops` or `upstream_missing`. Null while active. */
+  /** Why the grant ended: `agent`, `idle`, `ops` or `connection_missing`. Null while active. */
   revoked_reason: string | null;
   sync: {
     history_sync_status: string;
     history_sync_completed_at: string | null;
     coverage_earliest_at: string | null;
     coverage_latest_at: string | null;
-    last_full_enumeration_at: string | null;
+    last_full_sync_at: string | null;
     last_incremental_at: string | null;
-    last_webhook_at: string | null;
     message_count: number;
     conversation_count: number;
   };
@@ -2023,13 +2051,13 @@ export interface LinkedInRevokeResult {
   status: 'revoked';
   revoked_at: string;
   cancelled_sends: number;
-  upstream_deleted: boolean;
+  connection_deleted: boolean;
 }
 
 export interface LinkedInSyncRun {
   run_id: string;
-  kind: 'initial' | 'continue' | 'incremental' | 'reconcile' | 'history_request' | 'conversations';
-  trigger: 'paid' | 'scheduler' | 'webhook' | 'internal';
+  kind: 'initial' | 'continue' | 'incremental' | 'refresh' | 'history' | 'conversations';
+  trigger: 'paid' | 'scheduled' | 'event' | 'automatic';
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'paused' | 'superseded';
   continuation_of: string | null;
   has_next_cursor: boolean;
@@ -2037,15 +2065,13 @@ export interface LinkedInSyncRun {
   pages: number;
   requests: number;
   rate_limited: number;
-  cursor_resets: number;
   messages_seen: number;
   messages_inserted: number;
   messages_updated: number;
   conversations_inserted: number;
   earliest_seen_at: string | null;
   latest_seen_at: string | null;
-  provider_sync_status: string | null;
-  upstream_ms: number;
+  history_sync_status: string | null;
   duration_ms: number | null;
   error_code: string | null;
   request_id: string | null;
@@ -2078,7 +2104,7 @@ export interface LinkedInSyncRunResult {
   kind: string;
   outcome: 'exhausted' | 'bounded' | 'partial' | 'not_claimed';
   needs_continuation: boolean;
-  provider_history: string;
+  history_sync_status: string;
   pages: number;
   requests: number;
   messages_seen: number;
@@ -2088,13 +2114,12 @@ export interface LinkedInSyncRunResult {
   earliest_seen_at: string | null;
   latest_seen_at: string | null;
   has_next_cursor: boolean;
-  upstream_ms: number;
   duration_ms: number;
   [key: string]: unknown;
 }
 
 export interface LinkedInAttendee {
-  provider_id: string | null;
+  external_id: string | null;
   name: string | null;
   is_self: boolean;
   profile_url: string | null;
@@ -2106,7 +2131,7 @@ export interface LinkedInAttendee {
 
 export interface LinkedInConversation {
   id: string;
-  provider_chat_id: string;
+  external_chat_id: string;
   name: string | null;
   subject: string | null;
   type: number | null;
@@ -2123,9 +2148,9 @@ export interface LinkedInConversation {
 export interface LinkedInMessage {
   id: string;
   conversation_id: string;
-  provider_message_id: string;
+  external_message_id: string;
   direction: 'inbound' | 'outbound';
-  sender_provider_id: string | null;
+  sender_external_id: string | null;
   sender_name: string | null;
   text: string | null;
   sent_at: string;
@@ -2195,14 +2220,14 @@ export interface LinkedInInviteResult {
   action_request_id: string;
   invitation_id: string;
   status: 'sent' | 'already_connected' | 'pending';
-  provider_invitation_id?: string | null;
+  external_invitation_id?: string | null;
   tracked?: boolean;
 }
 export interface LinkedInWithdrawInvitationResult {
   action_request_id: string;
   invitation_id: string;
   status: 'cancelled_before_send' | 'withdrawn' | 'already_withdrawn' | 'not_pending';
-  provider_invitation_id?: string;
+  external_invitation_id?: string;
 }
 
 export interface LinkedInReplyOptions extends ToolOptions {
@@ -2285,7 +2310,7 @@ export interface LinkedInReactOptions extends ToolOptions {
 export interface LinkedInWriteResult {
   action_request_id: string;
   status: 'sent';
-  provider_message_id?: string;
+  external_message_id?: string;
   message_id?: string | null;
   sent_at?: string;
   [key: string]: unknown;
@@ -2293,7 +2318,7 @@ export interface LinkedInWriteResult {
 
 export interface LinkedInProfileViewResult extends LinkedInWriteResult {
   profile: {
-    provider_id: string | null;
+    external_id: string | null;
     public_identifier: string | null;
     name: string | null;
     headline: string | null;
@@ -2313,6 +2338,7 @@ export interface LinkedInExperienceEntry {
   /** As LinkedIn gives it (string or null). */
   start: string | null;
   end: string | null;
+  /** Derived: false when `end` is set; otherwise LinkedIn's flag, or (when LinkedIn gives none) true when `start` is set. */
   current: boolean;
   location: string | null;
 }
