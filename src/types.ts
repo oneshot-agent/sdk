@@ -329,7 +329,7 @@ export interface ResearchToolOptions extends ToolOptions {
 }
 
 export interface PersonFindOptions extends ToolOptions {
-  /** Off by default. Adds $0.10 × requested limit (default 100 → $10) for up to that many people; no phone hit guaranteed. */
+  /** Off by default. Adds the per-person add-on on the pricing page × requested limit (default 100) for up to that many people; no phone hit guaranteed. */
   includePhone?: boolean;
   job_titles?: string[];
   keywords?: string[];
@@ -348,8 +348,9 @@ export interface PersonFindOptions extends ToolOptions {
    * paginated server-side, so one response can hold up to `limit` rows.
    * The search runs under a time limit: if it is reached, the response holds
    * the rows found so far (possibly fewer than `limit`) — continue with
-   * `offset`. Rows whose phone lookup did not finish in time come back with
-   * `_phone_enriched: false` and `_phone_enrich_reason: 'time_budget_exhausted'`. */
+   * `offset`. With `include_phone`, every row reports its `phone_lookup`
+   * outcome (see `PersonResult.phone_lookup`); a row whose lookup did not
+   * finish in time is `not_attempted` or `unavailable`, never silently empty. */
   limit?: number;
   /** Row offset into the result set, 0-indexed (server default 0). Combine
    * with `limit` to page through results, e.g. `{ limit: 100, offset: 100 }`
@@ -359,7 +360,7 @@ export interface PersonFindOptions extends ToolOptions {
 }
 
 export interface PersonProfileOptions extends ToolOptions {
-  /** Off by default. Adds $0.10 for up to one person; no phone hit guaranteed. */
+  /** Off by default. Adds the per-person add-on on the pricing page for up to one person; no phone hit guaranteed. */
   includePhone?: boolean;
   linkedin_url?: string;
   email?: string;
@@ -399,7 +400,7 @@ export interface PersonEmailStatusOptions extends ToolOptions {
 }
 
 export interface PersonDossierOptions extends ToolOptions {
-  /** Off by default. Adds $0.10 for up to one person; no phone hit guaranteed. */
+  /** Off by default. Adds the per-person add-on on the pricing page for up to one person; no phone hit guaranteed. */
   includePhone?: boolean;
   email?: string;
   social_media_url?: string;
@@ -569,6 +570,15 @@ export interface PersonResult {
   altemails?: string[];
   best_work_email?: string | null;
   best_personal_email?: string | null;
+  /** Outcome of the optional phone lookup for this person (present when the
+   * call asked for phones). `found`: a number is on the row. `none`: every
+   * provider asked answered no match. `not_attempted`: no lookup ran (the
+   * prepaid quantity was reached, or time ran out first). `unavailable`: a
+   * provider outage or exhausted credits, or a lookup still in flight at the
+   * deadline. `pending`: an async reveal was accepted; the number arrives
+   * later (see `phones_pending`). A retry of the same request never buys a
+   * person twice: it returns the number already found. */
+  phone_lookup?: 'found' | 'none' | 'not_attempted' | 'unavailable' | 'pending';
 }
 
 export interface PersonFindResult {

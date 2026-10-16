@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53.1
+
+- Allow five minutes for person dossier polling by default, while preserving caller timeouts.
+- Describe phone lookup outcomes and the current per-person pricing contract.
+
 ## 0.53.0 — breaking release (#1336)
 
 - Renamed `commerceSearch()` → `productFind()`; `CommerceSearchOptions`, `CommerceSearchProduct`, `CommerceSearchResult` → `ProductFindOptions`, `ProductFindProduct`, `ProductFindResult`, without aliases.

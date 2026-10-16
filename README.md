@@ -776,7 +776,7 @@ MIT
 
 ## Optional phone lookup
 
-Phone lookup is off by default. Source-returned numbers and published business or record numbers still appear. `includePhone: true` adds $0.10 × the requested search limit (default 100 → $10), or $0.10 for profile/dossier, for up to that many people with no guaranteed hit. Fallbacks and callbacks cost nothing extra. A completed lookup with no phone match is charged; a failed job is refunded.
+Phone lookup is off by default. Source-returned numbers and published business or record numbers still appear. `includePhone: true` adds the per-person add-on listed on the pricing page × the requested search limit (default 100) for a search, or once for profile/dossier, for up to that many people with no guaranteed hit. Fallbacks and callbacks cost nothing extra. A completed lookup with no phone match is charged; a failed job is refunded.
 
 `maxCost` and per-transaction budgets apply to the full quote before authorization, even when credits cover it. The SDK obtains the quote without execution, retries with its quote ID and payment or credit session, and returns the result and receipt.
 

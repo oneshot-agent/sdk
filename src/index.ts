@@ -39,7 +39,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.53.0';
+const SDK_VERSION = '0.53.1';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -680,7 +680,8 @@ export class OneShot {
       throw new ValidationError('At least one of email, social_media_url, or name is required', 'identifier');
     }
     const { includePhone, ...payload } = options;
-    return this.tool('lookup/person-dossier', { ...payload, include_phone: includePhone });
+    // The dossier takes 2 to 5 minutes; the generic 120 second poll gives up on a normal run (#1913).
+    return this.tool('lookup/person-dossier', { ...payload, include_phone: includePhone, timeout: options.timeout ?? 300 });
   }
 
   async personSocialAccounts(options: PersonSocialAccountsOptions): Promise<PersonSocialAccountsResult> {
