@@ -39,7 +39,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.53.1';
+const SDK_VERSION = '0.54.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -1129,11 +1129,24 @@ export class OneShot {
     return response.json() as Promise<BrowserProfile>;
   }
 
-  /** Open a profile login session; wait for idle before entering credentials in live_url. */
+  /**
+   * Open a profile login session. Hand the returned `setup_url` to the person whose account it is: it opens
+   * once and expires after 10 minutes. They sign in and press Done on the page; poll `getBrowserProfileSetup`
+   * until `completed_at` is set. `live_url` is deprecated and removed in the next release.
+   */
   async startBrowserProfileSetup(profileId: string, startUrl: string): Promise<BrowserProfileSetup> {
     return this.browserProfileSetup(profileId, 'start', { start_url: startUrl });
   }
 
+  /**
+   * Mint a fresh single-use `setup_url` for the profile's open setup; the earlier link stops working. With no
+   * open setup, pass `startUrl` to start one; without it the call fails with 409 `no_setup`.
+   */
+  async createBrowserProfileSetupLink(profileId: string, startUrl?: string): Promise<BrowserProfileSetup> {
+    return this.browserProfileSetup(profileId, 'link', startUrl ? { start_url: startUrl } : {});
+  }
+
+  /** Setup status. `completed_at` is set once the person pressed Done on the page; it mints no link. */
   async getBrowserProfileSetup(profileId: string): Promise<BrowserProfileSetup> {
     return this.browserProfileSetup(profileId, 'status');
   }

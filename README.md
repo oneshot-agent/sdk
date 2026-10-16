@@ -155,8 +155,9 @@ mainnet only.
 | **Browser** | |
 | `browser()` | Autonomous browser — navigate, click, extract |
 | `createBrowserProfile()` | Create a persistent browser profile |
-| `startBrowserProfileSetup(id, loginUrl)` | Start interactive account login / 2FA |
-| `getBrowserProfileSetup(id)` | Get setup readiness and private live URL |
+| `startBrowserProfileSetup(id, loginUrl)` | Start interactive account login / 2FA; returns the single-use `setup_url` |
+| `createBrowserProfileSetupLink(id, startUrl?)` | Mint a fresh single-use `setup_url` for an open setup |
+| `getBrowserProfileSetup(id)` | Get setup status; `completed_at` once the person pressed Done |
 | `finishBrowserProfileSetup(id)` | Save profile and inspect stored cookie metadata |
 | `listBrowserProfiles()` | List saved browser profiles |
 | `deleteBrowserProfile()` | Delete a browser profile |
@@ -663,11 +664,18 @@ const order = await agent.commerceBuy({
 
 `agent.physicalMail` exposes `uploadArtwork`, `validateAddress`, `preview`, `getQuote`, `approve`, `send`, `getOrder`, `recover`, and `cancel` for U.S. letters and 4×6 postcards. Inspect the proof and price before explicitly approving each quote. Persist `idempotencyKey` before `send`; use `recover(key)` after uncertain responses. Approval is never inferred by automatic payment retries. Payment receipts and postal events are separate; delivery does not prove readership. See `docs/physical-mail.md` in the OneShot repository for configuration and examples.
 
-### Account login and 2FA (SDK 0.34.0+)
+### Account login and 2FA (SDK 0.34.0+; `createBrowserProfileSetupLink` from 0.54.0)
 
-Create a browser profile, call `startBrowserProfileSetup(profile.id, loginUrl)`, and poll `getBrowserProfileSetup(profile.id)` until `status` is `idle`. Open the returned `live_url` privately for the user to sign in and complete the site's verification. It currently uses the Browser-Use domain. After the user confirms completion, call `finishBrowserProfileSetup(profile.id)` and store the profile ID for later `browser({ profile_id, task })` calls.
+Create a browser profile, then:
 
-The finish operation stops the session and inspects cookies in a fresh browser before website navigation. It returns cookie names/domains/paths, never values; a subsequent task must check whether the site accepts the login. Setup expires after 15 minutes and abandoned sessions are closed by the lifecycle sweep. Profiles are retained. Start setup again to reconnect an expired site login. Keep live URLs, passwords, and codes out of logs and agent prompts.
+1. Start: `startBrowserProfileSetup(profile.id, loginUrl)`.
+2. Give the returned `setup_url` to the person whose account it is. It opens once and expires after 10 minutes; `createBrowserProfileSetupLink(profile.id)` mints a fresh one, and with a `startUrl` it also starts a setup when none is open.
+3. The person signs in on the page, completes the site's verification, and presses **Done**. **Cancel** ends the setup without marking it complete, so `completed_at` stays `null`.
+4. Poll `getBrowserProfileSetup(profile.id)` until `completed_at` is set, or until `status` is `expired`, `no_setup` or `stopped` (the setup ended after Cancel or the 15-minute expiry; `completed_at` stays `null`, so stop polling and start setup again). Once `completed_at` is set, store the profile ID for later `browser({ profile_id, task })` calls.
+
+Done (or `finishBrowserProfileSetup(profile.id)`, when your application saves on the person's behalf) stops the session and inspects cookies in a fresh browser before website navigation. It returns cookie names/domains/paths, never values; a subsequent task must check whether the site accepts the login. Setup expires after 15 minutes and abandoned sessions are closed by the lifecycle sweep. Profiles are retained. Start setup again to reconnect an expired site login.
+
+Treat `setup_url` as a secret: give it only to that person, never open it yourself, and keep it, passwords and codes out of logs and agent prompts. The page is not cached and sends no referrer. `live_url` is deprecated and is removed in the next release.
 
 Browser tasks reject the legacy `secrets` field and `max_steps` below 25 before payment. Use interactive setup or `createBrowserProfile(name, { cookies })` / `{ storage_state }` for authentication. `cost` is the provider cost; `billed_cost` is the final customer charge after reconciliation (null while pending). Failed `JobError`s expose `partialResult` for diagnostics.
 

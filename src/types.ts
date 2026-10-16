@@ -575,8 +575,9 @@ export interface PersonResult {
    * provider asked answered no match. `not_attempted`: no lookup ran (the
    * prepaid quantity was reached, or time ran out first). `unavailable`: a
    * provider outage or exhausted credits, or a lookup still in flight at the
-   * deadline. `pending`: an async reveal was accepted; the number arrives
-   * later (see `phones_pending`). A retry of the same request never buys a
+   * deadline. `pending`: an async reveal was accepted, or was dispatched
+   * without a definite answer; the number arrives later if the provider has
+   * it (see `phones_pending`). A retry of the same request never buys a
    * person twice: it returns the number already found. */
   phone_lookup?: 'found' | 'none' | 'not_attempted' | 'unavailable' | 'pending';
 }
@@ -1966,12 +1967,20 @@ export interface RecordSolicitationsFindResult {
   cost?: number;
 }
 
-/** Interactive profile login. live_url grants control; do not log or persist it. */
+/** Interactive profile login (#1889). setup_url is a secret for the account's owner; do not log or persist it. */
 export interface BrowserProfileSetup {
   profile_id: string;
   session_id?: string;
   status: string;
+  /** @deprecated Use setup_url. Removed in the next release. */
   live_url?: string | null;
+  /** The OneShot page the account's owner opens to sign in. Opens once; a fresh one comes from createBrowserProfileSetupLink. Returned by start and link. */
+  setup_url?: string;
+  /** When setup_url stops opening (10 minutes after it was minted, or when the setup expires). */
+  setup_url_expires_at?: string;
+  /** Returned by status: set once the person pressed Done on the page, null while the setup is open. */
+  completed_at?: string | null;
+  /** When the setup itself expires (15 minutes after start). */
   expires_at?: string;
   stored_cookies?: Array<{ name: string; domain: string; path: string }>;
   verification?: 'fresh_browser_before_navigation';

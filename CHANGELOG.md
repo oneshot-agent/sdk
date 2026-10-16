@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.54.0
+
+- Add single-use browser profile setup links and completion status for account sign-in.
+- Clarify pending phone lookups when a reveal has no definite response yet.
+
 ## 0.53.1
 
 - Allow five minutes for person dossier polling by default, while preserving caller timeouts.
