@@ -366,6 +366,9 @@ export interface PersonProfileOptions extends ToolOptions {
   email?: string;
   name?: string;
   company_domain?: string;
+  /** Employer name, for a `name` lookup when the company domain is not
+   * known (e.g. `'Coinbase'`). `company_domain` is preferred when known. */
+  company_name?: string;
 }
 
 export interface CompanyFindOptions extends ToolOptions {

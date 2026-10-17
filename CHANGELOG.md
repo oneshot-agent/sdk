@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.55.0
+
+- Add typed Solve requests and results for routing, allocation, packing, and scheduling.
+- Update lookup surfaces and person-profile inputs.
+
 ## 0.54.0
 
 - Add single-use browser profile setup links and completion status for account sign-in.

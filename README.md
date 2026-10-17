@@ -110,7 +110,8 @@ Set `currency: 'ETH'` and the SDK keeps the wallet funded in USDC for you:
 
 Run one process per wallet in ETH mode: each process keeps its own in-flight
 ledger. ETH mode requires a wallet provider with `sendTransaction` and is Base
-mainnet only.
+mainnet only. CDP wallets are not supported in ETH mode: `cdp` combined with
+`currency: 'ETH'` throws a `ValidationError` (fund the CDP wallet with USDC).
 
 ## Available Methods
 
@@ -132,6 +133,7 @@ mainnet only.
 | `resumeDomain()` | Put a paused domain back into rotation |
 | **Research & People** | |
 | `research()` | Deep web research |
+| `solve(input)` | Solve a routing or packing problem with constraint checks and conflicts; `solution` is typed by `problem` |
 | `personFind()` | Search people by criteria |
 | `personProfile()` | Enrich from LinkedIn/email |
 | `personEmail()` | Find email for a person |
@@ -773,7 +775,7 @@ The signal **cannot** cancel:
 
 - [Documentation](https://docs.oneshotagent.com)
 - [MCP Server](https://www.npmjs.com/package/@oneshot-agent/mcp-server) — Claude Desktop, Cursor, Claude Code (local), or the hosted endpoint at `https://win.oneshotagent.com/mcp` with an access token
-- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 48 tools plus the lookup tools as LangChain BaseTool
+- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 51 tools plus the lookup tools as LangChain BaseTool
 - [Python SDK (Core)](https://pypi.org/project/oneshot-python/) — HTTP client with x402 payments
 - [Pricing](https://docs.oneshotagent.com/pricing)
 - [GitHub](https://github.com/oneshot-agent/sdk)

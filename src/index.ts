@@ -1,4 +1,6 @@
 import { Hunts } from './hunts';
+import type { SolveOptions, SolveResultFor } from './solve';
+export * from './solve';
 export * from './hunts';
 import { PhysicalMail } from './physical-mail';
 export * from './physical-mail';
@@ -39,7 +41,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.54.0';
+const SDK_VERSION = '0.55.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -205,6 +207,14 @@ function validateBudgetConfig(budgets: AgentBudgetConfig | undefined): AgentBudg
 /** The keys executeToolRequestImpl takes out of a request as SDK options, so they never reach the API body. */
 const PAID_ROUTE_OPTION_KEYS = ['timeout', 'totalTimeoutMs', 'onRequestCreated', 'onAccepted', 'signal', 'onStatusUpdate', 'wait', 'waitForPhones', 'phoneTimeoutSec', 'idempotencyKey', 'approvalId', 'maxCost'] as const;
 
+/** ETH mode is unsupported on CDP wallets (#2153): the swap path needs a confirmed receipt CDP never returns. */
+function cdpEthModeError(): ValidationError {
+  return new ValidationError(
+    "ETH currency mode is not supported with CDP wallets; fund the CDP wallet with USDC or use currency: 'USDC' (or a privateKey / custom walletProvider for ETH mode)",
+    'currency',
+  );
+}
+
 export class OneShot {
   readonly hunts = new Hunts(this);
   readonly physicalMail = new PhysicalMail(async <T>(path: string, method: string, body?: unknown, mime?: string): Promise<T> => {
@@ -280,6 +290,8 @@ export class OneShot {
     }
 
     if (config.cdp) {
+      // Reject before the CDP SDK is imported or an account is created (#2153).
+      if ((config.currency ?? 'USDC') === 'ETH') throw cdpEthModeError();
       const { CdpWalletProvider } = await import('./providers/cdp');
       const cdpOpts = typeof config.cdp === 'object' ? config.cdp : undefined;
       const walletProvider = await CdpWalletProvider.create(cdpOpts);
@@ -353,6 +365,11 @@ export class OneShot {
         'config'
       );
     }
+
+    // CDP wallets cannot run ETH mode even though CdpWalletProvider exposes
+    // sendTransaction: its wait() never observes a receipt, so the swap path
+    // cannot confirm the ETH→USDC trade (#2153).
+    if (config.cdp && this._currency === 'ETH') throw cdpEthModeError();
 
     if (this._currency === 'ETH' && !this.provider.sendTransaction) {
       throw new ValidationError(
@@ -587,6 +604,17 @@ export class OneShot {
   async research(options: ResearchToolOptions): Promise<ResearchResult> {
     this.validate(options.topic, 'topic');
     return this.tool('research', { ...options });
+  }
+
+  /**
+   * Solve a routing or packing problem with constraint checks and conflicts. Quotes, pays and waits for
+   * the job. The result's `solution` is typed by the request's `problem`.
+   */
+  async solve<I extends SolveOptions>(input: I): Promise<SolveResultFor<I['problem']>> {
+    // Shared option objects and JavaScript callers may still supply receipt metadata.
+    // Solve's strict request schema does not accept it, on either quote or paid requests.
+    const { memo, valueTag, decisionContext, ...options } = input as SolveOptions & ToolOptions;
+    return this.tool('solve', { ...options, timeout: options.timeout ?? 420 });
   }
 
   async personFind(options: PersonFindOptions): Promise<PersonFindResult> {
@@ -2942,7 +2970,7 @@ export class OneShot {
 
   private async executeToolRequest<T>(endpoint: string, options: ToolOptions & Record<string, unknown>, quoteId?: string): Promise<T> {
     // LinkedIn writes act through a human's account and cannot be recalled: always keyed.
-    const reliable = /(?:^|\/)(lookup\/person-(profile|email|email-status)|lookup\/place-permits|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint);
+    const reliable = /(?:^|\/)(lookup\/person-(profile|email|email-status)|lookup\/place-permits|solve|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint);
     const key = options.idempotencyKey ?? (reliable ? ethers.hexlify(ethers.randomBytes(16)) : undefined);
     if (options.totalTimeoutMs !== undefined && (!Number.isFinite(options.totalTimeoutMs) || options.totalTimeoutMs <= 0)) {
       throw new ValidationError('totalTimeoutMs must be positive', 'totalTimeoutMs');
@@ -2982,7 +3010,7 @@ export class OneShot {
         payload.memo = payload.memo.slice(0, 1000);
         this.log('Memo truncated to 1000 chars');
       }
-    } else if (!endpoint.includes('/inbox') && !endpoint.includes('/notifications') && !endpoint.includes('/balance')) {
+    } else if (!endpoint.endsWith('/v1/tools/solve') && !endpoint.includes('/inbox') && !endpoint.includes('/notifications') && !endpoint.includes('/balance')) {
       this.log('No memo provided — consider adding a reason for audit trail');
     }
 
@@ -3012,10 +3040,10 @@ export class OneShot {
     let response = await this.makeRequest(endpoint, payload, undefined, quoteId, signal, undefined, extraHeaders);
 
     // Handle 402 Payment Required
-    if (response.status === 402 && /\/v1\/tools\/(find\/person|lookup\/person-(profile|dossier))$/.test(endpoint)) {
+    if (response.status === 402 && /\/v1\/tools\/(solve|find\/person|lookup\/person-(profile|dossier))$/.test(endpoint)) {
       ({ execResp: response } = await this.runQuoteToPay<{ quote_id: string; total: string }>({
         endpoint, payload, signal, maxCost, quoteResponse: response, extraHeaders,
-        expectMsg: 'Expected a person quote', totalOf: quote => quote.total,
+        expectMsg: 'Expected a tool quote', totalOf: quote => quote.total,
         onQuote: () => { context.phase = 'payment'; },
       }));
       context.phase = 'submission';
@@ -3660,7 +3688,7 @@ export class OneShot {
     // alone (401 proof_required).
     const unsignedStub = payment?.payload?.signature === '0x';
     const askedForProof = !!extraHeaders?.['x-agent-proof'];
-    const proofScope = /(lookup\/person-(profile|email|email-status)|lookup\/place-permits|physical-mail\/send)$/.test(endpoint)
+    const proofScope = /(lookup\/person-(profile|email|email-status)|lookup\/place-permits|physical-mail\/send|solve)$/.test(endpoint)
       ? 'submit'
       : askedForProof ? 'read' : 'write';
     const headers: Record<string, string> = {
@@ -3861,7 +3889,7 @@ export class OneShot {
       resp = await this.makeRequest(endpoint, data, signed.auth, quoteId, signal, timeoutMs, extraHeaders);
     } catch (err) {
       // Keyed writes may already be queued server-side after a transport failure: keep the reservation.
-      if (!/(lookup\/person-(profile|email|email-status)|lookup\/place-permits|physical-mail\/send|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
+      if (!/(lookup\/person-(profile|email|email-status)|lookup\/place-permits|physical-mail\/send|solve|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
       throw err;
     }
     if (!resp.ok && !(extraHeaders?.['Idempotency-Key'] && resp.status >= 500)) this.releaseUsdcReservation(signed.reservation);
