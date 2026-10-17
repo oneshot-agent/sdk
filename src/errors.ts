@@ -1,3 +1,35 @@
+/** Retry-After is either integer seconds or an HTTP-date, never a partial number. */
+function retryAfterMs(header?: string | null): number | undefined {
+  if (!header?.trim()) return undefined;
+  const value = header.trim();
+  if (/^\d+$/.test(value)) {
+    const ms = Number(value) * 1000;
+    return Number.isSafeInteger(ms) ? ms : undefined;
+  }
+
+  const now = Date.now();
+  // HTTP's two-digit years use a rolling fifty-year future boundary, unlike
+  // JavaScript's fixed 1950/2050 boundary.
+  const dateValue = value.replace(/^([A-Za-z]+, \d{2}-[A-Za-z]{3}-)(\d{2})( )/, (_, prefix, shortYear, space) => {
+    const cutoff = new Date(now).getUTCFullYear() + 50;
+    const year = Number(shortYear);
+    return `${prefix}${Math.floor((cutoff - year) / 100) * 100 + year}${space}`;
+  });
+  // asctime has no timezone suffix, but HTTP still defines it as GMT.
+  const timestamp = Date.parse(dateValue.endsWith('GMT') ? dateValue : `${dateValue} GMT`);
+  if (!Number.isFinite(timestamp)) return undefined;
+  // Round-trip all three HTTP-date formats to reject JS date-parser extensions
+  // (including negative numbers, ISO dates, and normalized impossible dates).
+  const date = new Date(timestamp);
+  const canonical = date.toUTCString();
+  const [, day, month, year, time] = canonical.split(' ');
+  const weekday = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][date.getUTCDay()];
+  const rfc850 = `${weekday}, ${day}-${month}-${year.slice(-2)} ${time} GMT`;
+  const asctime = `${canonical.slice(0, 3)} ${month} ${day.startsWith('0') ? ` ${day[1]}` : day} ${time} ${year}`;
+  if (![canonical, rfc850, asctime].includes(value)) return undefined;
+  return Math.max(0, timestamp - now);
+}
+
 export class OneShotError extends Error {
   constructor(message: string) {
     super(message);
@@ -7,13 +39,18 @@ export class OneShotError extends Error {
 }
 
 export class ToolError extends OneShotError {
+  /** Server-requested delay in milliseconds; undefined when absent or invalid. */
+  public readonly retryAfterMs?: number;
+
   constructor(
     message: string,
     public readonly statusCode: number,
-    public readonly responseBody: string
+    public readonly responseBody: string,
+    retryAfter?: string | null,
   ) {
     super(message);
     this.name = 'ToolError';
+    this.retryAfterMs = retryAfterMs(retryAfter);
   }
 }
 
@@ -165,9 +202,13 @@ export class BudgetExceededError extends OneShotError {
  * server answered, undefined on a network failure.
  */
 export class BudgetSyncError extends OneShotError {
-  constructor(message: string, public readonly status?: number, public readonly responseBody?: string) {
+  /** Server-requested delay in milliseconds; undefined when absent or invalid. */
+  public readonly retryAfterMs?: number;
+
+  constructor(message: string, public readonly status?: number, public readonly responseBody?: string, retryAfter?: string | null) {
     super(message);
     this.name = 'BudgetSyncError';
+    this.retryAfterMs = retryAfterMs(retryAfter);
   }
 }
 

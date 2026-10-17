@@ -52,6 +52,12 @@ export interface PaymentAuthorization {
 }
 
 export type LoggerFn = (message: string) => void;
+/**
+ * Observes the first status and subsequent changes, including completed/failed
+ * before the job wait settles. Status strings are passed through from the API.
+ * With waitForPhones, completed is deferred until the optional phone wait returns.
+ * Throws and rejected promises are ignored. Async callbacks are not awaited.
+ */
 export type StatusUpdateFn = (status: string, requestId: string) => void;
 
 export interface OneShotConfig {
@@ -359,15 +365,33 @@ export interface PersonFindOptions extends ToolOptions {
   offset?: number;
 }
 
-export interface PersonProfileOptions extends ToolOptions {
+/**
+ * What a caller knows about one person (#1899). Every single-person tool takes
+ * these same optional fields; at least one of `name`, `email`, `phone` or
+ * `profile_url` is required. The API resolves the rest (a LinkedIn URL from a
+ * name and company or an email, the other handles, the employer).
+ */
+export interface PersonIdentity {
+  /** Full name. Works best with `company`. */
+  name?: string;
+  /** Employer name or domain, e.g. `'Coinbase'` or `'coinbase.com'`. */
+  company?: string;
+  email?: string;
+  phone?: string;
+  /** Profile URL on LinkedIn, X or GitHub. */
+  profile_url?: string;
+  /** Same as `profile_url` (older name). */
+  linkedin_url?: string;
+  /** Same as `profile_url` (older name). */
+  social_media_url?: string;
+}
+
+export interface PersonProfileOptions extends ToolOptions, PersonIdentity {
   /** Off by default. Adds the per-person add-on on the pricing page for up to one person; no phone hit guaranteed. */
   includePhone?: boolean;
-  linkedin_url?: string;
-  email?: string;
-  name?: string;
+  /** Employer domain (older name; `company` takes a name or a domain). */
   company_domain?: string;
-  /** Employer name, for a `name` lookup when the company domain is not
-   * known (e.g. `'Coinbase'`). `company_domain` is preferred when known. */
+  /** Employer name (older name; `company` takes a name or a domain). */
   company_name?: string;
 }
 
@@ -391,30 +415,27 @@ export interface CompanyProfileOptions extends ToolOptions {
   ticker?: string;
 }
 
-export interface PersonEmailOptions extends ToolOptions {
+export interface PersonEmailOptions extends ToolOptions, PersonIdentity {
+  /** Same as `name` (older name). */
   full_name?: string;
   first_name?: string;
   last_name?: string;
-  company_domain: string;
+  /** Employer domain (older name; `company` takes a name or a domain). */
+  company_domain?: string;
+  /** Employer name (older name; `company` takes a name or a domain). */
+  company_name?: string;
 }
 
 export interface PersonEmailStatusOptions extends ToolOptions {
   email: string;
 }
 
-export interface PersonDossierOptions extends ToolOptions {
+export interface PersonDossierOptions extends ToolOptions, PersonIdentity {
   /** Off by default. Adds the per-person add-on on the pricing page for up to one person; no phone hit guaranteed. */
   includePhone?: boolean;
-  email?: string;
-  social_media_url?: string;
-  name?: string;
-  company?: string;
 }
 
-export interface PersonSocialAccountsOptions extends ToolOptions {
-  email?: string;
-  social_media_url?: string;
-}
+export interface PersonSocialAccountsOptions extends ToolOptions, PersonIdentity {}
 
 export interface PersonArticlesOptions extends ToolOptions {
   name: string;
@@ -423,18 +444,11 @@ export interface PersonArticlesOptions extends ToolOptions {
   limit?: number;
 }
 
-export interface PersonPostsOptions extends ToolOptions {
-  social_media_url: string;
-}
+export interface PersonPostsOptions extends ToolOptions, PersonIdentity {}
 
-export interface PersonInterestsOptions extends ToolOptions {
-  email?: string;
-  phone?: string;
-  social_media_url?: string;
-}
+export interface PersonInterestsOptions extends ToolOptions, PersonIdentity {}
 
-export interface PersonFollowersOptions extends ToolOptions {
-  social_media_url: string;
+export interface PersonFollowersOptions extends ToolOptions, PersonIdentity {
   type?: 'replies' | 'followers' | 'following' | 'followers,following';
   max_results?: number;
 }
@@ -1729,6 +1743,12 @@ export interface ComputeGoalStatus {
     next_run_at: string | null;
   };
 }
+
+/**
+ * Observes distinct goal statuses from getComputeGoal, including the terminal
+ * status before settlement. Throws/rejections are ignored; promises aren't awaited.
+ */
+export type ComputeStatusUpdateFn = (status: ComputeGoalStatus['status'], goalId: string) => void;
 
 /** One thing a goal's task produced: a file a sandbox task left, or a tool result too large for the task row. */
 export interface ComputeOutput {

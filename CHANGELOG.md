@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.56.0
+
+- Add Predict simulation and forecast models across the SDK and adapters.
+- Add compute polling cancellation, status callbacks, and retry timing; refresh expired agent proofs.
+- Support unified person identity inputs and new protein lookup tools.
+
 ## 0.55.0
 
 - Add typed Solve requests and results for routing, allocation, packing, and scheduling.

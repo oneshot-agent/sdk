@@ -1,6 +1,8 @@
 import { Hunts } from './hunts';
 import type { SolveOptions, SolveResultFor } from './solve';
 export * from './solve';
+import type { PredictOptions, PredictPendingResult, PredictResultFor } from './predict';
+export * from './predict';
 export * from './hunts';
 import { PhysicalMail } from './physical-mail';
 export * from './physical-mail';
@@ -41,13 +43,13 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.55.0';
+const SDK_VERSION = '0.56.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
   /** A request-scoped message arrived over the socket: push works for this job. */
   pushConfirmed: boolean;
-  /** Last status surfaced to `onStatusUpdate`, for de-duplication across branches. */
+  /** Last observed status, for de-duplication across branches (completion may be deferred). */
   lastStatus: string | undefined;
   /** Which branch delivered the terminal outcome (debug log only). */
   via: 'ws' | 'http' | undefined;
@@ -57,6 +59,30 @@ interface JobWaitState {
 const HTTP_POLL_BACKOFF_MS = [300, 600, 1000, 2000] as const;
 /** HTTP poll cadence once the WebSocket has delivered for this request. */
 const HTTP_POLL_RELAXED_MS = 5000;
+
+function isTransientComputeReadError(error: unknown): boolean {
+  if (error instanceof ToolError) {
+    return error.statusCode === 429 || (error.statusCode >= 500 && error.statusCode < 600);
+  }
+  // Fetch network failures differ across browsers, Node and Bun. Do not swallow
+  // arbitrary TypeErrors (bad URLs/configuration), JSON errors or signing errors.
+  if (!(error instanceof Error)) return false;
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== null && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const { code, cause } = current as { code?: string; cause?: unknown };
+    if ((code !== undefined && [
+      'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'EPIPE', 'ETIMEDOUT',
+      'ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH',
+      'ConnectionRefused', 'ConnectionClosed', 'Timeout',
+      'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT',
+    ].includes(code)) || (current instanceof TypeError &&
+      /^(fetch failed|Failed to fetch|Load failed|NetworkError when attempting to fetch resource\.)$/i.test(current.message))) return true;
+    current = cause;
+  }
+  return false;
+}
 
 
 const BASE_URL = 'https://win.oneshotagent.com';
@@ -110,7 +136,7 @@ import type {
   TokenInfo, PaymentInfo, PaymentRequirements, PaymentAuthorization,
   LoggerFn, StatusUpdateFn, OneShotConfig, DecisionContext, ToolOptions, RouteMethod, RouteOptions,
   EmailToolOptions, ResearchToolOptions, PersonFindOptions,
-  PersonProfileOptions, PersonEmailOptions, PersonEmailStatusOptions,
+  PersonIdentity, PersonProfileOptions, PersonEmailOptions, PersonEmailStatusOptions,
   CompanyFindOptions, CompanyFindResult, CompanyProfileOptions, CompanyProfileResult,
   BusinessFindOptions, BusinessFindResult, BusinessResolveOptions, BusinessResolveResult,
   RecordSolicitationsFindOptions, RecordSolicitationsFindResult,
@@ -132,7 +158,7 @@ import type {
   BuildQuote, BuildResult, BrowserTaskOptions, BrowserProfile, BrowserProfileCreateOptions, BrowserProfileSetup, BrowserQuote,
   BrowserResult, UpdateBuildOptions, RefineBuildOptions, SpendCategory, SpendBreakdown, RoCSResult, RoCSByGoalResult,
   Receipt, ReceiptsListResult, UnifiedBalance, CreditsTopUpResult, ComputeSchedule, ComputeOptions,
-  ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeTask, ComputeOutput, ComputeOutputContent,
+  ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeStatusUpdateFn, ComputeTask, ComputeOutput, ComputeOutputContent,
   ComputeBudgetStatus,
   DomainPoolEntry, DomainPoolListResult, DomainPoolStatusResult,
   AgentBudgetConfig, AgentBudgetStatus, AccessTokenCreated, AccessTokenInfo,
@@ -218,7 +244,7 @@ function cdpEthModeError(): ValidationError {
 export class OneShot {
   readonly hunts = new Hunts(this);
   readonly physicalMail = new PhysicalMail(async <T>(path: string, method: string, body?: unknown, mime?: string): Promise<T> => {
-    const response = await fetch(`${this.baseUrl}/v1/tools/physical-mail${path}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/physical-mail${path}`, {
       method, headers: { ...await this.signedReadHeaders(method === 'GET' ? 'read' : 'write'), 'Content-Type': mime ?? 'application/json' },
       ...(body === undefined ? {} : { body: mime ? body as Uint8Array<ArrayBuffer> : JSON.stringify(body) }),
       signal: AbortSignal.timeout(60_000),
@@ -240,6 +266,7 @@ export class OneShot {
   private readonly debug: boolean;
   private readonly logger: LoggerFn;
   private readProofWarned = false;
+  private proofClockOffsetSec = 0;
   private readonly _currency: 'USDC' | 'ETH';
   private readonly _slippage: number;
   private readonly _budgets?: AgentBudgetConfig;
@@ -566,11 +593,11 @@ export class OneShot {
 
   /** List the caller's domain pool with warmup and rotation metadata. */
   async listDomains(): Promise<DomainPoolListResult> {
-    const response = await fetch(`${this.baseUrl}/v1/tools/email/domains`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/email/domains`, {
       headers: await this.signedReadHeaders(),
     });
     if (!response.ok) {
-      throw new ToolError('Failed to list domains', response.status, await response.text());
+      throw new ToolError('Failed to list domains', response.status, await response.text(), response.headers.get('retry-after'));
     }
     return response.json() as Promise<DomainPoolListResult>;
   }
@@ -578,12 +605,12 @@ export class OneShot {
   /** Take a domain out of rotation without releasing it. */
   async pauseDomain(domain: string): Promise<DomainPoolStatusResult> {
     this.validate(domain, 'domain');
-    const response = await fetch(`${this.baseUrl}/v1/tools/email/domains/${encodeURIComponent(domain)}/pause`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/email/domains/${encodeURIComponent(domain)}/pause`, {
       method: 'POST',
       headers: await this.signedReadHeaders('write'),
     });
     if (!response.ok) {
-      throw new ToolError('Failed to pause domain', response.status, await response.text());
+      throw new ToolError('Failed to pause domain', response.status, await response.text(), response.headers.get('retry-after'));
     }
     return response.json() as Promise<DomainPoolStatusResult>;
   }
@@ -591,12 +618,12 @@ export class OneShot {
   /** Put a paused domain back into rotation. */
   async resumeDomain(domain: string): Promise<DomainPoolStatusResult> {
     this.validate(domain, 'domain');
-    const response = await fetch(`${this.baseUrl}/v1/tools/email/domains/${encodeURIComponent(domain)}/resume`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/email/domains/${encodeURIComponent(domain)}/resume`, {
       method: 'POST',
       headers: await this.signedReadHeaders('write'),
     });
     if (!response.ok) {
-      throw new ToolError('Failed to resume domain', response.status, await response.text());
+      throw new ToolError('Failed to resume domain', response.status, await response.text(), response.headers.get('retry-after'));
     }
     return response.json() as Promise<DomainPoolStatusResult>;
   }
@@ -604,6 +631,15 @@ export class OneShot {
   async research(options: ResearchToolOptions): Promise<ResearchResult> {
     this.validate(options.topic, 'topic');
     return this.tool('research', { ...options });
+  }
+
+  /** Simulate or forecast. Quotes and pays; wait: false returns a job handle instead of polling. */
+  async predict<I extends PredictOptions>(input: I & { wait: false }): Promise<PredictPendingResult>;
+  async predict<I extends PredictOptions>(input: I & { wait?: true }): Promise<PredictResultFor<I['model']>>;
+  async predict<I extends PredictOptions>(input: I): Promise<PredictResultFor<I['model']> | PredictPendingResult>;
+  async predict<I extends PredictOptions>(input: I): Promise<PredictResultFor<I['model']> | PredictPendingResult> {
+    const { memo, valueTag, decisionContext, ...options } = input as PredictOptions & ToolOptions;
+    return this.tool('predict', { ...options, timeout: options.timeout ?? 240 });
   }
 
   /**
@@ -622,10 +658,16 @@ export class OneShot {
     return this.tool('find/person', { ...payload, include_phone: includePhone, limit: options.limit ?? 100 });
   }
 
-  async personProfile(options: PersonProfileOptions): Promise<PersonProfileResult> {
-    if (!options.linkedin_url && !options.email && !options.name) {
-      throw new ValidationError('At least one of linkedin_url, email, or name is required', 'identifier');
+  /** At least one identity (#1899): name, email, phone or a profile URL under any of its names. */
+  private requirePersonIdentity(options: PersonIdentity & { full_name?: string; first_name?: string; last_name?: string }): void {
+    const hasName = options.name || options.full_name || (options.first_name && options.last_name);
+    if (!hasName && !options.email && !options.phone && !options.profile_url && !options.linkedin_url && !options.social_media_url) {
+      throw new ValidationError('At least one of name, email, phone, or profile_url is required', 'identifier');
     }
+  }
+
+  async personProfile(options: PersonProfileOptions): Promise<PersonProfileResult> {
+    this.requirePersonIdentity(options);
     const { includePhone, ...payload } = options;
     return this.tool('lookup/person-profile', { ...payload, include_phone: includePhone });
   }
@@ -691,10 +733,7 @@ export class OneShot {
   }
 
   async personEmail(options: PersonEmailOptions): Promise<PersonEmailResult> {
-    this.validate(options.company_domain, 'company_domain');
-    if (!options.full_name && !(options.first_name && options.last_name)) {
-      throw new ValidationError('Either full_name or both first_name and last_name required', 'name');
-    }
+    this.requirePersonIdentity(options);
     return this.tool('lookup/person-email', { ...options });
   }
 
@@ -704,18 +743,14 @@ export class OneShot {
   }
 
   async personDossier(options: PersonDossierOptions): Promise<PersonDossierResult> {
-    if (!options.email && !options.social_media_url && !options.name) {
-      throw new ValidationError('At least one of email, social_media_url, or name is required', 'identifier');
-    }
+    this.requirePersonIdentity(options);
     const { includePhone, ...payload } = options;
     // The dossier takes 2 to 5 minutes; the generic 120 second poll gives up on a normal run (#1913).
     return this.tool('lookup/person-dossier', { ...payload, include_phone: includePhone, timeout: options.timeout ?? 300 });
   }
 
   async personSocialAccounts(options: PersonSocialAccountsOptions): Promise<PersonSocialAccountsResult> {
-    if (!options.email && !options.social_media_url) {
-      throw new ValidationError('At least one of email or social_media_url is required', 'identifier');
-    }
+    this.requirePersonIdentity(options);
     return this.tool('lookup/person-social-accounts', { ...options });
   }
 
@@ -726,19 +761,17 @@ export class OneShot {
   }
 
   async personPosts(options: PersonPostsOptions): Promise<PersonPostsResult> {
-    this.validate(options.social_media_url, 'social_media_url');
+    this.requirePersonIdentity(options);
     return this.tool('lookup/person-posts', { ...options });
   }
 
   async personInterests(options: PersonInterestsOptions): Promise<PersonInterestsResult> {
-    if (!options.email && !options.phone && !options.social_media_url) {
-      throw new ValidationError('At least one of email, phone, or social_media_url is required', 'identifier');
-    }
+    this.requirePersonIdentity(options);
     return this.tool('lookup/person-interests', { ...options });
   }
 
   async personFollowers(options: PersonFollowersOptions): Promise<PersonFollowersResult> {
-    this.validate(options.social_media_url, 'social_media_url');
+    this.requirePersonIdentity(options);
     return this.tool('lookup/person-followers', { ...options });
   }
 
@@ -748,12 +781,12 @@ export class OneShot {
       limit: options.limit || undefined,
       include_body: options.include_body ? 'true' : undefined,
     });
-    const response = await fetch(`${this.baseUrl}/v1/tools/inbox${qs ? `?${qs}` : ''}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/inbox${qs ? `?${qs}` : ''}`, {
       headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to list inbox', response.status, await response.text());
+      throw new ToolError('Failed to list inbox', response.status, await response.text(), response.headers.get('retry-after'));
     }
     return response.json() as Promise<InboxListResult>;
   }
@@ -761,7 +794,7 @@ export class OneShot {
   async inboxGet(emailId: string): Promise<InboxEmail> {
     this.validate(emailId, 'emailId');
 
-    const response = await fetch(`${this.baseUrl}/v1/tools/inbox/${emailId}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/inbox/${emailId}`, {
       headers: await this.signedReadHeaders()
     });
 
@@ -769,7 +802,7 @@ export class OneShot {
       throw new ToolError('Email not found', 404, 'Email not found');
     }
     if (!response.ok) {
-      throw new ToolError('Failed to get email', response.status, await response.text());
+      throw new ToolError('Failed to get email', response.status, await response.text(), response.headers.get('retry-after'));
     }
     return response.json() as Promise<InboxEmail>;
   }
@@ -1144,7 +1177,7 @@ export class OneShot {
     this.validate(name, 'name');
     if (options.cookies !== undefined && options.storage_state !== undefined) throw new ValidationError('Provide cookies or storage_state, not both', 'options');
 
-    const response = await fetch(`${this.baseUrl}/v1/tools/browser/profiles`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/browser/profiles`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders()) },
       body: JSON.stringify({ name, ...options }),
@@ -1152,7 +1185,7 @@ export class OneShot {
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to create browser profile', response.status, await response.text());
+      throw new ToolError('Failed to create browser profile', response.status, await response.text(), response.headers.get('retry-after'));
     }
     return response.json() as Promise<BrowserProfile>;
   }
@@ -1186,11 +1219,11 @@ export class OneShot {
 
   private async browserProfileSetup(profileId: string, action: string, body: Record<string, unknown> = {}): Promise<BrowserProfileSetup> {
     this.validate(profileId, 'profileId');
-    const response = await fetch(`${this.baseUrl}/v1/tools/browser/profiles/${encodeURIComponent(profileId)}/setup/${action}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/browser/profiles/${encodeURIComponent(profileId)}/setup/${action}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders()) },
       body: JSON.stringify(body), signal: AbortSignal.timeout(150_000),
     });
-    if (!response.ok) throw new ToolError('Browser profile setup failed', response.status, '');
+    if (!response.ok) throw new ToolError('Browser profile setup failed', response.status, '', response.headers.get('retry-after'));
     return response.json() as Promise<BrowserProfileSetup>;
   }
 
@@ -1206,12 +1239,12 @@ export class OneShot {
    * ```
    */
   async listBrowserProfiles(): Promise<BrowserProfile[]> {
-    const response = await fetch(`${this.baseUrl}/v1/tools/browser/profiles`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/browser/profiles`, {
       headers: await this.signedReadHeaders(),
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to list browser profiles', response.status, await response.text());
+      throw new ToolError('Failed to list browser profiles', response.status, await response.text(), response.headers.get('retry-after'));
     }
     const data = await response.json() as { profiles: BrowserProfile[] };
     return data.profiles;
@@ -1228,13 +1261,13 @@ export class OneShot {
   async deleteBrowserProfile(profileId: string): Promise<void> {
     this.validate(profileId, 'profileId');
 
-    const response = await fetch(`${this.baseUrl}/v1/tools/browser/profiles/${profileId}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/browser/profiles/${profileId}`, {
       method: 'DELETE',
       headers: await this.signedReadHeaders(),
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to delete browser profile', response.status, await response.text());
+      throw new ToolError('Failed to delete browser profile', response.status, await response.text(), response.headers.get('retry-after'));
     }
   }
 
@@ -1242,7 +1275,7 @@ export class OneShot {
   private async linkedinFree<T>(method: 'GET' | 'POST' | 'DELETE', path: string, opts: { body?: unknown; query?: Record<string, string | undefined>; scope?: string; what: string }): Promise<T> {
     const url = new URL(`${this.baseUrl}/v1/tools/linkedin${path}`);
     for (const [k, v] of Object.entries(opts.query ?? {})) if (v !== undefined) url.searchParams.set(k, v);
-    const response = await fetch(url.toString(), {
+    const response = await this.fetchApi(url.toString(), {
       method,
       headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders(opts.scope ?? 'read')) },
       ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
@@ -1253,7 +1286,7 @@ export class OneShot {
       let code: unknown;
       try { code = JSON.parse(body)?.error; } catch { /* Non-JSON upstream error. */ }
       if (response.status === 409 && code === 'connect_required') throw new LinkedInConnectRequiredError(body);
-      throw new ToolError(`LinkedIn ${opts.what} failed`, response.status, body);
+      throw new ToolError(`LinkedIn ${opts.what} failed`, response.status, body, response.headers.get('retry-after'));
     }
     return response.json() as Promise<T>;
   }
@@ -1459,12 +1492,12 @@ export class OneShot {
       limit: options.limit || undefined,
       from: options.from || undefined,
     });
-    const response = await fetch(`${this.baseUrl}/v1/tools/sms/inbox${qs ? `?${qs}` : ''}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/sms/inbox${qs ? `?${qs}` : ''}`, {
       headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to list SMS inbox', response.status, await response.text());
+      throw new ToolError('Failed to list SMS inbox', response.status, await response.text(), response.headers.get('retry-after'));
     }
     return response.json() as Promise<SmsInboxResult>;
   }
@@ -1613,7 +1646,7 @@ export class OneShot {
     const scope = deadlineScope(toolOptions.signal, filled.startsWith('/v1/tools/browser/profiles') ? 150_000 : 30_000);
     try {
       const request = (async () => {
-        const response = await fetch(`${this.baseUrl}${target}`, {
+        const response = await this.fetchApi(`${this.baseUrl}${target}`, {
           method,
           headers: { ...(sendsBody ? { 'Content-Type': 'application/json' } : {}), ...(await this.signedReadHeaders(method === 'GET' ? 'read' : 'write')) },
           ...(sendsBody ? { body: JSON.stringify(body ?? {}) } : {}),
@@ -1639,7 +1672,7 @@ export class OneShot {
 
   /** Signed free request returning the `data` field of `{ success, data }`. */
   private async signedJson<T>(method: string, path: string, body: unknown, scope: 'read' | 'write', failure: string): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const response = await this.fetchApi(`${this.baseUrl}${path}`, {
       method,
       headers: {
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
@@ -1648,7 +1681,7 @@ export class OneShot {
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
     if (!response.ok) {
-      throw new ToolError(failure, response.status, await response.text());
+      throw new ToolError(failure, response.status, await response.text(), response.headers.get('retry-after'));
     }
     const json = await response.json() as { data?: T };
     return (json.data ?? json) as T;
@@ -1666,7 +1699,7 @@ export class OneShot {
   async smsInboxGet(messageId: string): Promise<SmsInboxMessage> {
     this.validate(messageId, 'messageId');
 
-    const response = await fetch(`${this.baseUrl}/v1/tools/sms/inbox/${messageId}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/sms/inbox/${messageId}`, {
       headers: await this.signedReadHeaders()
     });
 
@@ -1674,7 +1707,7 @@ export class OneShot {
       throw new ToolError('SMS message not found', 404, 'Message not found');
     }
     if (!response.ok) {
-      throw new ToolError('Failed to get SMS message', response.status, await response.text());
+      throw new ToolError('Failed to get SMS message', response.status, await response.text(), response.headers.get('retry-after'));
     }
     return response.json() as Promise<SmsInboxMessage>;
   }
@@ -1696,12 +1729,12 @@ export class OneShot {
       unread: options.unread ? 'true' : undefined,
       limit: options.limit || undefined,
     });
-    const response = await fetch(`${this.baseUrl}/v1/tools/notifications${qs ? `?${qs}` : ''}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/notifications${qs ? `?${qs}` : ''}`, {
       headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to list notifications', response.status, await response.text());
+      throw new ToolError('Failed to list notifications', response.status, await response.text(), response.headers.get('retry-after'));
     }
     return response.json() as Promise<NotificationsResult>;
   }
@@ -1717,7 +1750,7 @@ export class OneShot {
   async markNotificationRead(notificationId: string): Promise<void> {
     this.validate(notificationId, 'notificationId');
 
-    const response = await fetch(`${this.baseUrl}/v1/tools/notifications/${notificationId}/read`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/notifications/${notificationId}/read`, {
       method: 'PATCH',
       headers: await this.signedReadHeaders('write')
     });
@@ -1726,17 +1759,17 @@ export class OneShot {
       throw new ToolError('Notification not found', 404, 'Notification not found');
     }
     if (!response.ok) {
-      throw new ToolError('Failed to mark notification as read', response.status, await response.text());
+      throw new ToolError('Failed to mark notification as read', response.status, await response.text(), response.headers.get('retry-after'));
     }
   }
 
   async getUnifiedBalance(): Promise<UnifiedBalance> {
-    const response = await fetch(`${this.baseUrl}/v1/tools/balance`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/tools/balance`, {
       headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to fetch balance', response.status, await response.text());
+      throw new ToolError('Failed to fetch balance', response.status, await response.text(), response.headers.get('retry-after'));
     }
 
     return response.json() as Promise<UnifiedBalance>;
@@ -1835,22 +1868,88 @@ export class OneShot {
    * console.log(status.status, status.budget?.remaining);
    * ```
    */
-  async getComputeGoal(goalId: string): Promise<ComputeGoalStatus> {
+  async getComputeGoal(goalId: string, options: { signal?: AbortSignal } = {}): Promise<ComputeGoalStatus> {
     this.validate(goalId, 'goalId');
 
-    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}`, {
-      headers: await this.signedReadHeaders()
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}`, {
+      headers: await this.signedReadHeaders(),
+      signal: options.signal,
     });
 
     if (response.status === 404) {
       throw new ToolError('Goal not found', 404, 'Goal not found');
     }
     if (!response.ok) {
-      throw new ToolError('Failed to get compute goal', response.status, await response.text());
+      // Keep the HTTP classification even if the error body is interrupted.
+      const body = await response.text().catch(() => {
+        options.signal?.throwIfAborted();
+        return 'Response body unavailable';
+      });
+      throw new ToolError('Failed to get compute goal', response.status, body, response.headers.get('retry-after'));
     }
 
     const json = await response.json() as { data: ComputeGoalStatus };
     return json.data;
+  }
+
+  /**
+   * Poll a compute goal using its goal_id, not its creation request_id.
+   * Returns the complete goal snapshot on completed; failed/cancelled reject
+   * with JobError (goal ID, end_reason code, snapshot in partialResult).
+   * Budget exhaustion ends this wait; after fundComputeGoal revives the goal,
+   * call waitForComputeGoal again with the same ID to observe the new run.
+   * Paused/awaiting_confirmation and recurring goals keep waiting until the
+   * goal ends or the timeout (seconds, default 120) expires with JobTimeoutError.
+   * Infinity disables the local deadline.
+   * onStatusUpdate receives each distinct observed status before settlement.
+   * Callback throws/rejections are ignored and promises are not awaited.
+   * Transient reads (5xx, 429, network failures) retry on the polling cadence.
+   */
+  async waitForComputeGoal(
+    goalId: string,
+    options: { timeout?: number; signal?: AbortSignal; onStatusUpdate?: ComputeStatusUpdateFn } = {},
+  ): Promise<ComputeGoalStatus> {
+    this.validate(goalId, 'goalId');
+    const started = Date.now();
+    const scope = deadlineScope(options.signal, (options.timeout ?? 120) * 1000);
+    const poll = async () => {
+      let lastStatus: string | undefined;
+      let polls = 0;
+      while (true) {
+        scope.signal.throwIfAborted();
+        let goal: ComputeGoalStatus;
+        try {
+          goal = await this.getComputeGoal(goalId, { signal: scope.signal });
+        } catch (error) {
+          scope.signal.throwIfAborted();
+          if (!isTransientComputeReadError(error)) throw error;
+          await this.sleep(HTTP_POLL_BACKOFF_MS[Math.min(polls++, HTTP_POLL_BACKOFF_MS.length - 1)], scope.signal);
+          continue;
+        }
+        // A late response from a transport ignoring abort must not emit progress.
+        scope.signal.throwIfAborted();
+        if (goal.status !== lastStatus) {
+          lastStatus = goal.status;
+          try {
+            Promise.resolve(options.onStatusUpdate?.(goal.status, goalId)).catch(() => {});
+          } catch { /* Observers cannot change the goal outcome. */ }
+        }
+        if (goal.status === 'completed') return goal;
+        if (goal.status === 'failed' || goal.status === 'cancelled') {
+          const reason = goal.end_reason ?? goal.status;
+          throw new JobError(`Compute goal ${goal.status}: ${reason}`, goalId, reason, reason, { ...goal });
+        }
+        await this.sleep(HTTP_POLL_BACKOFF_MS[Math.min(polls++, HTTP_POLL_BACKOFF_MS.length - 1)], scope.signal);
+      }
+    };
+    try {
+      return await abortable(poll(), scope.signal);
+    } catch (error) {
+      if (scope.timedOut()) throw new JobTimeoutError(goalId, Date.now() - started);
+      throw error;
+    } finally {
+      scope.close();
+    }
   }
 
   /**
@@ -1867,12 +1966,12 @@ export class OneShot {
   async getComputeTasks(goalId: string): Promise<ComputeTask[]> {
     this.validate(goalId, 'goalId');
 
-    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/tasks`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/tasks`, {
       headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to get compute tasks', response.status, await response.text());
+      throw new ToolError('Failed to get compute tasks', response.status, await response.text(), response.headers.get('retry-after'));
     }
 
     const json = await response.json() as { data: ComputeTask[] };
@@ -1894,12 +1993,12 @@ export class OneShot {
   async getComputeOutputs(goalId: string): Promise<ComputeOutput[]> {
     this.validate(goalId, 'goalId');
 
-    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/outputs`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/outputs`, {
       headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to list compute outputs', response.status, await response.text());
+      throw new ToolError('Failed to list compute outputs', response.status, await response.text(), response.headers.get('retry-after'));
     }
 
     const json = await response.json() as { data: ComputeOutput[] };
@@ -1913,12 +2012,12 @@ export class OneShot {
 
     // The key is a path: keep its slashes, escape everything else.
     const path = key.split('/').map(encodeURIComponent).join('/');
-    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/outputs/${path}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/outputs/${path}`, {
       headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to read compute output', response.status, await response.text());
+      throw new ToolError('Failed to read compute output', response.status, await response.text(), response.headers.get('retry-after'));
     }
 
     const json = await response.json() as { data: ComputeOutputContent };
@@ -1937,7 +2036,7 @@ export class OneShot {
   async getComputeBudget(goalId: string): Promise<ComputeBudgetStatus> {
     this.validate(goalId, 'goalId');
 
-    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/budget`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/budget`, {
       headers: await this.signedReadHeaders()
     });
 
@@ -1945,7 +2044,7 @@ export class OneShot {
       throw new ToolError('Budget not found', 404, 'Budget not found for this goal');
     }
     if (!response.ok) {
-      throw new ToolError('Failed to get compute budget', response.status, await response.text());
+      throw new ToolError('Failed to get compute budget', response.status, await response.text(), response.headers.get('retry-after'));
     }
 
     const json = await response.json() as { data: ComputeBudgetStatus };
@@ -1964,7 +2063,7 @@ export class OneShot {
   async cancelComputeGoal(goalId: string, reason?: string): Promise<{ goal_id?: string; status: string; remaining_budget?: string; message?: string }> {
     this.validate(goalId, 'goalId');
 
-    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/cancel`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/cancel`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
       body: JSON.stringify({ reason })
@@ -1979,7 +2078,7 @@ export class OneShot {
       return { goal_id: goalId, status: pending.status ?? 'pending_settlement', message: pending.message };
     }
     if (!response.ok) {
-      throw new ToolError('Failed to cancel compute goal', response.status, await response.text());
+      throw new ToolError('Failed to cancel compute goal', response.status, await response.text(), response.headers.get('retry-after'));
     }
 
     const json = await response.json() as { data: { goal_id: string; status: string; remaining_budget: string } };
@@ -2002,17 +2101,17 @@ export class OneShot {
     this.validate(goalId, 'goalId');
     this.validate(input.task_id, 'task_id');
 
-    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/respond`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/respond`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
       body: JSON.stringify(input)
     });
 
     if (response.status === 404) {
-      throw new ToolError('Goal or task not found', 404, await response.text());
+      throw new ToolError('Goal or task not found', 404, await response.text(), response.headers.get('retry-after'));
     }
     if (!response.ok) {
-      throw new ToolError('Failed to respond to compute task', response.status, await response.text());
+      throw new ToolError('Failed to respond to compute task', response.status, await response.text(), response.headers.get('retry-after'));
     }
 
     const json = await response.json() as { data: { task_id: string; goal_id: string; task_status: string; orchestrator_action: string } };
@@ -2034,13 +2133,13 @@ export class OneShot {
    */
   async confirmComputeGoal(goalId: string, input: { approved: boolean; response?: string }): Promise<{ goal_id: string; status: 'completed' | 'active'; end_reason: string | null; orchestrator_action: string }> {
     this.validate(goalId, 'goalId');
-    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/respond`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/respond`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
       body: JSON.stringify({ confirm_done: input.approved, ...(input.response ? { response: input.response } : {}) }),
     });
-    if (response.status === 404) throw new ToolError('Goal not found', 404, await response.text());
-    if (!response.ok) throw new ToolError('Failed to confirm compute goal', response.status, await response.text());
+    if (response.status === 404) throw new ToolError('Goal not found', 404, await response.text(), response.headers.get('retry-after'));
+    if (!response.ok) throw new ToolError('Failed to confirm compute goal', response.status, await response.text(), response.headers.get('retry-after'));
     const json = await response.json() as { data: { goal_id: string; status: 'completed' | 'active'; end_reason: string | null; orchestrator_action: string } };
     return json.data;
   }
@@ -2056,14 +2155,14 @@ export class OneShot {
   async pauseComputeGoal(goalId: string, reason?: string): Promise<{ goal_id: string; status: string; run_count: number }> {
     this.validate(goalId, 'goalId');
 
-    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/pause`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/pause`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
       body: JSON.stringify({ reason })
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to pause compute goal', response.status, await response.text());
+      throw new ToolError('Failed to pause compute goal', response.status, await response.text(), response.headers.get('retry-after'));
     }
 
     const json = await response.json() as { data: { goal_id: string; status: string; run_count: number } };
@@ -2082,14 +2181,14 @@ export class OneShot {
   async resumeComputeGoal(goalId: string): Promise<{ goal_id: string; status: string; next_run_at: string; run_count: number }> {
     this.validate(goalId, 'goalId');
 
-    const response = await fetch(`${this.baseUrl}/v1/compute/${goalId}/resume`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/resume`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
       body: JSON.stringify({})
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to resume compute goal', response.status, await response.text());
+      throw new ToolError('Failed to resume compute goal', response.status, await response.text(), response.headers.get('retry-after'));
     }
 
     const json = await response.json() as { data: { goal_id: string; status: string; next_run_at: string; run_count: number } };
@@ -2240,12 +2339,12 @@ export class OneShot {
    */
   async spendBreakdown(options?: { period?: number }): Promise<SpendBreakdown> {
     const qs = this.buildQuery({ period: options?.period || undefined });
-    const response = await fetch(`${this.baseUrl}/v1/analytics/spend/breakdown${qs ? `?${qs}` : ''}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/analytics/spend/breakdown${qs ? `?${qs}` : ''}`, {
       headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to get spend breakdown', response.status, await response.text());
+      throw new ToolError('Failed to get spend breakdown', response.status, await response.text(), response.headers.get('retry-after'));
     }
     return response.json() as Promise<SpendBreakdown>;
   }
@@ -2261,12 +2360,12 @@ export class OneShot {
    */
   async rocs(options?: { period?: number }): Promise<RoCSResult> {
     const qs = this.buildQuery({ period: options?.period || undefined });
-    const response = await fetch(`${this.baseUrl}/v1/analytics/rocs${qs ? `?${qs}` : ''}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/analytics/rocs${qs ? `?${qs}` : ''}`, {
       headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to get RoCS', response.status, await response.text());
+      throw new ToolError('Failed to get RoCS', response.status, await response.text(), response.headers.get('retry-after'));
     }
     return response.json() as Promise<RoCSResult>;
   }
@@ -2306,12 +2405,12 @@ export class OneShot {
       since: toIso(options?.since),
       until: toIso(options?.until),
     });
-    const response = await fetch(`${this.baseUrl}/v1/analytics/receipts${qs ? `?${qs}` : ''}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/analytics/receipts${qs ? `?${qs}` : ''}`, {
       headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to list receipts', response.status, await response.text());
+      throw new ToolError('Failed to list receipts', response.status, await response.text(), response.headers.get('retry-after'));
     }
     return response.json() as Promise<ReceiptsListResult>;
   }
@@ -2349,13 +2448,13 @@ export class OneShot {
 
     // Cadence-level: route to the outcome ledger by correlation key.
     if (typeof ref === 'object' && ref.goalId && !ref.receiptId && !ref.requestId) {
-      const response = await fetch(`${this.baseUrl}/v1/analytics/outcomes`, {
+      const response = await this.fetchApi(`${this.baseUrl}/v1/analytics/outcomes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
         body: JSON.stringify({ goal_id: ref.goalId, ...valueTag }),
       });
       if (!response.ok) {
-        throw new ToolError('Failed to record outcome value', response.status, await response.text());
+        throw new ToolError('Failed to record outcome value', response.status, await response.text(), response.headers.get('retry-after'));
       }
       return;
     }
@@ -2363,7 +2462,7 @@ export class OneShot {
     const id = typeof ref === 'string' ? ref : (ref.receiptId ?? ref.requestId);
     this.validate(id, 'receiptId/requestId/goalId');
 
-    const response = await fetch(`${this.baseUrl}/v1/analytics/receipts/${id}/value`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/analytics/receipts/${id}/value`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
       body: JSON.stringify(valueTag)
@@ -2373,7 +2472,7 @@ export class OneShot {
       throw new ToolError('Receipt not found', 404, 'Receipt not found or not owned by this agent');
     }
     if (!response.ok) {
-      throw new ToolError('Failed to tag receipt value', response.status, await response.text());
+      throw new ToolError('Failed to tag receipt value', response.status, await response.text(), response.headers.get('retry-after'));
     }
   }
 
@@ -2396,12 +2495,12 @@ export class OneShot {
    */
   async rocsByGoal(options?: { period?: number; goalId?: string }): Promise<RoCSByGoalResult> {
     const qs = this.buildQuery({ period: options?.period || undefined, goal_id: options?.goalId || undefined });
-    const response = await fetch(`${this.baseUrl}/v1/analytics/rocs/by-goal${qs ? `?${qs}` : ''}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/analytics/rocs/by-goal${qs ? `?${qs}` : ''}`, {
       headers: await this.signedReadHeaders()
     });
 
     if (!response.ok) {
-      throw new ToolError('Failed to get RoCS by goal', response.status, await response.text());
+      throw new ToolError('Failed to get RoCS by goal', response.status, await response.text(), response.headers.get('retry-after'));
     }
     return response.json() as Promise<RoCSByGoalResult>;
   }
@@ -2446,7 +2545,7 @@ export class OneShot {
     const digest = ethers.sha256(ethers.toUtf8Bytes(JSON.stringify(body ?? {}))).slice(2);
     const headers = await this.signedReadHeaders(`staging:${method}:${path}:${digest}`);
     if (!headers['x-agent-proof']) throw new Error('Could not sign staging application');
-    const response = await fetch(`${this.baseUrl}/v1/staging${path}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/staging${path}`, {
       method, headers: { ...headers, 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(10_000),
       ...(body ? { body: JSON.stringify(body) } : {}),
@@ -2482,7 +2581,7 @@ export class OneShot {
     if (this._accessToken) return base;
     try {
       const agent = this.provider.address;
-      const issuedAt = Math.floor(Date.now() / 1000);
+      const issuedAt = Math.floor(Date.now() / 1000) + (domainName === 'OneShot Agent Auth' ? this.proofClockOffsetSec : 0);
       const nonce = ethers.hexlify(ethers.randomBytes(32));
       const signature = await this.provider.signTypedData(
         // `domainName` lets a different origin (e.g. Soul Hunt, which keeps
@@ -2517,6 +2616,41 @@ export class OneShot {
       }
       return base;
     }
+  }
+
+  /** Retry a clock-window refusal once, before the API has dispatched the request.
+   * Only this API's proof clock changes; payments and other services keep their own clocks.
+   * Callers supply replayable JSON bodies and retain their original abort/deadline signal.
+   */
+  private async fetchApi(url: string, init: RequestInit): Promise<Response> {
+    const response = await fetch(url, init);
+    const headers = new Headers(init.headers);
+    const proof = headers.get('x-agent-proof');
+    if (response.status !== 401 || !proof || this._accessToken) return response;
+    const origin = new URL(this.baseUrl).origin;
+    if (new URL(url).origin !== origin || (response.url && new URL(response.url).origin !== origin)) return response;
+
+    let scope: string;
+    let serverTime: number;
+    try {
+      const body = await response.clone().json() as { error?: unknown; message?: unknown; server_time?: unknown } | null;
+      if (body?.error !== 'proof_required' ||
+          !['proof expired', 'proof issued in the future'].some(reason =>
+            body.message === `This endpoint requires a signed agent proof (x-agent-proof): ${reason}`) ||
+          typeof body.server_time !== 'number' || !Number.isSafeInteger(body.server_time) || body.server_time <= 0) return response;
+      const sent = JSON.parse(typeof Buffer !== 'undefined' ? Buffer.from(proof, 'base64').toString('utf-8') : atob(proof));
+      if (typeof sent.scope !== 'string') return response;
+      scope = sent.scope;
+      serverTime = body.server_time;
+    } catch { return response; }
+
+    init.signal?.throwIfAborted();
+    this.proofClockOffsetSec = serverTime - Math.floor(Date.now() / 1000);
+    const refreshed = await this.signedReadHeaders(scope);
+    init.signal?.throwIfAborted();
+    if (!refreshed['x-agent-proof']) return response;
+    headers.set('x-agent-proof', refreshed['x-agent-proof']);
+    return fetch(url, { ...init, headers });
   }
 
   /** Build a query string, skipping null/undefined values. Pass falsy-but-valid
@@ -2557,7 +2691,7 @@ export class OneShot {
 
       let response: Response;
       try {
-        response = await fetch(`${this.baseUrl}/v1/agents/me/budgets`, {
+        response = await this.fetchApi(`${this.baseUrl}/v1/agents/me/budgets`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
           body: JSON.stringify(body),
@@ -2567,7 +2701,7 @@ export class OneShot {
       }
       if (!response.ok) {
         const text = await response.text();
-        throw new BudgetSyncError(`Could not sync spend budget (${response.status}): ${text}`, response.status, text);
+        throw new BudgetSyncError(`Could not sync spend budget (${response.status}): ${text}`, response.status, text, response.headers.get('retry-after'));
       }
       this.log('Budget synced');
     })();
@@ -2616,7 +2750,7 @@ export class OneShot {
    */
   /** Signed-proof JSON request to a free agent route; returns `data`. Errors map through failFromResponse. */
   private async agentJson<T>(path: string, method: string, body?: unknown, scope: 'read' | 'write' = 'read'): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const response = await this.fetchApi(`${this.baseUrl}${path}`, {
       method,
       headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders(scope)) },
       ...(body === undefined || method === 'GET' ? {} : { body: JSON.stringify(body) }),
@@ -2628,11 +2762,11 @@ export class OneShot {
   }
 
   async budgets(): Promise<AgentBudgetStatus> {
-    const response = await fetch(`${this.baseUrl}/v1/agents/me/budgets`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/agents/me/budgets`, {
       headers: await this.signedReadHeaders(),
     });
     if (!response.ok) {
-      throw new ToolError('Failed to fetch budgets', response.status, await response.text());
+      throw new ToolError('Failed to fetch budgets', response.status, await response.text(), response.headers.get('retry-after'));
     }
     const body = await response.json() as { data?: AgentBudgetStatus };
     return (body.data ?? body) as AgentBudgetStatus;
@@ -2658,12 +2792,12 @@ export class OneShot {
    */
   async createAccessToken(opts: { name?: string } = {}): Promise<AccessTokenCreated> {
     this.assertWalletSession('mint access tokens');
-    const response = await fetch(`${this.baseUrl}/v1/agents/me/access-tokens`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/agents/me/access-tokens`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
       body: JSON.stringify(opts.name !== undefined ? { name: opts.name } : {}),
     });
-    if (!response.ok) throw new ToolError('Failed to create access token', response.status, await response.text());
+    if (!response.ok) throw new ToolError('Failed to create access token', response.status, await response.text(), response.headers.get('retry-after'));
     const body = await response.json() as { data: AccessTokenCreated };
     return body.data;
   }
@@ -2671,10 +2805,10 @@ export class OneShot {
   /** List this agent's access tokens (prefix, label, last use, spend today — never the token). */
   async listAccessTokens(opts: { activeOnly?: boolean } = {}): Promise<AccessTokenInfo[]> {
     this.assertWalletSession('list access tokens');
-    const response = await fetch(`${this.baseUrl}/v1/agents/me/access-tokens${opts.activeOnly ? '?active=true' : ''}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/agents/me/access-tokens${opts.activeOnly ? '?active=true' : ''}`, {
       headers: await this.signedReadHeaders(),
     });
-    if (!response.ok) throw new ToolError('Failed to list access tokens', response.status, await response.text());
+    if (!response.ok) throw new ToolError('Failed to list access tokens', response.status, await response.text(), response.headers.get('retry-after'));
     const body = await response.json() as { data: { tokens: AccessTokenInfo[] } };
     return body.data.tokens;
   }
@@ -2683,11 +2817,11 @@ export class OneShot {
   async revokeAccessToken(id: string): Promise<{ id: string; revoked_at: string }> {
     this.assertWalletSession('revoke access tokens');
     this.validate(id, 'id');
-    const response = await fetch(`${this.baseUrl}/v1/agents/me/access-tokens/${encodeURIComponent(id)}`, {
+    const response = await this.fetchApi(`${this.baseUrl}/v1/agents/me/access-tokens/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: await this.signedReadHeaders('write'),
     });
-    if (!response.ok) throw new ToolError('Failed to revoke access token', response.status, await response.text());
+    if (!response.ok) throw new ToolError('Failed to revoke access token', response.status, await response.text(), response.headers.get('retry-after'));
     const body = await response.json() as { data: { id: string; revoked_at: string } };
     return body.data;
   }
@@ -2744,7 +2878,7 @@ export class OneShot {
     if (policy) throw policy;
     const budget = response.status === 403 ? this.parseBudgetRejection(text) : undefined;
     if (budget) throw budget;
-    throw new ToolError(message, response.status, text);
+    throw new ToolError(message, response.status, text, response.headers.get('retry-after'));
   }
 
   /**
@@ -2818,11 +2952,11 @@ export class OneShot {
       throw new ToolError(`Could not resolve the access token's agent (network): ${err}`, 0, String(err));
     }
     if (!response.ok) {
-      throw new ToolError('Could not resolve the access token\'s agent', response.status, await response.text());
+      throw new ToolError('Could not resolve the access token\'s agent', response.status, await response.text(), response.headers.get('retry-after'));
     }
     const json = await response.json() as { data?: { wallet_address?: string } };
     const address = json.data?.wallet_address;
-    if (!address) throw new ToolError('GET /v1/agents/me returned no wallet_address', response.status, JSON.stringify(json));
+    if (!address) throw new ToolError('GET /v1/agents/me returned no wallet_address', response.status, JSON.stringify(json), response.headers.get('retry-after'));
     return address;
   }
 
@@ -2952,7 +3086,7 @@ export class OneShot {
       return await abortable((async () => {
         const headers = signed ? await this.signedReadHeaders() : undefined;
         if (scope.signal.aborted) throw new OneShotError('Read deadline exceeded');
-        const response = await fetch(`${this.baseUrl}${path}`, { headers, signal: scope.signal });
+        const response = await this.fetchApi(`${this.baseUrl}${path}`, { headers, signal: scope.signal });
         if (!response.ok && !(allowDegraded && response.status === 503)) await this.failFromResponse('Reliability read failed', response);
         return await response.json() as T;
       })(), scope.signal);
@@ -2970,7 +3104,7 @@ export class OneShot {
 
   private async executeToolRequest<T>(endpoint: string, options: ToolOptions & Record<string, unknown>, quoteId?: string): Promise<T> {
     // LinkedIn writes act through a human's account and cannot be recalled: always keyed.
-    const reliable = /(?:^|\/)(lookup\/person-(profile|email|email-status)|lookup\/place-permits|solve|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint);
+    const reliable = /(?:^|\/)(lookup\/person-(profile|email|email-status)|lookup\/place-permits|solve|predict|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint);
     const key = options.idempotencyKey ?? (reliable ? ethers.hexlify(ethers.randomBytes(16)) : undefined);
     if (options.totalTimeoutMs !== undefined && (!Number.isFinite(options.totalTimeoutMs) || options.totalTimeoutMs <= 0)) {
       throw new ValidationError('totalTimeoutMs must be positive', 'totalTimeoutMs');
@@ -3010,7 +3144,7 @@ export class OneShot {
         payload.memo = payload.memo.slice(0, 1000);
         this.log('Memo truncated to 1000 chars');
       }
-    } else if (!endpoint.endsWith('/v1/tools/solve') && !endpoint.includes('/inbox') && !endpoint.includes('/notifications') && !endpoint.includes('/balance')) {
+    } else if (!endpoint.endsWith('/v1/tools/solve') && !endpoint.endsWith('/v1/tools/predict') && !endpoint.includes('/inbox') && !endpoint.includes('/notifications') && !endpoint.includes('/balance')) {
       this.log('No memo provided — consider adding a reason for audit trail');
     }
 
@@ -3040,7 +3174,7 @@ export class OneShot {
     let response = await this.makeRequest(endpoint, payload, undefined, quoteId, signal, undefined, extraHeaders);
 
     // Handle 402 Payment Required
-    if (response.status === 402 && /\/v1\/tools\/(solve|find\/person|lookup\/person-(profile|dossier))$/.test(endpoint)) {
+    if (response.status === 402 && /\/v1\/tools\/(solve|predict|find\/person|lookup\/person-(profile|dossier))$/.test(endpoint)) {
       ({ execResp: response } = await this.runQuoteToPay<{ quote_id: string; total: string }>({
         endpoint, payload, signal, maxCost, quoteResponse: response, extraHeaders,
         expectMsg: 'Expected a tool quote', totalOf: quote => quote.total,
@@ -3213,6 +3347,15 @@ export class OneShot {
    * `wait: false`, or to resume waiting after a client restart. Delivery is the
    * same as for blocking calls: WebSocket push when the server offers it, HTTP
    * polling of `GET /v1/requests/:id` as the source of truth.
+   * For compute goals, use `waitForComputeGoal(goal_id)` instead: their creation
+   * request_id does not track progress. `onStatusUpdate` observes distinct job
+   * statuses, including the terminal status before settlement.
+   * With waitForPhones, completed is deferred until the phone wait returns.
+   * Callback errors are ignored; returned promises are not awaited.
+   *
+   * `signal` ends the local wait only (in-flight fetch aborted, poll timer
+   * cleared, rejects with `OneShotError('Operation cancelled')`); the job
+   * itself keeps running and can be waited for again.
    */
   async waitForResult<T = Record<string, unknown>>(
     requestId: string,
@@ -3247,17 +3390,28 @@ export class OneShot {
     // swallows frames) costs nothing beyond the poll cadence. Previously the
     // client waited 60% of its timeout on the socket before polling at all —
     // in prod that was ~72s of dead air on every call while the push never came.
+    // An already-aborted signal ends the wait before any proof is signed or sent.
+    if (signal?.aborted) throw new OneShotError('Operation cancelled');
     const inner = new AbortController();
     const onOuterAbort = () => inner.abort();
     if (signal?.aborted) inner.abort();
     else signal?.addEventListener('abort', onOuterAbort, { once: true });
 
     const wait: JobWaitState = { pushConfirmed: false, lastStatus: undefined, via: undefined };
-    // Two sources now report status; only surface changes to the caller.
+    const notify = (status: string) => {
+      // Progress observers must not alter job outcomes or trigger HTTP retries.
+      try {
+        Promise.resolve(onStatusUpdate?.(status, requestId)).catch(() => {});
+      } catch { /* Ignore synchronous observer errors too. */ }
+    };
+    // Latch terminal transport status immediately, but defer completion for
+    // callers waiting on phones so the losing branch cannot emit stale states.
     const emit = (status: string) => {
+      if (wait.lastStatus === 'completed' || wait.lastStatus === 'failed') return;
       if (status === wait.lastStatus) return;
       wait.lastStatus = status;
-      onStatusUpdate?.(status, requestId);
+      if (status === 'completed' && phoneOpts?.waitForPhones) return;
+      notify(status);
     };
     const startedAt = Date.now();
 
@@ -3294,13 +3448,14 @@ export class OneShot {
     // hit a transient error before any successful refresh, we return what we
     // already have (with phones_pending=true still set so consumers know).
     if (phoneOpts?.waitForPhones && this._isPhonesPending(result)) {
-      return this._pollForPhones<T>(
+      result = await this._pollForPhones<T>(
         requestId,
         phoneOpts.phoneTimeoutSec ?? 360,
         signal,
         result,
       );
     }
+    if (phoneOpts?.waitForPhones) notify('completed');
     return result;
   }
 
@@ -3349,7 +3504,7 @@ export class OneShot {
     while (Date.now() < deadline) {
       if (signal?.aborted) throw new OneShotError('Operation cancelled');
       try {
-        const resp = await fetch(`${this.baseUrl}/v1/requests/${requestId}`, {
+        const resp = await this.fetchApi(`${this.baseUrl}/v1/requests/${requestId}`, {
           headers: await this.signedReadHeaders(),
           signal,
         });
@@ -3357,7 +3512,7 @@ export class OneShot {
           // Soft-fail on transient errors during the phone wait — return
           // whatever we last had so consumers don't lose the sync result.
           if (lastResult !== undefined) return lastResult;
-          throw new ToolError('Failed to check job status', resp.status, await resp.text());
+          throw new ToolError('Failed to check job status', resp.status, await resp.text(), resp.headers.get('retry-after'));
         }
         const job = await resp.json() as Record<string, unknown>;
         lastResult = (job.result ?? job) as T;
@@ -3365,6 +3520,7 @@ export class OneShot {
           return lastResult;
         }
       } catch (err) {
+        if (signal?.aborted) throw new OneShotError('Operation cancelled');
         if (err instanceof OneShotError) throw err;
         if (lastResult !== undefined) return lastResult;
         throw err;
@@ -3472,6 +3628,7 @@ export class OneShot {
             this.log('WebSocket push confirmed — relaxing HTTP polling');
           }
 
+          emit(String(msg.status));
           if (msg.status === 'completed') {
             this.log('Job completed (WebSocket)');
             settle(() => {
@@ -3489,8 +3646,6 @@ export class OneShot {
               wait.via = 'ws';
               reject(new JobError(`Job failed: ${msg.error ?? 'Unknown'}`, requestId, String(msg.error ?? 'Unknown'), msg.error_code as string | undefined, msg.result as Record<string, unknown> | undefined));
             });
-          } else {
-            emit(String(msg.status));
           }
         } catch {
           // Ignore malformed messages
@@ -3526,6 +3681,8 @@ export class OneShot {
     try { return await abortable(this.pollJobHttpImpl<T>(requestId, timeoutSec, scope.signal, emit, wait), scope.signal); }
     catch (error) {
       if (scope.timedOut()) throw new JobTimeoutError(requestId, Date.now() - started);
+      // An abort mid-fetch surfaces as the transport's AbortError; report it as the cancellation it is.
+      if (signal?.aborted && !(error instanceof OneShotError)) throw new OneShotError('Operation cancelled');
       throw error;
     } finally { scope.close(); }
   }
@@ -3547,7 +3704,7 @@ export class OneShot {
       if (signal?.aborted) throw new OneShotError('Operation cancelled');
 
       try {
-        const resp = await fetch(`${this.baseUrl}/v1/requests/${requestId}`, {
+        const resp = await this.fetchApi(`${this.baseUrl}/v1/requests/${requestId}`, {
           headers: await this.signedReadHeaders(),
           signal
         });
@@ -3559,11 +3716,12 @@ export class OneShot {
           if (resp.status >= 500 || resp.status === 429) {
             throw new Error(`Poll returned ${resp.status}: ${body.slice(0, 200)}`);
           }
-          throw new ToolError('Failed to check job status', resp.status, body);
+          throw new ToolError('Failed to check job status', resp.status, body, resp.headers.get('retry-after'));
         }
 
         const job = await resp.json() as Record<string, unknown>;
 
+        emit?.(String(job.status));
         if (job.status === 'completed') {
           this.log('Job completed');
           if (wait) wait.via = 'http';
@@ -3584,7 +3742,6 @@ export class OneShot {
           throw new JobError(`Job failed: ${job.error ?? 'Unknown'}`, requestId, String(job.error ?? 'Unknown'), job.error_code as string | undefined, job.result as Record<string, unknown> | undefined);
         }
 
-        emit?.(String(job.status));
         retries = 0;
         const interval = wait?.pushConfirmed
           ? HTTP_POLL_RELAXED_MS
@@ -3688,7 +3845,7 @@ export class OneShot {
     // alone (401 proof_required).
     const unsignedStub = payment?.payload?.signature === '0x';
     const askedForProof = !!extraHeaders?.['x-agent-proof'];
-    const proofScope = /(lookup\/person-(profile|email|email-status)|lookup\/place-permits|physical-mail\/send|solve)$/.test(endpoint)
+    const proofScope = /(lookup\/person-(profile|email|email-status)|lookup\/place-permits|physical-mail\/send|solve|predict)$/.test(endpoint)
       ? 'submit'
       : askedForProof ? 'read' : 'write';
     const headers: Record<string, string> = {
@@ -3715,7 +3872,7 @@ export class OneShot {
     // through response-body consumption; cleanup occurs when it expires/aborts.
     transportDeadline?.signal.addEventListener('abort', () => transportDeadline.close(), { once: true });
     if (fetchSignal?.aborted) throw new OneShotError('Operation cancelled');
-    const work = fetch(`${this.baseUrl}${endpoint}`, {
+    const work = this.fetchApi(`${this.baseUrl}${endpoint}`, {
       method: 'POST', headers, body: JSON.stringify(data), signal: fetchSignal,
     });
     try { return await (fetchSignal ? abortable(work, fetchSignal) : work); }
@@ -3889,7 +4046,7 @@ export class OneShot {
       resp = await this.makeRequest(endpoint, data, signed.auth, quoteId, signal, timeoutMs, extraHeaders);
     } catch (err) {
       // Keyed writes may already be queued server-side after a transport failure: keep the reservation.
-      if (!/(lookup\/person-(profile|email|email-status)|lookup\/place-permits|physical-mail\/send|solve|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
+      if (!/(lookup\/person-(profile|email|email-status)|lookup\/place-permits|physical-mail\/send|solve|predict|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
       throw err;
     }
     if (!resp.ok && !(extraHeaders?.['Idempotency-Key'] && resp.status >= 500)) this.releaseUsdcReservation(signed.reservation);

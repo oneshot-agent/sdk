@@ -6,10 +6,20 @@ export function deadlineScope(outer?: AbortSignal, timeoutMs?: number): Deadline
   const cancel = () => controller.abort(outer?.reason);
   if (outer?.aborted) cancel();
   else outer?.addEventListener('abort', cancel, { once: true });
-  const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
-    timedOut = true;
-    controller.abort(new Error('Deadline exceeded'));
-  }, timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Native timers overflow above ~24.8 days. Infinity means no deadline;
+  // finite deadlines use bounded chunks without shortening the caller's wait.
+  if (timeoutMs !== undefined && timeoutMs !== Infinity) {
+    const deadline = Date.now() + (Number.isNaN(timeoutMs) ? 0 : Math.max(0, timeoutMs));
+    const schedule = () => {
+      timer = setTimeout(() => {
+        if (Date.now() < deadline) { schedule(); return; }
+        timedOut = true;
+        controller.abort(new Error('Deadline exceeded'));
+      }, Math.min(2_147_483_647, Math.max(0, deadline - Date.now())));
+    };
+    schedule();
+  }
   return {
     signal: controller.signal,
     timedOut: () => timedOut,

@@ -133,9 +133,10 @@ mainnet only. CDP wallets are not supported in ETH mode: `cdp` combined with
 | `resumeDomain()` | Put a paused domain back into rotation |
 | **Research & People** | |
 | `research()` | Deep web research |
+| `predict(input)` | Simulate uncertain outcomes or forecast a time series with uncertainty ranges and consistency checks |
 | `solve(input)` | Solve a routing or packing problem with constraint checks and conflicts; `solution` is typed by `problem` |
 | `personFind()` | Search people by criteria |
-| `personProfile()` | Enrich from LinkedIn/email |
+| `personProfile()` | Enrich from name+company, email, phone or a LinkedIn/X/GitHub URL |
 | `personEmail()` | Find email for a person |
 | `personEmailStatus()` | Verify email deliverability |
 | `companyFind()` | Search companies by name, domain, industry, location, size, funding |
@@ -169,6 +170,7 @@ mainnet only. CDP wallets are not supported in ETH mode: `cdp` combined with
 | **Compute (Agentic Goals)** | |
 | `compute()` | Launch autonomous multi-step goal |
 | `getComputeGoal()` | Get goal status and progress |
+| `waitForComputeGoal()` | Wait for a goal with optional status callbacks |
 | `getComputeTasks()` | List tasks for a goal |
 | `getComputeOutputs()` / `getComputeOutput()` | List what a goal's tasks produced, and read one output by key |
 | `getComputeBudget()` | Check remaining budget for a goal |
@@ -271,6 +273,8 @@ Every request identifies you by your wallet address (`X-Agent-ID`). Paid tools a
 
 This is fully automatic — you don't do anything beyond providing your `privateKey`. **Requires SDK ≥ 0.25.0.** Older SDKs (or raw HTTP callers) will keep working until the API enables enforcement, after which they must send a valid `x-agent-proof`; upgrade to stay ahead of it.
 
+If the API rejects a proof as expired or future-dated with `401 proof_required` and a valid `server_time`, the TypeScript SDK corrects this client's API proof clock and retries once with a fresh nonce and the same scope. Subsequent proofs use that correction. A second refusal or any other authentication error is returned to the caller. Access-token sessions do not sign or retry proofs; payment timestamps and other services' proof clocks are unchanged. This recovery requires a release containing the #2240 fix; SDK 0.53.1 does not include it.
+
 ### Access tokens (credits-only sessions)
 
 Some code can't hold your wallet key — a hosted MCP client such as Grok Bot, a cloud
@@ -310,6 +314,48 @@ interface ToolOptions {
   onStatusUpdate?: (status: string, requestId: string) => void;
 }
 ```
+
+### Compute polling progress
+
+`compute()` returns a `goal_id`. Use `waitForComputeGoal` to observe its progress
+through the existing goal-status endpoint without a second polling loop. Its
+creation `request_id` is an accounting job and does not track compute progress.
+
+```typescript
+const goal = await agent.compute({ objective: 'Research battery recycling', budget_usdc: 5 });
+const result = await agent.waitForComputeGoal(goal.goal_id, {
+  timeout: 300,
+  onStatusUpdate: (status, goalId) => {
+    console.log(`${goalId}: ${status}`);
+  },
+});
+```
+
+The optional, exported `ComputeStatusUpdateFn` callback receives the first observed
+status and each change from `getComputeGoal`. Consecutive identical statuses are
+suppressed. `completed` is delivered before resolving with the full goal snapshot;
+`failed` or `cancelled` is delivered before rejecting with `JobError`, whose
+`jobId` is the goal ID, `code` is its `end_reason` (or status), and `partialResult`
+contains the snapshot. Callback throws and rejected promises are ignored, and
+async callbacks are not awaited. Omitting the callback preserves these outcomes.
+
+`failed` ends the current wait, but `end_reason: 'budget_exhausted'` can be
+reversed by funding. After `fundComputeGoal(goalId, amount)` succeeds, call
+`waitForComputeGoal(goalId, options)` again with the same goal ID to observe the
+revived goal. The rejected wait does not resume automatically.
+
+Status strings come directly from the API: goals currently use `active`,
+`awaiting_confirmation`, `paused`, `completed`, `failed`, and `cancelled`, rather
+than job queue/running states. Intermediate changes may be missed between polls.
+`awaiting_confirmation` requires the owner's decision through `confirmComputeGoal`;
+`paused` goals require resumption. Neither ends the wait. Recurring goals are
+observed until the overall goal ends, not just one run. The timeout defaults to
+120 seconds and rejects with `JobTimeoutError`; `Infinity` disables the local
+deadline, and longer finite timeouts retain their full duration. An optional `signal` cancels the
+wait. Timeout or cancellation stops local polling without cancelling the goal.
+Transient goal reads (HTTP 5xx, 429, and network failures) retry on the existing
+300 ms, 600 ms, 1 s, then 2 s polling cadence until the deadline or cancellation.
+Other errors, including 401, 403, and 404, reject immediately.
 
 ### `maxCost` Support
 
@@ -411,6 +457,33 @@ try {
   }
 }
 ```
+
+### Retry timing for HTTP errors
+
+`ToolError.retryAfterMs` and `BudgetSyncError.retryAfterMs` expose the server's
+`Retry-After` header as an optional delay in milliseconds. Non-negative integer
+seconds are multiplied by 1,000; HTTP dates (including the two legacy formats)
+are measured against the client's clock when the error is constructed. Expired
+dates yield `0`. Missing, malformed, or numerically unsafe values yield
+`undefined`. Existing status (`statusCode` on `ToolError`, `status` on
+`BudgetSyncError`) and `responseBody` fields are preserved.
+
+```typescript
+try {
+  await agent.webSearch({ query: 'latest news' });
+} catch (error) {
+  if (error instanceof ToolError && error.statusCode === 429) {
+    console.log('Retry delay in ms:', error.retryAfterMs);
+    // Schedule a later call according to your application's retry policy.
+  }
+  throw error;
+}
+```
+
+This field is metadata: the SDK does not automatically retry a throttled tool
+submission or read. Existing job-status polling remains unchanged; a
+`JobError.code` of `rate_limited` describes a failed job and does not itself
+provide an HTTP retry delay.
 
 ### Job error codes
 
@@ -771,11 +844,48 @@ The signal **cannot** cancel:
 - Operations after payment is signed (call/SMS will still execute)
 - Server-side job execution
 
+#### Stopping a wait for a result
+
+`waitForResult(requestId, { signal })` stops **local** waiting when the signal aborts, for example when the HTTP request or UI interaction that started the wait ends. It rejects with `OneShotError('Operation cancelled')`:
+
+- an already-aborted signal rejects at once, without signing a read proof, polling or opening a WebSocket;
+- aborting while a poll is in flight aborts that `fetch` (and closes the WebSocket);
+- aborting between polls clears the pending poll timer, so no further request is sent.
+
+A blocking paid call (`wait` left on) also stops polling when its `signal` aborts. The error depends on the method:
+
+- `commerceBuy`, `voice`, `sms`, `build`, `refineBuild`, `updateBuild` and `browser` poll directly and reject with `OneShotError('Operation cancelled')`;
+- the other blocking calls (e.g. `research`, `solve`, `email` and the lookup tools) reject with the signal's `reason` (a `DOMException` named `AbortError` for a plain `controller.abort()`), not `OneShotError`.
+
+Handle both if you cancel blocking calls.
+
+The job keeps running on the server and is still billed as normal. Call `waitForResult(requestId)` again later to pick up its result. For compute goals, use `cancelComputeGoal()` to stop the work itself.
+
+```typescript
+// Inside an Express handler. Listen on the *response* before any awaited work:
+// `req` 'close' fires once the request body is read, not when the caller leaves.
+const controller = new AbortController();
+const onClose = () => { if (!res.writableEnded) controller.abort(); }; // the caller went away
+res.on('close', onClose);
+
+try {
+  const { request_id } = await agent.research({ topic: 'EU battery regulation', wait: false });
+  const report = await agent.waitForResult(request_id, { timeout: 300, signal: controller.signal });
+  res.json(report);
+} catch (error) {
+  if (error instanceof OneShotError && error.message === 'Operation cancelled') {
+    // Stopped waiting locally; request_id can be resumed later.
+  } else throw error;
+} finally {
+  res.off('close', onClose);
+}
+```
+
 ## Links
 
 - [Documentation](https://docs.oneshotagent.com)
 - [MCP Server](https://www.npmjs.com/package/@oneshot-agent/mcp-server) — Claude Desktop, Cursor, Claude Code (local), or the hosted endpoint at `https://win.oneshotagent.com/mcp` with an access token
-- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 51 tools plus the lookup tools as LangChain BaseTool
+- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/) — 52 tools plus the lookup tools as LangChain BaseTool
 - [Python SDK (Core)](https://pypi.org/project/oneshot-python/) — HTTP client with x402 payments
 - [Pricing](https://docs.oneshotagent.com/pricing)
 - [GitHub](https://github.com/oneshot-agent/sdk)
@@ -797,3 +907,6 @@ const dossier = await agent.personDossier({ email: 'jane@example.com', includePh
 ```
 
 `waitForPhones` waits for pending callbacks; it does not purchase phones by itself. On timeout the latest result can still have `phones_pending: true`.
+With `waitForPhones: true`, `onStatusUpdate('completed', requestId)` is delivered
+after the phone wait returns, immediately before the result resolves. It means
+the local wait finished; check `phones_pending` to see whether phones arrived.
