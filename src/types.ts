@@ -271,13 +271,14 @@ export interface ToolOptions {
 }
 
 export interface EmailToolOptions extends ToolOptions {
-  /** Required unless reply_to_email_id is set (defaults to the inbound sender). */
+  /** Required unless reply_to_email_id is set (defaults to the other party). */
   to?: string | string[];
   /** Required unless reply_to_email_id is set (defaults to "Re: <original subject>"). */
   subject?: string;
   body: string;
   /**
-   * Reply within a thread: id of an inbound email (from inbox()/inboxGet()).
+   * Reply within a thread: id of an inbound email (from inbox()/inboxGet()),
+   * or one this agent sent.
    * The server resolves In-Reply-To/References headers and thread_id, and
    * derives to/subject when omitted.
    */
@@ -2403,4 +2404,29 @@ export interface LinkedInExperienceEntry {
   /** Derived: false when `end` is set; otherwise LinkedIn's flag, or (when LinkedIn gives none) true when `start` is set. */
   current: boolean;
   location: string | null;
+}
+/** Stateless tool search. Pass a category page's cursor with the same category/query. */
+export interface DiscoverToolsOptions { query?: string; category?: string; cursor?: string }
+export type DiscoverToolsResult =
+  | { kind: 'error'; error: string }
+  | { kind: 'directory'; categories: { category: string; label: string; count: number }[] }
+  | { kind: 'tools'; tools: { name: string; purpose: string; requiredInputs: string[] }[];
+      nextCursor: string | null; message?: string; searchedCategories?: string[] };
+
+/** One of the agent's connections (`GET /v1/connections`, #2403). A read of a connected system takes its `id` as `connection_id`. */
+export interface AgentConnection {
+  id: string;
+  name: string;
+  kind: 'github' | 'app';
+  /** Business system id (`quickbooks`, `hubspot`, `shipengine`, ...); null for GitHub. */
+  system: string | null;
+  /** Company, organization or instance name, when available: tells apart several connections to one system. */
+  account_label: string | null;
+  /** Only an `active` connection can be read. */
+  status: 'pending' | 'active' | 'expired' | 'revoked';
+  scope: { repositories: string[]; accountId?: string; oauthScopes?: string[] };
+  credential?: 'stored';
+  created_at: string;
+  activated_at: string | null;
+  revoked_at: string | null;
 }

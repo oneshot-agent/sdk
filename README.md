@@ -39,6 +39,7 @@ Paid calls quote, pay and wait for the result. You write one line.
 | [Think](https://docs.oneshotagent.com/api-reference/research) | `research` `predict` `solve` |
 | [Web and buying](https://docs.oneshotagent.com/api-reference/web-search) | `webSearch` `webRead` `productFind` `commerceBuy` `physicalMail` |
 | [Browser](https://docs.oneshotagent.com/api-reference/browser/create) | `browser` `createBrowserProfile` `startBrowserProfileSetup` `createBrowserProfileSetupLink` `getBrowserProfileSetup` `finishBrowserProfileSetup` `listBrowserProfiles` `deleteBrowserProfile` |
+| [Connected systems](https://docs.oneshotagent.com/api-reference/connections/overview) | `listConnections`, then `route('POST', '/v1/tools/ledger/invoices', { paid: true, body: { connection_id } })` for each read |
 | [LinkedIn](https://docs.oneshotagent.com/api-reference/linkedin/overview) | `linkedinConnect` `linkedinInvite` `linkedinWithdrawInvitation` `linkedinMessage` `linkedinReply` `reconnectLinkedInAccount` and more |
 | [Build](https://docs.oneshotagent.com/api-reference/build/create) | `build` `updateBuild` |
 | [Goals](https://docs.oneshotagent.com/api-reference/compute/create) | `compute` `waitForComputeGoal` `getComputeGoal` `getComputeTasks` `getComputeOutputs` `respondToComputeTask` `pauseComputeGoal` `resumeComputeGoal` `cancelComputeGoal` `fundComputeGoal` |
@@ -183,6 +184,11 @@ const done = await agent.waitForComputeGoal(goal.goal_id, {
   A session that expired comes back with `reconnectLinkedInAccount`; a deleted
   account throws `LinkedInConnectRequiredError` and needs `linkedinConnect` again.
   Reuse your idempotency key on retries. [Details](https://docs.oneshotagent.com/api-reference/linkedin/overview).
+- **Connected systems.** The reads of your accounting, CRM, tax, shipping and spend
+  systems have no typed method: call them with `route('POST', <path>, { paid: true, body })`.
+  Each takes `connection_id`; `listConnections()` lists the agent's connections, pick one by
+  `system` and `account_label`. Another agent's connection is refused before payment.
+  [Details](https://docs.oneshotagent.com/api-reference/connections/overview).
 - **Physical mail.** U.S. letters and postcards. Look at the proof and the price,
   then approve each quote yourself. Nothing approves it for you. Persist the
   `idempotencyKey` before `send`. [Details](https://docs.oneshotagent.com/api-reference/physical-mail/overview).
@@ -191,10 +197,18 @@ const done = await agent.waitForComputeGoal(goal.goal_id, {
 
 - [Documentation](https://docs.oneshotagent.com)
 - [MCP Server](https://www.npmjs.com/package/@oneshot-agent/mcp-server): local, or hosted at `https://win.oneshotagent.com/mcp` with an access token
-- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/): 52 tools plus the lookup tools as LangChain BaseTool
+- [Python SDK (LangChain)](https://pypi.org/project/langchain-oneshot/): 54 tools plus the lookup tools as LangChain BaseTool
 - [Python SDK (Core)](https://pypi.org/project/oneshot-python/)
 - [Pricing](https://docs.oneshotagent.com/pricing)
 - [GitHub](https://github.com/oneshot-agent/sdk)
+
+## Discover tools
+
+`await agent.discoverTools({ query: "send a printed letter" })` searches the public
+catalog for free. Omit options for category counts, or pass `{ category: "email" }`
+to browse five tools at a time. Pass `nextCursor` as `cursor` with the same query
+and category. Results use MCP names and include purposes and required inputs;
+your token grants filter the catalog before search.
 
 ## License
 

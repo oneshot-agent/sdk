@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.58.0
+
+- Add public tool discovery and connected-system reads across SDK and framework adapters.
+- Add connections listing, vehicle fuel economy and compound hazard lookup tools.
+- Allow email replies to reference an agent-owned sent email.
+
 ## 0.57.0
 
 - Add caller identity and shared voice-stack options to voice calls.

@@ -43,7 +43,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.57.0';
+const SDK_VERSION = '0.58.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -1764,6 +1764,28 @@ export class OneShot {
     if (!response.ok) {
       throw new ToolError('Failed to mark notification as read', response.status, await response.text(), response.headers.get('retry-after'));
     }
+  }
+
+  /**
+   * The agent's connections (#2403): GitHub and business systems, each with `id`, `system`, `account_label` and
+   * `status`. Free. A connected-system read (ledger, CRM, shipping, tax, procurement) takes the `id` of an active
+   * one as `connection_id`; pick it by `system` and `account_label`, then call the read with the generic
+   * {@link OneShot.route}.
+   *
+   * @example
+   * ```typescript
+   * const books = (await agent.listConnections()).find((c) => c.system === 'quickbooks' && c.status === 'active');
+   * const invoices = await agent.route('POST', '/v1/tools/ledger/invoices', { paid: true, body: { connection_id: books!.id, status: 'open' } });
+   * ```
+   */
+  async listConnections(): Promise<import('./types').AgentConnection[]> {
+    const data = await this.route<{ connections: import('./types').AgentConnection[] }>('GET', '/v1/connections');
+    return data.connections;
+  }
+
+  /** Free, grant-filtered search over the public tool catalog. */
+  async discoverTools(options: import('./types').DiscoverToolsOptions = {}): Promise<import('./types').DiscoverToolsResult> {
+    return this.route('GET', '/v1/tools/discover', { query: { ...options }, paid: false });
   }
 
   async getUnifiedBalance(): Promise<UnifiedBalance> {
