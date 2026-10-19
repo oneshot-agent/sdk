@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.57.0
+
+- Add caller identity and shared voice-stack options to voice calls.
+- Return call outcomes, recordings, and transcripts in voice results.
+- Wait for calls to finish by default, with duration-aware polling timeouts.
+
 ## 0.56.0
 
 - Add Predict simulation and forecast models across the SDK and adapters.

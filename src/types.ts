@@ -522,9 +522,11 @@ export interface VoiceCallOptions extends ToolOptions {
   target_number: string | string[];
   /** Optional persona for the OneShot Agent caller */
   caller_persona?: string;
+  /** Name the call speaks as: the person or agent it is made for (max 100 characters) */
+  caller_name?: string;
   /** Additional context about the call */
   context?: string;
-  /** Maximum call duration in minutes (1-30) */
+  /** Maximum call duration in minutes (1-30). Without `timeout`, the SDK waits this long (default 10) plus 2 minutes. */
   max_duration_minutes?: number;
 }
 
@@ -1066,6 +1068,14 @@ export interface VoiceQuote {
   expires_at: string;
 }
 
+export type VoiceCallOutcome =
+  | 'reached_person'
+  | 'voicemail_left'
+  | 'no_answer'
+  | 'refused'
+  | 'phone_menu_dead_end'
+  | 'wrong_number';
+
 export interface VoiceCallResult {
   request_id?: string;
   /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
@@ -1077,6 +1087,10 @@ export interface VoiceCallResult {
   summary?: string;
   success_evaluation?: string;
   structured_data?: Record<string, unknown>;
+  /** How the call ended. Null when the call report does not say. */
+  outcome?: VoiceCallOutcome | null;
+  /** Url of the call recording, or null when there is none. */
+  recording_url?: string | null;
   memo?: string;
   cost?: number;
   credit_issued?: number;

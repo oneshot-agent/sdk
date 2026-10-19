@@ -43,7 +43,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.56.0';
+const SDK_VERSION = '0.57.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -896,6 +896,7 @@ export class OneShot {
     };
 
     if (options.caller_persona) payload.caller_persona = options.caller_persona;
+    if (options.caller_name) payload.caller_name = options.caller_name;
     if (options.context) payload.context = options.context;
     if (options.max_duration_minutes) payload.max_duration_minutes = options.max_duration_minutes;
 
@@ -928,7 +929,9 @@ export class OneShot {
     this.log(`Call initiated: ${result.request_id}`);
 
     if (options.wait !== false && result.request_id) {
-      return this.pollJob(result.request_id, options.timeout ?? 300, options.signal, options.onStatusUpdate);
+      // Wait for the longest the call may run, plus two minutes to dial and settle.
+      const timeout = options.timeout ?? (options.max_duration_minutes ?? 10) * 60 + 120;
+      return this.pollJob(result.request_id, timeout, options.signal, options.onStatusUpdate);
     }
     return result as VoiceCallResult;
   }
