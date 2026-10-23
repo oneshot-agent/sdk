@@ -75,11 +75,12 @@ const agent = await OneShot.create({
 a cloud runner, someone else's platform.
 
 ```typescript
-const { token } = await agent.createAccessToken({ name: 'grok-bot' }); // from the wallet session
+const { token } = await agent.createAccessToken({ name: 'hosted-agent', expires_in_days: 30 }); // from the wallet session
 const hosted = await OneShot.create({ accessToken: token });
 await hosted.webSearch({ query: '…' }); // paid from credits
 ```
 
+- Optional `expires_in_days` is a positive whole number of days. An organization cap requires it within the cap (`400 token_lifetime_exceeds_policy`). Expired tokens return `401 access_token_expired`. Lists include `expires_at` and `created_by`; OAuth bridge tokens are exempt from the cap.
 - A token spends prepaid credits only. It never signs a payment.
 - Short of credits, it throws `InsufficientCreditsError` (`required`, `balance`,
   `shortfall`). Top up from the wallet session with `topUpCredits(amount)`.

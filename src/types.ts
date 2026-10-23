@@ -140,6 +140,8 @@ export interface AgentBudgetConfig {
 
 /** A freshly minted access token. `token` is shown once and never stored server-side. */
 export interface AccessTokenCreated {
+  expires_at: string | null;
+  created_by: string | null;
   id: string;
   token: string;
   token_prefix: string;
@@ -149,6 +151,8 @@ export interface AccessTokenCreated {
 
 /** One row of GET /v1/agents/me/access-tokens. Never carries the token itself. */
 export interface AccessTokenInfo {
+  expires_at: string | null;
+  created_by: string | null;
   id: string;
   token_prefix: string;
   name: string | null;

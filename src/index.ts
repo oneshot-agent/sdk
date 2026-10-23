@@ -43,7 +43,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.58.0';
+const SDK_VERSION = '0.59.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -2815,12 +2815,12 @@ export class OneShot {
    * // hand `token` to the hosted client; it uses OneShot.create({ accessToken: token })
    * ```
    */
-  async createAccessToken(opts: { name?: string } = {}): Promise<AccessTokenCreated> {
+  async createAccessToken(opts: { name?: string; expires_in_days?: number } = {}): Promise<AccessTokenCreated> {
     this.assertWalletSession('mint access tokens');
     const response = await this.fetchApi(`${this.baseUrl}/v1/agents/me/access-tokens`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
-      body: JSON.stringify(opts.name !== undefined ? { name: opts.name } : {}),
+      body: JSON.stringify({ ...(opts.name !== undefined ? { name: opts.name } : {}), ...(opts.expires_in_days !== undefined ? { expires_in_days: opts.expires_in_days } : {}) }),
     });
     if (!response.ok) throw new ToolError('Failed to create access token', response.status, await response.text(), response.headers.get('retry-after'));
     const body = await response.json() as { data: AccessTokenCreated };
@@ -3869,6 +3869,11 @@ export class OneShot {
     // '0x'). It proves nothing, and the API refuses to spend credits on it
     // alone (401 proof_required).
     const unsignedStub = payment?.payload?.signature === '0x';
+    // Identity Verification (#2405) answers a retry from the start its key already made, before payment, and
+    // only for a caller that proves the wallet: its payment leg carries the agent proof too, however the key was
+    // given (an option, or the idempotency_key body field the generated MCP tool sends). The API refuses a
+    // payment signature alone there with agent_proof_required. Same list as oneshot-python.
+    const provenPayment = /(?:^|\/)identity\/start$/.test(endpoint);
     const askedForProof = !!extraHeaders?.['x-agent-proof'];
     const proofScope = /(lookup\/person-(profile|email|email-status)|lookup\/place-permits|physical-mail\/send|solve|predict)$/.test(endpoint)
       ? 'submit'
@@ -3877,7 +3882,7 @@ export class OneShot {
       'Content-Type': 'application/json',
       ...this.headers(),
       ...(extraHeaders ?? {}),
-      ...(askedForProof || !payment || unsignedStub ? await this.signedReadHeaders(proofScope) : {})
+      ...(askedForProof || !payment || unsignedStub || provenPayment ? await this.signedReadHeaders(proofScope) : {})
     };
     // 'required' is this SDK's own marker for "sign this leg"; never send it as a proof.
     if (headers['x-agent-proof'] === 'required') delete headers['x-agent-proof'];

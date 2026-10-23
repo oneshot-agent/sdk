@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.59.0
+
+- Support access-token expiry and approval context for Identity Verification.
+- Sign Identity Verification payment requests so retries retain the caller identity.
+
 ## 0.58.0
 
 - Add public tool discovery and connected-system reads across SDK and framework adapters.
