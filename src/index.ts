@@ -1,4 +1,6 @@
 import { Hunts } from './hunts';
+import type { DurableRecoveryEndpoint, RecoveryEndpoint, RecoveryResponse } from './recovery';
+export type { RecoveryEndpoint, RecoveryResponse } from './recovery';
 import type { SolveOptions, SolveResultFor } from './solve';
 export * from './solve';
 import type { PredictOptions, PredictPendingResult, PredictResultFor } from './predict';
@@ -3159,7 +3161,10 @@ export class OneShot {
     } finally { scope.close(); }
   }
 
-  async recoverRequest(options: { endpoint: 'lookup/person-profile' | 'lookup/person-email' | 'lookup/person-email-status' | 'lookup/place-permits'; idempotencyKey: string }): Promise<{ request_id: string; receipt_id: string; status: string; settlement_status: string }> {
+  /** Recover a durable submission or generic keyed result without another quote or payment. */
+  async recoverRequest(options: { endpoint: DurableRecoveryEndpoint; idempotencyKey: string }): Promise<{ request_id: string; receipt_id: string; status: string; settlement_status: string }>;
+  async recoverRequest(options: { endpoint: RecoveryEndpoint; idempotencyKey: string }): Promise<RecoveryResponse>;
+  async recoverRequest(options: { endpoint: RecoveryEndpoint; idempotencyKey: string }): Promise<RecoveryResponse> {
     const query = new URLSearchParams({ endpoint: options.endpoint, key: options.idempotencyKey });
     return this.readReliabilityJson(`/v1/submissions/recover?${query}`, true);
   }
