@@ -43,7 +43,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Import from the `@oneshot-agent/sdk/receipt` subpath instead.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.59.0';
+const SDK_VERSION = '0.60.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -2643,39 +2643,80 @@ export class OneShot {
     }
   }
 
-  /** Retry a clock-window refusal once, before the API has dispatched the request.
-   * Only this API's proof clock changes; payments and other services keep their own clocks.
+  /** Retry a refused proof once, with a fresh proof, before the API has dispatched the request.
+   * Two refusals qualify. A clock-window refusal: the API's `server_time` corrects this client's
+   * proof clock (payments and other services keep their own clocks). A read whose nonce the API
+   * already spent: the SDK signs every send once and, where the runtime lets it, sends it on a
+   * connection of its own (below), so a spent nonce means something between this process and the API
+   * delivered the request twice (a retrying proxy, a wrapper re-sending a captured header, or a browser's
+   * own retry on a pooled connection); the first copy was answered to nobody.
+   * Only a GET or HEAD is sent again for that reason: a read has no side effects, where a write the
+   * API already ran could run twice (#2517).
    * Callers supply replayable JSON bodies and retain their original abort/deadline signal.
    */
   private async fetchApi(url: string, init: RequestInit): Promise<Response> {
-    const response = await fetch(url, init);
-    const headers = new Headers(init.headers);
-    const proof = headers.get('x-agent-proof');
+    const proof = new Headers(init.headers).get('x-agent-proof');
+    // A proof is single-use, so the bytes that carry it must reach the API once. A runtime's
+    // fetch pools keep-alive connections and re-sends a request, byte for byte, when the pooled
+    // socket it chose closes before the response (Bun 1.3.13; reproduction in docs/status/2517.md):
+    // the first copy spends the nonce, the second is rejected as a replay. Each signed send
+    // therefore asks for a connection of its own that no later send reuses: `Connection: close` for
+    // the server and for a client that honours the header, `keepalive: false` for Bun's pool. In Bun
+    // (measured, tests/unit/sdk-proof-single-delivery.test.ts) a socket that dies after the API read
+    // the request is then an error to the caller, not a silent duplicate (#2517). This is a request,
+    // not a guarantee: a browser's fetch drops `Connection` as a forbidden request header and reads
+    // `keepalive` as "may outlive the page", so there the browser's HTTP stack keeps its own pooling and
+    // retry rules, and the replayed-read recovery above is the only defence the SDK has; a browser's
+    // duplicated write is reported by the API as a replay and is not repeated by the SDK.
+    // Both sends below (the first and the one-time refresh) go through `deliver`, so the refresh
+    // carries the same boundary and a caller-supplied `Connection` never reaches the wire; the
+    // caller's `init` and headers object are left as they were.
+    const deliver = (headers: RequestInit['headers']) =>
+      fetch(url, proof ? { ...init, headers: OneShot.singleDelivery(headers), keepalive: false } : init);
+    const response = await deliver(init.headers);
     if (response.status !== 401 || !proof || this._accessToken) return response;
     const origin = new URL(this.baseUrl).origin;
     if (new URL(url).origin !== origin || (response.url && new URL(response.url).origin !== origin)) return response;
 
     let scope: string;
-    let serverTime: number;
+    let serverTime: number | undefined;
     try {
       const body = await response.clone().json() as { error?: unknown; message?: unknown; server_time?: unknown } | null;
-      if (body?.error !== 'proof_required' ||
-          !['proof expired', 'proof issued in the future'].some(reason =>
-            body.message === `This endpoint requires a signed agent proof (x-agent-proof): ${reason}`) ||
-          typeof body.server_time !== 'number' || !Number.isSafeInteger(body.server_time) || body.server_time <= 0) return response;
+      if (body?.error !== 'proof_required' || typeof body.message !== 'string') return response;
+      const prefix = 'This endpoint requires a signed agent proof (x-agent-proof): ';
+      const reason = body.message.startsWith(prefix) ? body.message.slice(prefix.length) : '';
+      const clockRefusal = reason === 'proof expired' || reason === 'proof issued in the future';
+      const method = (init.method ?? 'GET').toUpperCase();
+      const replayedRead = reason === 'proof nonce already used (replay)' && (method === 'GET' || method === 'HEAD');
+      if (!clockRefusal && !replayedRead) return response;
+      if (clockRefusal) {
+        if (typeof body.server_time !== 'number' || !Number.isSafeInteger(body.server_time) || body.server_time <= 0) return response;
+        serverTime = body.server_time;
+      }
       const sent = JSON.parse(typeof Buffer !== 'undefined' ? Buffer.from(proof, 'base64').toString('utf-8') : atob(proof));
       if (typeof sent.scope !== 'string') return response;
       scope = sent.scope;
-      serverTime = body.server_time;
     } catch { return response; }
 
     init.signal?.throwIfAborted();
-    this.proofClockOffsetSec = serverTime - Math.floor(Date.now() / 1000);
+    if (serverTime !== undefined) this.proofClockOffsetSec = serverTime - Math.floor(Date.now() / 1000);
     const refreshed = await this.signedReadHeaders(scope);
     init.signal?.throwIfAborted();
     if (!refreshed['x-agent-proof']) return response;
-    headers.set('x-agent-proof', refreshed['x-agent-proof']);
-    return fetch(url, { ...init, headers });
+    const retryHeaders = new Headers(init.headers); // The first send keeps its own headers; the caller's object is not touched.
+    retryHeaders.set('x-agent-proof', refreshed['x-agent-proof']);
+    return deliver(retryHeaders);
+  }
+
+  /** The caller's headers plus `Connection: close`, in the caller's own shape (a plain record stays a record).
+   * Runtimes that treat `Connection` as a forbidden request header (browsers) drop it silently; nothing throws. */
+  private static singleDelivery(headers: RequestInit['headers']): RequestInit['headers'] {
+    if (headers instanceof Headers || Array.isArray(headers)) {
+      const copy = new Headers(headers);
+      copy.set('connection', 'close');
+      return copy;
+    }
+    return { ...Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => name.toLowerCase() !== 'connection')), Connection: 'close' };
   }
 
   /** Build a query string, skipping null/undefined values. Pass falsy-but-valid

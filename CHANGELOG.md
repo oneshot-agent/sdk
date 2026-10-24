@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.60.0
+
+- Deliver each signed proof once. Every send that carries `x-agent-proof` now asks for a connection of its own (`Connection: close`, `keepalive: false`), so in Bun the fetch has no pooled socket to re-send it on. A browser's fetch drops `Connection` as a forbidden request header and reads `keepalive` differently, so in a browser the HTTP stack's own pooling and retry rules still apply and the replayed-read recovery below is the SDK's only defence. Bun 1.3.13's fetch re-sent a request byte for byte on a fresh connection when the pooled socket it chose closed after the server had read it; the API spent the nonce on the first copy and rejected the second as a replay. With this change that socket death surfaces as a network error to the caller instead. The signed-send paths of 0.53.1 and 0.58.0 each sign their own proof per send; the duplicate came from below the SDK, and SDKs before this change keep producing it (#2517).
+- Recover a read that still reached the API twice (a retrying proxy, a wrapper re-sending a captured header): when the API refuses a read's proof as already used (`proof_required`, nonce replay), sign a fresh proof and read once more. Writes are never repeated (#2517).
+
 ## 0.59.0
 
 - Support access-token expiry and approval context for Identity Verification.

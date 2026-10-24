@@ -103,7 +103,7 @@ Old keys stay in the key set, so old receipts keep verifying.
 
 Reads of private data (inbox, notifications, balances, browser profiles) carry a
 signed proof that you hold the wallet. A wallet address is public; your inbox is not.
-The SDK signs it for you. If the server says your clock is off, it corrects once and retries.
+The SDK signs it for you and asks the runtime for a connection of its own per proof (`Connection: close`, `keepalive: false`), so in Bun the fetch has no pooled socket to re-send it on. A browser's fetch ignores both controls (`Connection` is a forbidden request header there), so in a browser the HTTP stack keeps its own retry rules. If the server says your clock is off, the SDK corrects once and retries. If the server says a read's proof was already used (something between you and the API delivered it twice), it signs a fresh proof and reads once more; a write is never repeated.
 
 ## Failure
 
