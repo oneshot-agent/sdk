@@ -80,7 +80,7 @@ const hosted = await OneShot.create({ accessToken: token });
 await hosted.webSearch({ query: '…' }); // paid from credits
 ```
 
-- Optional `expires_in_days` is a positive whole number of days. An organization cap requires it within the cap (`400 token_lifetime_exceeds_policy`). Expired tokens return `401 access_token_expired`. Lists include `expires_at` and `created_by`; OAuth bridge tokens are exempt from the cap.
+- Optional `expires_in_days` is a positive whole number of days. Without it or an organization cap, new tokens expire after 90 days; existing tokens keep their expiry. An organization cap (up to 730 days) requires an explicit lifetime within the cap (`400 token_lifetime_exceeds_policy`). Expired tokens return `401 access_token_expired`. Lists include `expires_at` and `created_by`; OAuth bridge tokens are exempt from the cap.
 - A token spends prepaid credits only. It never signs a payment.
 - Short of credits, it throws `InsufficientCreditsError` (`required`, `balance`,
   `shortfall`). Top up from the wallet session with `topUpCredits(amount)`.

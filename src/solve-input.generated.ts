@@ -12,15 +12,15 @@ export type SolveInput = {
                 lat: number;
                 lng: number;
             };
-            shift?: {
-                start: number;
-                end: number;
-            } | undefined;
             end?: {
                 id: string;
             } | {
                 lat: number;
                 lng: number;
+            } | undefined;
+            shift?: {
+                start: number;
+                end: number;
             } | undefined;
         }[];
         stops: {
@@ -51,14 +51,14 @@ export type SolveInput = {
 } | {
     problem: "allocation";
     allocation: {
-        options: {
-            id: string;
-            capacity?: number | undefined;
-        }[];
         objective: "minimise_cost" | "maximise_value";
         items: {
             id: string;
             quantity?: number | undefined;
+        }[];
+        options: {
+            id: string;
+            capacity?: number | undefined;
         }[];
         pairs: {
             item: string;
@@ -92,17 +92,17 @@ export type SolveInput = {
 } | {
     problem: "packing";
     packing: {
-        items: {
-            id: string;
-            size: Record<string, number>;
-            value?: number | undefined;
-            quantity?: number | undefined;
-        }[];
         variant: "bin" | "knapsack";
         dimensions: string[];
         bins: {
             id: string;
             capacity: Record<string, number>;
+            quantity?: number | undefined;
+        }[];
+        items: {
+            id: string;
+            size: Record<string, number>;
+            value?: number | undefined;
             quantity?: number | undefined;
         }[];
         incompatible?: [

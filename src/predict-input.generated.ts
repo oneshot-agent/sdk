@@ -5,8 +5,8 @@ export type PredictInput = {
         variables: {
             id: string;
             distribution: {
-                value: number;
                 kind: "fixed";
+                value: number;
             } | {
                 kind: "uniform";
                 min: number;
@@ -22,14 +22,14 @@ export type PredictInput = {
             } | {
                 kind: "triangular";
                 min: number;
-                max: number;
                 mode: number;
+                max: number;
             } | {
                 kind: "bernoulli";
                 p: number;
             } | {
-                values: number[];
                 kind: "discrete";
+                values: number[];
                 weights?: number[] | undefined;
             };
         }[];

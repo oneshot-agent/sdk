@@ -1859,6 +1859,7 @@ export class OneShot {
     if (options.schedule) payload.schedule = options.schedule;
     if (options.approvals) payload.approvals = options.approvals;
     if (options.done_check) payload.done_check = options.done_check;
+    if (options.egress_allowlist) payload.egress_allowlist = options.egress_allowlist;
 
     // Compute returns the goal directly on 202 — no job polling, unlike the
     // other paid tools.
@@ -2660,7 +2661,7 @@ export class OneShot {
     const proof = new Headers(init.headers).get('x-agent-proof');
     // A proof is single-use, so the bytes that carry it must reach the API once. A runtime's
     // fetch pools keep-alive connections and re-sends a request, byte for byte, when the pooled
-    // socket it chose closes before the response (Bun 1.3.13; reproduction in docs/status/2517.md):
+    // socket it chose closes before the response (Bun 1.3.13; reproduction in issue #2517):
     // the first copy spends the nonce, the second is rejected as a replay. Each signed send
     // therefore asks for a connection of its own that no later send reuses: `Connection: close` for
     // the server and for a client that honours the header, `keepalive: false` for Bun's pool. In Bun

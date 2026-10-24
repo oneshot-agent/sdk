@@ -982,6 +982,7 @@ export interface PersonEmailStatusResult {
 }
 
 export interface InboxEmail {
+  authenticated: boolean;
   id: string;
   from: string;
   subject: string;
@@ -1404,7 +1405,7 @@ export interface BrowserTaskOptions extends ToolOptions {
   output_schema?: Record<string, unknown>;
   /** Initial URL to navigate to */
   start_url?: string;
-  /** Instruct the agent to stay within these domains; not a network firewall. */
+  /** Stay within these domains (subdomains included). Checked after each recorded navigation, not a network block: one outside the list ends the task with `browser_domain_not_allowed`. */
   allowed_domains?: string[];
   /** Reuse an existing browser session */
   session_id?: string;
@@ -1653,6 +1654,13 @@ export interface ComputeOptions extends ToolOptions {
    * approval covers exactly one call: that tool, those params, at most that amount.
    */
   approvals?: ComputeApprovals;
+  /**
+   * Hosts the goal's sandboxes may reach besides OneShot's API: hostnames, IPv4
+   * addresses or IPv4 ranges, at most 50. Setting it (even to []) limits every
+   * sandbox of the goal to OneShot's API and these hosts; an organization with
+   * sandbox default-deny on gets the same for all its goals.
+   */
+  egress_allowlist?: string[];
 }
 
 export type ComputeDoneCheck =
