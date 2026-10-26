@@ -1,3 +1,5 @@
+import { markUntrusted } from './untrusted-content';
+export type { UntrustedContent } from './untrusted-content';
 import { Hunts } from './hunts';
 import type { DurableRecoveryEndpoint, RecoveryEndpoint, RecoveryResponse } from './recovery';
 export type { RecoveryEndpoint, RecoveryResponse } from './recovery';
@@ -38,19 +40,16 @@ export { getSwapQuote, executeSwap } from './swap';
 export type { SwapQuote, SwapResult, UniswapAddresses } from './swap';
 export * from './errors';
 import { Approvals, ActionPolicies } from './approvals';
-// `./receipt` is NOT re-exported here, values or types: it statically imports
-// `node:crypto`, which would force a hard Node dependency on every consumer
-// including browser bundles; and its `SignableReceipt.providerCost` field must
-// stay off this public surface (see tests/unit/sdk-provider-cost-removed.test.ts).
-// Import from the `@oneshot-agent/sdk/receipt` subpath instead.
+// Keep receipt on its subpath: node:crypto breaks browser bundles, and providerCost is not public.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.60.0';
+const SDK_VERSION = '0.61.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
   /** A request-scoped message arrived over the socket: push works for this job. */
   pushConfirmed: boolean;
+  resultTool?: string;
   /** Last observed status, for de-duplication across branches (completion may be deferred). */
   lastStatus: string | undefined;
   /** Which branch delivered the terminal outcome (debug log only). */
@@ -98,12 +97,7 @@ function chainIdFromNetwork(network: string | undefined): number | undefined {
 }
 const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 
-// ETH-currency mode. A payment is an EIP-3009 authorization that the
-// facilitator settles AFTER the API has responded, so for seconds after a
-// successful call `balanceOf` still shows pre-payment funds. The SDK therefore
-// keeps a ledger of signed-but-unsettled authorizations and works from
-// `balanceOf − pending`, over-reserving (one early buffered swap) rather than
-// under-reserving (a failed settlement).
+// Reserve signed-but-unsettled payments against balanceOf so delayed settlement cannot overspend USDC.
 /** One balanceOf read per paid call, deduped within roughly one Base block. */
 const USDC_BALANCE_CACHE_MS = 2_000;
 /** How long a signed authorization stays subtracted from the on-chain balance (settlement lands well within this). */
@@ -201,10 +195,7 @@ import type {
  * await agent.email({ to: 'user@example.com', subject: 'Hi', body: 'Hello' });
  * ```
  */
-/**
- * Reject a budget config the server would reject, at construction rather than
- * on the first paid call — a typo'd cap must not become "no cap".
- */
+/** Reject invalid budgets at construction so a typo cannot silently remove the cap. */
 function validateBudgetConfig(budgets: AgentBudgetConfig | undefined): AgentBudgetConfig | undefined {
   if (!budgets) return undefined;
   // A typo'd key (`daliy`) from an untyped caller must not silently mean "no cap".
@@ -235,7 +226,7 @@ function validateBudgetConfig(budgets: AgentBudgetConfig | undefined): AgentBudg
 /** The keys executeToolRequestImpl takes out of a request as SDK options, so they never reach the API body. */
 const PAID_ROUTE_OPTION_KEYS = ['timeout', 'totalTimeoutMs', 'onRequestCreated', 'onAccepted', 'signal', 'onStatusUpdate', 'wait', 'waitForPhones', 'phoneTimeoutSec', 'idempotencyKey', 'approvalId', 'maxCost'] as const;
 
-/** ETH mode is unsupported on CDP wallets (#2153): the swap path needs a confirmed receipt CDP never returns. */
+/** ETH mode is unsupported on CDP wallets: the swap path needs a confirmed receipt CDP never returns. */
 function cdpEthModeError(): ValidationError {
   return new ValidationError(
     "ETH currency mode is not supported with CDP wallets; fund the CDP wallet with USDC or use currency: 'USDC' (or a privateKey / custom walletProvider for ETH mode)",
@@ -277,11 +268,7 @@ export class OneShot {
   private readonly _accessToken?: string;
   private readonly _defaultHeaders: Record<string, string>;
   private _stagingKey?: string;
-  /**
-   * In-flight/settled budget sync. One PUT per instance: kept as a promise (not
-   * a boolean) so concurrent first calls await the same request instead of
-   * racing four PUTs on startup.
-   */
+  /** Cache the budget-sync promise so concurrent first calls await the same PUT. */
   private _budgetSync?: Promise<void>;
   private readonly _swapBufferMultiplier: number;
   /** ETH mode: signed payments not yet observed as settled, keyed by reservation id. */
@@ -289,11 +276,11 @@ export class OneShot {
   private _usdcReservationSeq = 0;
   /** ETH mode: serializes read → decide → swap → reserve per instance (also prevents concurrent swap nonce races). */
   private _usdcLock: Promise<void> = Promise.resolve();
-  /** ETH mode: last balanceOf read. Read dedupe only — correctness lives in the ledger. */
+  /** ETH mode: last balanceOf read. Read dedupe only - correctness lives in the ledger. */
   private _usdcBalanceCache?: { balance: bigint; at: number };
 
   /**
-   * Async factory — required for CDP wallets (account creation is async).
+   * Async factory, required for CDP wallets (account creation is async).
    * Also works with privateKey and custom walletProvider.
    *
    * @example
@@ -308,8 +295,7 @@ export class OneShot {
   static async create(config: OneShotConfig): Promise<OneShot> {
     if (config.accessToken) {
       if (config.address) return new OneShot(config);
-      // The API keys job status and the WebSocket on X-Agent-ID, so the
-      // session needs its wallet address even though it never signs with it.
+      // Job status and WebSocket requests need the wallet address even when the session never signs.
       const address = await OneShot.resolveTokenAddress(config);
       return new OneShot({ ...config, address });
     }
@@ -319,7 +305,7 @@ export class OneShot {
     }
 
     if (config.cdp) {
-      // Reject before the CDP SDK is imported or an account is created (#2153).
+      // Reject before importing the CDP SDK or creating an account.
       if ((config.currency ?? 'USDC') === 'ETH') throw cdpEthModeError();
       const { CdpWalletProvider } = await import('./providers/cdp');
       const cdpOpts = typeof config.cdp === 'object' ? config.cdp : undefined;
@@ -340,7 +326,7 @@ export class OneShot {
   }
 
   /**
-   * Sync constructor — works with privateKey (backwards compatible).
+   * Sync constructor; works with privateKey.
    * For CDP wallets, use OneShot.create() instead.
    */
   constructor(config: OneShotConfig, walletProvider?: WalletProvider) {
@@ -358,9 +344,7 @@ export class OneShot {
     this.rpcProvider = new ethers.JsonRpcProvider(config.rpcUrl ?? RPC_URL);
 
     if (config.accessToken) {
-      // Option D: access-token session. Exclusive with every wallet option,
-      // and budgets are read-only (a delegated credential that could raise its
-      // own cap would make the cap meaningless) — set them from a wallet.
+      // Delegated tokens cannot change their own budgets; caps must be set from a wallet session.
       if (!/^oneshot_[0-9a-f]{64}$/.test(config.accessToken)) {
         throw new ValidationError('accessToken must be oneshot_<64 lowercase hex characters>', 'accessToken');
       }
@@ -395,9 +379,7 @@ export class OneShot {
       );
     }
 
-    // CDP wallets cannot run ETH mode even though CdpWalletProvider exposes
-    // sendTransaction: its wait() never observes a receipt, so the swap path
-    // cannot confirm the ETH→USDC trade (#2153).
+    // CDP wait() never confirms a receipt, so ETH mode cannot confirm the swap.
     if (config.cdp && this._currency === 'ETH') throw cdpEthModeError();
 
     if (this._currency === 'ETH' && !this.provider.sendTransaction) {
@@ -456,16 +438,8 @@ export class OneShot {
     }
     this.validate(options.body, 'body');
 
-    // Rotation mode: when the caller passes neither from_domain nor
-    // from_mailbox, omit from_address entirely so the server picks from
-    // the agent's domain pool. The chosen address comes back on the
-    // quote response (`quote.from_address`) and we replay it on /send.
-    // When the caller pins from_domain (with or without from_mailbox), we
-    // build `${mailbox ?? 'agent'}@${from_domain}`. Pinning from_mailbox
-    // alone has no domain to attach it to — `oneshotagent.com` is OneShot's
-    // own domain and no agent can send from it — so that combination is a
-    // client-side validation error rather than a guaranteed domain_not_owned
-    // rejection from the server.
+    // Without a pinned sender, the quote locks an address from the agent's domain pool.
+    // A mailbox alone has no owned domain to send from.
     if (options.from_mailbox && !options.from_domain) {
       throw new ValidationError(
         'from_mailbox was pinned without from_domain. Pass from_domain (a domain you own) as well, or omit both to rotate across your warmed domains.',
@@ -477,14 +451,7 @@ export class OneShot {
       ? undefined
       : `${options.from_mailbox ?? 'agent'}@${options.from_domain}`;
 
-    // Confirming a new-domain registration (#1070): the caller passes back the
-    // quote_id of the `confirmation_required` result it was shown. That quote
-    // is sent as-is — no second quote — so the server charges the stored total
-    // of the quote the user saw (x402-legacy validates the id and takes the
-    // amount from the stored quote). A bare `true` is not a confirmation: it
-    // names no amount, so it falls through to the quote-only path below. An
-    // expired or already-used quote is refused by the server, and the next
-    // unconfirmed call produces a fresh quote to show again.
+    // Reuse the confirmed quote so the charge matches the amount shown; true alone confirms no amount.
     const confirmedQuote = typeof options.confirmNewDomain === 'string' && options.confirmNewDomain.trim()
       ? options.confirmNewDomain.trim() : undefined;
     if (confirmedQuote) {
@@ -493,10 +460,7 @@ export class OneShot {
         this.emailSendPayload(options, fromAddress), confirmedQuote);
     }
 
-    // `mailbox_provisioning_fee` (>0) means `from_address` is a new address that
-    // provisions a mailbox on first send — a one-time fee folded into `total_cost`.
-    // `is_new` (true) means this quote would register a brand-new domain, which
-    // drives the confirm-before-charge gate below (#1070 round 2).
+    // Mailbox provisioning and domain registration are distinct fees; only a new domain needs confirmation.
     const quote = await this.tool<{
       total_cost: string; quote_id: string; from_address?: string; mailbox_provisioning_fee?: number;
       is_new?: boolean; domain?: string; registration_fee?: number; service_fee?: number;
@@ -507,26 +471,15 @@ export class OneShot {
       ...(options.reply_to_email_id ? { reply_to_email_id: options.reply_to_email_id } : {}),
       ...(options.mailbox_mode ? { mailbox_mode: options.mailbox_mode } : {}),
       body: options.body,
-      // Forward maxCost so the server-side X-Max-Cost-USDC header is set on
-      // the quote fetch (executeToolRequest destructures + threads it).
       maxCost: options.maxCost,
     });
 
     this.log(`Email quote: $${quote.total_cost}`);
 
-    // Local fast-fail — matches the per-tool check on commerce/voice/sms/build/
-    // browser/compute. If the server-side header guard fired we'd never reach
-    // here; this catches the case where the server's enforcement is bypassed
-    // (e.g. a future API revision without the header check) or skipped (cap
-    // un-set so the server returned a 200 with the quote and the caller still
-    // wants the local guard to apply).
+    // Enforce the cap locally even if the server did not check the header.
     this.assertWithinMaxCost(quote.total_cost, options.maxCost);
 
-    // Registering a brand-new domain is charged only after its exact quote has
-    // been shown and explicitly authorized (#1070 round 2) — this call stops
-    // here, before /email/send, and charges nothing. Pass confirmNewDomain:
-    // true (with the same from_domain) to register the domain, pay the quoted
-    // total, and send the email in one follow-up call.
+    // A new domain must be explicitly authorized against its exact quote before any charge or send.
     if (quote.is_new) {
       const domainName = quote.domain ?? options.from_domain ?? '';
       const breakdown = quote.registration_fee !== undefined && quote.service_fee !== undefined
@@ -552,16 +505,11 @@ export class OneShot {
   /** The /email/send body for `email()`: the same whether it follows a fresh quote or a confirmed one. */
   private emailSendPayload(options: EmailToolOptions, resolvedFromAddress: string | undefined): Record<string, unknown> {
     const payload: Record<string, unknown> = {
-      // Server replays the locked address from the quote when from_address
-      // is absent, but sending it anyway is harmless and forward-compatible
-      // with future SDK versions that talk directly to /send without quoting.
       ...(resolvedFromAddress ? { from_address: resolvedFromAddress } : {}),
       ...(options.to !== undefined ? { to_address: options.to } : {}),
       ...(options.subject !== undefined ? { subject: options.subject } : {}),
       ...(options.reply_to_email_id ? { reply_to_email_id: options.reply_to_email_id } : {}),
-      // Re-passed on /send so a new-domain mailbox quote still provisions a real
-      // mailbox even though the domain row doesn't exist yet (server also falls back
-      // to 'mailbox' when a provisioning fee was paid on the quote).
+      // Preserve mailbox provisioning when the new domain does not yet have a stored mode.
       ...(options.mailbox_mode ? { mailbox_mode: options.mailbox_mode } : {}),
       body: options.body,
       signal: options.signal,
@@ -578,7 +526,7 @@ export class OneShot {
     }
 
     if (options.idempotencyKey) {
-      // Only the send call carries the key — the quote call has no side effects.
+      // Only sends need idempotency; quoting has no side effects.
       payload.idempotencyKey = options.idempotencyKey;
     }
 
@@ -587,8 +535,7 @@ export class OneShot {
       payload.approvalId = options.approvalId;
     }
 
-    // Forward maxCost so the server-side X-Max-Cost-USDC header also guards
-    // the send, which matters on a confirmed send that skipped the quote.
+    // Confirmed sends skip quoting, so the send must also carry the cap.
     if (options.maxCost !== undefined) payload.maxCost = options.maxCost;
     return payload;
   }
@@ -660,7 +607,7 @@ export class OneShot {
     return this.tool('find/person', { ...payload, include_phone: includePhone, limit: options.limit ?? 100 });
   }
 
-  /** At least one identity (#1899): name, email, phone or a profile URL under any of its names. */
+  /** At least one identity: name, email, phone or a profile URL under any of its names. */
   private requirePersonIdentity(options: PersonIdentity & { full_name?: string; first_name?: string; last_name?: string }): void {
     const hasName = options.name || options.full_name || (options.first_name && options.last_name);
     if (!hasName && !options.email && !options.phone && !options.profile_url && !options.linkedin_url && !options.social_media_url) {
@@ -713,7 +660,7 @@ export class OneShot {
   }
 
   /**
-   * Federal contract opportunities (SAM.gov) by NAICS code — Sources Sought
+   * Federal contract opportunities (SAM.gov) by NAICS code - Sources Sought
    * and Presolicitation notices with the contracting officer's published
    * contact. Flat price per search; zero notices is a completed result.
    * `data_as_of` on the result is the snapshot behind the rows (SAM.gov's
@@ -747,7 +694,7 @@ export class OneShot {
   async personDossier(options: PersonDossierOptions): Promise<PersonDossierResult> {
     this.requirePersonIdentity(options);
     const { includePhone, ...payload } = options;
-    // The dossier takes 2 to 5 minutes; the generic 120 second poll gives up on a normal run (#1913).
+    // The dossier takes 2 to 5 minutes; the generic 120 second poll gives up on a normal run.
     return this.tool('lookup/person-dossier', { ...payload, include_phone: includePhone, timeout: options.timeout ?? 300 });
   }
 
@@ -790,7 +737,7 @@ export class OneShot {
     if (!response.ok) {
       throw new ToolError('Failed to list inbox', response.status, await response.text(), response.headers.get('retry-after'));
     }
-    return response.json() as Promise<InboxListResult>;
+    return markUntrusted(await response.json(), 'inbox_list') as InboxListResult;
   }
 
   async inboxGet(emailId: string): Promise<InboxEmail> {
@@ -806,7 +753,7 @@ export class OneShot {
     if (!response.ok) {
       throw new ToolError('Failed to get email', response.status, await response.text(), response.headers.get('retry-after'));
     }
-    return response.json() as Promise<InboxEmail>;
+    return markUntrusted(await response.json(), 'inbox_get') as InboxEmail;
   }
 
   async commerceBuy(options: CommerceBuyOptions): Promise<CommerceBuyResult> {
@@ -933,9 +880,9 @@ export class OneShot {
     if (options.wait !== false && result.request_id) {
       // Wait for the longest the call may run, plus two minutes to dial and settle.
       const timeout = options.timeout ?? (options.max_duration_minutes ?? 10) * 60 + 120;
-      return this.pollJob(result.request_id, timeout, options.signal, options.onStatusUpdate);
+      return this.pollJob(result.request_id, timeout, options.signal, options.onStatusUpdate, undefined, 'voice');
     }
-    return result as VoiceCallResult;
+    return markUntrusted(result, 'voice') as VoiceCallResult;
   }
 
   /**
@@ -1137,7 +1084,6 @@ export class OneShot {
     if (options.allowed_domains) payload.allowed_domains = options.allowed_domains;
     if (options.session_id) payload.session_id = options.session_id;
     if (options.profile_id) payload.profile_id = options.profile_id;
-    if (options.secrets !== undefined) throw new ValidationError('secrets is unsupported; import cookies or storage_state with createBrowserProfile', 'secrets');
     if (options.max_steps) payload.max_steps = options.max_steps;
 
     const { execResp } = await this.runQuoteToPay<BrowserQuote>({
@@ -1164,9 +1110,9 @@ export class OneShot {
     this.log(`Browser task initiated: ${result.request_id}`);
 
     if (options.wait !== false && result.request_id) {
-      return this.pollJob(result.request_id, options.timeout ?? 300, options.signal, options.onStatusUpdate);
+      return this.pollJob(result.request_id, options.timeout ?? 300, options.signal, options.onStatusUpdate, undefined, 'browser');
     }
-    return result as BrowserResult;
+    return markUntrusted(result, 'browser') as BrowserResult;
   }
 
   /**
@@ -1293,7 +1239,7 @@ export class OneShot {
       if (response.status === 409 && code === 'connect_required') throw new LinkedInConnectRequiredError(body);
       throw new ToolError(`LinkedIn ${opts.what} failed`, response.status, body, response.headers.get('retry-after'));
     }
-    return response.json() as Promise<T>;
+    return markUntrusted(await response.json(), `/v1/tools/linkedin${path}`, method) as T;
   }
 
   /**
@@ -1438,7 +1384,6 @@ export class OneShot {
     this.validate(options.identifier, 'identifier');
     const { accountId, identifier, notify, sections, ...rest } = options;
     const body: Record<string, unknown> = { ...rest, account_id: accountId, identifier, notify: !!notify, timeout: options.timeout ?? 180 };
-    // Left off the wire when empty, so a view without sections is the request it always was.
     if (sections?.length) body.sections = sections;
     const result = await this.tool('linkedin/profile-view', body) as LinkedInProfileViewResult;
     // The server leaves both fields out when the section was not requested; surface that as null.
@@ -1504,7 +1449,7 @@ export class OneShot {
     if (!response.ok) {
       throw new ToolError('Failed to list SMS inbox', response.status, await response.text(), response.headers.get('retry-after'));
     }
-    return response.json() as Promise<SmsInboxResult>;
+    return markUntrusted(await response.json(), 'sms_inbox_list') as SmsInboxResult;
   }
 
 
@@ -1596,7 +1541,7 @@ export class OneShot {
   }
 
   /**
-   * Call a declared route of the API by method and path (#1580), the one generic call for a route that has no
+   * Call a declared route of the API by method and path, the one generic call for a route that has no
    * typed method. Follows the Python client's `call_free_get/post/patch/put/delete`:
    *
    * - `path` is the route, with `{name}` (or `:name`) for a path parameter, filled from `params` and URL-encoded
@@ -1669,7 +1614,7 @@ export class OneShot {
         const text = await response.text();
         if (response.status === 204 || !text) return { success: true } as T;
         const json = JSON.parse(text) as { data?: T };
-        return (json && typeof json === 'object' && 'data' in json ? json.data : json) as T;
+        return markUntrusted(json && typeof json === 'object' && 'data' in json ? json.data : json, target, method) as T;
       })();
       return await abortable(request, scope.signal);
     } finally { scope.close(); }
@@ -1689,7 +1634,7 @@ export class OneShot {
       throw new ToolError(failure, response.status, await response.text(), response.headers.get('retry-after'));
     }
     const json = await response.json() as { data?: T };
-    return (json.data ?? json) as T;
+    return markUntrusted(json.data ?? json, path, method) as T;
   }
 
   /**
@@ -1714,7 +1659,7 @@ export class OneShot {
     if (!response.ok) {
       throw new ToolError('Failed to get SMS message', response.status, await response.text(), response.headers.get('retry-after'));
     }
-    return response.json() as Promise<SmsInboxMessage>;
+    return markUntrusted(await response.json(), 'sms_inbox_get') as SmsInboxMessage;
   }
 
   /**
@@ -1769,7 +1714,7 @@ export class OneShot {
   }
 
   /**
-   * The agent's connections (#2403): GitHub and business systems, each with `id`, `system`, `account_label` and
+   * The agent's connections: GitHub and business systems, each with `id`, `system`, `account_label` and
    * `status`. Free. A connected-system read (ledger, CRM, shipping, tax, procurement) takes the `id` of an active
    * one as `connection_id`; pick it by `system` and `account_label`, then call the read with the generic
    * {@link OneShot.route}.
@@ -1803,13 +1748,11 @@ export class OneShot {
   }
 
   async getBalance(tokenAddress?: string): Promise<string> {
-    // Use unified API endpoint for USDC (default) balance
     if (!tokenAddress || tokenAddress === this.usdcAddress) {
       const unified = await this.getUnifiedBalance();
       return unified.on_chain_balance;
     }
 
-    // Custom token: keep existing RPC logic
     const contract = new ethers.Contract(
       tokenAddress,
       ['function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)'],
@@ -1826,7 +1769,7 @@ export class OneShot {
 
 
   /**
-   * Create a compute goal — the orchestrator will plan, execute, and iterate autonomously.
+   * Create a compute goal - the orchestrator will plan, execute, and iterate autonomously.
    *
    * Uses the quote-then-pay flow: first call gets a 402 with a budget estimate,
    * second call (with payment) creates the goal.
@@ -1861,7 +1804,7 @@ export class OneShot {
     if (options.done_check) payload.done_check = options.done_check;
     if (options.egress_allowlist) payload.egress_allowlist = options.egress_allowlist;
 
-    // Compute returns the goal directly on 202 — no job polling, unlike the
+    // Compute returns the goal directly on 202 - no job polling, unlike the
     // other paid tools.
     const { execResp: createResp } = await this.runQuoteToPay<ComputeQuote>({
       endpoint: '/v1/compute',
@@ -1926,7 +1869,7 @@ export class OneShot {
    * with JobError (goal ID, end_reason code, snapshot in partialResult).
    * Budget exhaustion ends this wait; after fundComputeGoal revives the goal,
    * call waitForComputeGoal again with the same ID to observe the new run.
-   * Paused/awaiting_confirmation and recurring goals keep waiting until the
+   * Paused/awaiting_confirmation/awaiting_connection and recurring goals keep waiting until the
    * goal ends or the timeout (seconds, default 120) expires with JobTimeoutError.
    * Infinity disables the local deadline.
    * onStatusUpdate receives each distinct observed status before settlement.
@@ -2173,6 +2116,29 @@ export class OneShot {
   }
 
   /**
+   * Dispute a goal that ended `impossible_unverified`: the loop claimed it
+   * cannot be done with no proof code could check. The dispute is recorded
+   * on the goal and its receipt; nothing is refunded.
+   *
+   * @example
+   * ```typescript
+   * await agent.disputeComputeGoal(goalId, { reason: 'The data is public.' });
+   * ```
+   */
+  async disputeComputeGoal(goalId: string, input: { reason?: string } = {}): Promise<{ goal_id: string; status: string; end_reason: string | null; dispute: { at: string; reason: string } }> {
+    this.validate(goalId, 'goalId');
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
+      body: JSON.stringify({ dispute: true, ...(input.reason ? { response: input.reason } : {}) }),
+    });
+    if (response.status === 404) throw new ToolError('Goal not found', 404, await response.text(), response.headers.get('retry-after'));
+    if (!response.ok) throw new ToolError('Failed to dispute compute goal', response.status, await response.text(), response.headers.get('retry-after'));
+    const json = await response.json() as { data: { goal_id: string; status: string; end_reason: string | null; dispute: { at: string; reason: string } } };
+    return json.data;
+  }
+
+  /**
    * Pause a recurring compute goal
    *
    * @example
@@ -2402,7 +2368,7 @@ export class OneShot {
    * List receipts with optional filtering
    *
    * Paginate with `limit`/`offset`, or page through an explicit time window with
-   * `since`/`until` (ISO string or Date) — useful for reaching receipts older than
+   * `since`/`until` (ISO string or Date) - useful for reaching receipts older than
    * the server's 100-row cap when tagging value weeks after the originating call.
    *
    * @example
@@ -2449,8 +2415,8 @@ export class OneShot {
    * Three ways to address the value:
    * - `rcpt_…` receipt id (from `result.receipt_id` or `receiptsList`), or
    * - the `request_id` returned by the originating tool call (`result.request_id`,
-   *   resolved server-side via `Receipt.job_id`) — annotate without a list lookup, or
-   * - a `goalId` correlation key — attributes a whole *cadence* outcome (the email,
+   *   resolved server-side via `Receipt.job_id`) - annotate without a list lookup, or
+   * - a `goalId` correlation key - attributes a whole *cadence* outcome (the email,
    *   the follow-ups, the find/verify/enrich calls that share `decisionContext.goalId`)
    *   in one call. The value is recorded once in the outcome ledger, so it can't
    *   double-count across the cadence's receipts. Read it back with `rocsByGoal()`.
@@ -2464,7 +2430,7 @@ export class OneShot {
    * const r = await agent.personEmailStatus({ email: 'x@y.com' });
    * await agent.tagReceiptValue({ requestId: r.request_id }, { type: 'lead', amount: 1 });
    *
-   * // By cadence correlation key — one call attributes a closed deal to the whole sequence:
+   * // By cadence correlation key - one call attributes a closed deal to the whole sequence:
    * await agent.tagReceiptValue({ goalId: 'goal_q2_acme' }, { type: 'revenue', amount: 5000, label: 'Closed deal' });
    * ```
    */
@@ -2474,7 +2440,6 @@ export class OneShot {
   ): Promise<void> {
     this.validate(valueTag.type, 'valueTag.type');
 
-    // Cadence-level: route to the outcome ledger by correlation key.
     if (typeof ref === 'object' && ref.goalId && !ref.receiptId && !ref.requestId) {
       const response = await this.fetchApi(`${this.baseUrl}/v1/analytics/outcomes`, {
         method: 'POST',
@@ -2505,7 +2470,7 @@ export class OneShot {
   }
 
   /**
-   * Per-cadence RoCS rollup — spend (from receipts) vs. value (from outcomes)
+   * Per-cadence RoCS rollup - spend (from receipts) vs. value (from outcomes)
    * grouped by `decisionContext.goalId`. Answers "what did this cadence cost vs.
    * earn" in one query. `value` counts judge-confirmed outcomes; `pending_value`
    * surfaces self-reported outcomes not yet confirmed.
@@ -2593,15 +2558,8 @@ export class OneShot {
     return { 'Content-Type': 'application/json', ...this.headers() };
   }
 
-  /**
-   * Auth headers plus a signed EIP-712 proof (`x-agent-proof`) for the read
-   * routes (inbox, sms inbox, notifications, balance). These identify the caller
-   * by wallet, and wallet addresses are public, so without a proof anyone could
-   * read another agent's data by supplying its address. The proof binds this
-   * request to the wallet the SDK controls; the server verifies the signature
-   * locally. A fresh nonce per call prevents replay. Signing failure falls back
-   * to plain headers, with a one-time warning.
-   */
+  /** Signed, single-use proofs bind requests to the wallet; an address alone cannot authenticate reads.
+   * Signing failure falls back to plain headers with a one-time warning. */
   private async signedReadHeaders(scope: string = 'read', domainName: string = 'OneShot Agent Auth'): Promise<Record<string, string>> {
     const base = this.headers();
     // The bearer token already binds the request to the agent (and is
@@ -2612,12 +2570,7 @@ export class OneShot {
       const issuedAt = Math.floor(Date.now() / 1000) + (domainName === 'OneShot Agent Auth' ? this.proofClockOffsetSec : 0);
       const nonce = ethers.hexlify(ethers.randomBytes(32));
       const signature = await this.provider.signTypedData(
-        // `domainName` lets a different origin (e.g. Soul Hunt, which keeps
-        // its own nonce store — see hunts.ts) use a DIFFERENT EIP-712 domain
-        // than api-service's. EIP-712 mixes the domain into the signed hash,
-        // so a proof is only valid for the one origin it was signed for and
-        // can't be replayed across service boundaries (security finding
-        // F-t_d4805d6f-3, round 2).
+        // Separate EIP-712 domains prevent proof replay across services with independent nonce stores.
         { name: domainName, version: '1' },
         {
           AgentReadAuth: [
@@ -2633,9 +2586,7 @@ export class OneShot {
       const proof = typeof Buffer !== 'undefined' ? Buffer.from(json).toString('base64') : btoa(json);
       return { ...base, 'x-agent-proof': proof };
     } catch (err) {
-      // Once per client, even without debug: when the API enforces proofs,
-      // these requests will be rejected, and a silent fallback would leave
-      // the caller with a 401 and no idea why.
+      // Warn once even without debug so a failed proof explains the ensuing authentication failure.
       if (!this.readProofWarned) {
         this.readProofWarned = true;
         this.logger(`[OneShot] Warning: could not sign the x-agent-proof read proof, so requests go without it and will be rejected where the API enforces proofs. Pass a signer that supports signTypedData, or use an access token. Cause: ${err}`);
@@ -2646,34 +2597,13 @@ export class OneShot {
     }
   }
 
-  /** Retry a refused proof once, with a fresh proof, before the API has dispatched the request.
-   * Two refusals qualify. A clock-window refusal: the API's `server_time` corrects this client's
-   * proof clock (payments and other services keep their own clocks). A read whose nonce the API
-   * already spent: the SDK signs every send once and, where the runtime lets it, sends it on a
-   * connection of its own (below), so a spent nonce means something between this process and the API
-   * delivered the request twice (a retrying proxy, a wrapper re-sending a captured header, or a browser's
-   * own retry on a pooled connection); the first copy was answered to nobody.
-   * Only a GET or HEAD is sent again for that reason: a read has no side effects, where a write the
-   * API already ran could run twice (#2517).
-   * Callers supply replayable JSON bodies and retain their original abort/deadline signal.
-   */
+  /** Retry a clock-window refusal once using the API's server_time, or a spent nonce on GET/HEAD.
+   * Never retry a spent nonce on a write: the first delivery may already have executed it.
+   * Callers supply replayable JSON bodies and retain their original abort/deadline signal. */
   private async fetchApi(url: string, init: RequestInit): Promise<Response> {
     const proof = new Headers(init.headers).get('x-agent-proof');
-    // A proof is single-use, so the bytes that carry it must reach the API once. A runtime's
-    // fetch pools keep-alive connections and re-sends a request, byte for byte, when the pooled
-    // socket it chose closes before the response (Bun 1.3.13; reproduction in issue #2517):
-    // the first copy spends the nonce, the second is rejected as a replay. Each signed send
-    // therefore asks for a connection of its own that no later send reuses: `Connection: close` for
-    // the server and for a client that honours the header, `keepalive: false` for Bun's pool. In Bun
-    // (measured, tests/unit/sdk-proof-single-delivery.test.ts) a socket that dies after the API read
-    // the request is then an error to the caller, not a silent duplicate (#2517). This is a request,
-    // not a guarantee: a browser's fetch drops `Connection` as a forbidden request header and reads
-    // `keepalive` as "may outlive the page", so there the browser's HTTP stack keeps its own pooling and
-    // retry rules, and the replayed-read recovery above is the only defence the SDK has; a browser's
-    // duplicated write is reported by the API as a replay and is not repeated by the SDK.
-    // Both sends below (the first and the one-time refresh) go through `deliver`, so the refresh
-    // carries the same boundary and a caller-supplied `Connection` never reaches the wire; the
-    // caller's `init` and headers object are left as they were.
+    // Disable connection reuse where supported to prevent transport retries from replaying a single-use proof.
+    // Browsers control their own pooling; only replayed reads can be safely retried there.
     const deliver = (headers: RequestInit['headers']) =>
       fetch(url, proof ? { ...init, headers: OneShot.singleDelivery(headers), keepalive: false } : init);
     const response = await deliver(init.headers);
@@ -2706,7 +2636,7 @@ export class OneShot {
     const refreshed = await this.signedReadHeaders(scope);
     init.signal?.throwIfAborted();
     if (!refreshed['x-agent-proof']) return response;
-    const retryHeaders = new Headers(init.headers); // The first send keeps its own headers; the caller's object is not touched.
+    const retryHeaders = new Headers(init.headers); // Keep the caller's headers intact.
     retryHeaders.set('x-agent-proof', refreshed['x-agent-proof']);
     return deliver(retryHeaders);
   }
@@ -2722,8 +2652,7 @@ export class OneShot {
     return { ...Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => name.toLowerCase() !== 'connection')), Connection: 'close' };
   }
 
-  /** Build a query string, skipping null/undefined values. Pass falsy-but-valid
-   *  values (0, '') as undefined at the call site to match prior `if (x)` guards. */
+  /** Skip null/undefined query values; callers must explicitly omit other unwanted falsy values. */
   private buildQuery(params: Record<string, string | number | boolean | undefined | null>): string {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
@@ -2732,20 +2661,8 @@ export class OneShot {
     return qs.toString();
   }
 
-  /**
-   * Push `config.budgets` to the server once, before the first paid call.
-   *
-   * Lazy rather than in the constructor because the PUT is signed (async) and
-   * the constructor is sync. Idempotent per instance via the cached promise,
-   * which is only kept once the sync SUCCEEDS.
-   *
-   * FAILS CLOSED. If the server can't confirm the budget — network error,
-   * 5xx, 429, or a rejected config — this throws BudgetSyncError and the paid
-   * call is not made. Proceeding would silently drop the guardrail the
-   * developer configured, which is exactly the "empty wallet at 3am" the
-   * budget exists to prevent. The marker is cleared so the next paid call
-   * retries.
-   */
+  /** Sync budgets lazily because signing is async; concurrent calls share the cached promise.
+   * Fail closed until the server confirms the budget, and clear failed syncs so the next call retries. */
   private async ensureBudgetsSynced(): Promise<void> {
     if (!this._budgets && !this._alertEmail) return;
     if (this._budgetSync) return this._budgetSync;
@@ -2779,20 +2696,13 @@ export class OneShot {
     try {
       await attempt;
     } catch (err) {
-      // Not synced: clear the marker so the next paid call retries, then
-      // refuse this one rather than run it unguarded.
       this._budgetSync = undefined;
       this.log(`${(err as Error).message} — paid call refused until the budget is confirmed`);
       throw err;
     }
   }
 
-  /**
-   * Local fast-fail on the per-transaction cap, so an oversized call fails
-   * without a network round-trip. The server enforces the same cap (and the
-   * daily one, which needs the ledger) regardless of which client calls —
-   * this is the same SDK-checks/server-enforces split as maxCost.
-   */
+  /** Fail oversized calls locally before a round-trip; the server also enforces shared daily spend. */
   private assertWithinBudget(total: string): void {
     const cap = this._budgets?.perTransaction;
     if (!cap || cap <= 0) return;
@@ -2871,7 +2781,7 @@ export class OneShot {
     return body.data;
   }
 
-  /** List this agent's access tokens (prefix, label, last use, spend today — never the token). */
+  /** List this agent's access tokens (prefix, label, last use, spend today - never the token). */
   async listAccessTokens(opts: { activeOnly?: boolean } = {}): Promise<AccessTokenInfo[]> {
     this.assertWalletSession('list access tokens');
     const response = await this.fetchApi(`${this.baseUrl}/v1/agents/me/access-tokens${opts.activeOnly ? '?active=true' : ''}`, {
@@ -2902,41 +2812,10 @@ export class OneShot {
     }
   }
 
-  /**
-   * Header that asks the API to reject the request when the computed quote
-   * exceeds the caller-supplied cap (commit 8f328a7). The SDK still does its
-   * own local `quote.total > maxCost` check after the 402 returns — this is
-   * a server-side enforcement layer so non-SDK callers (MCP server, custom
-   * integrations) can't ignore the cap.
-   */
-  /**
-   * The amount to sign, in decimal USDC.
-   *
-   * A 402 advertises its price twice: the x402 v2 `PAYMENT-REQUIRED` header
-   * (`accepts[0].amount`, atomic units) and the legacy JSON body
-   * (`payment_request.amount`, decimal). The header is authoritative — it is
-   * what the server rebuilds its requirement from and what
-   * `findMatchingRequirements` compares the signature against.
-   *
-   * Preferring the body is how quote-based routes (email/send, sms, voice,
-   * build, commerce/buy, compute) silently failed: the body carried a
-   * hardcoded "0.00", so the SDK signed a zero-cost authorization against a
-   * real charge and the server answered with a bodiless 402. It stayed hidden
-   * for as long as credits covered those calls, since the credit path returns
-   * 202 without any payment handshake.
-   *
-   * Falls back to the body when the header is missing or unparseable.
-   */
-  /**
-   * Throw the most specific error a failed response supports.
-   *
-   * A 402 arriving on the PAID retry means the facilitator refused the
-   * signature — not the ordinary "here is your quote" 402. The API names the
-   * cause in that body (`payment_verification_failed` + reason + expected vs
-   * received amount); surface it as a `PaymentError` so callers can branch on
-   * `err.reason` instead of string-matching. Anything else keeps the existing
-   * `ToolError` shape.
-   */
+  /** Ask the API to enforce the caller's cap before payment, in addition to the local quote check. */
+  /** Resolve decimal USDC from the authoritative PAYMENT-REQUIRED header (atomic units);
+   * fall back to the legacy body only when the header is missing or unparseable. */
+  /** A 402 on the paid retry is a payment rejection, not a quote; expose its cause as PaymentError. */
   private async failFromResponse(message: string, response: Response): Promise<never> {
     const text = await response.text();
     const credits = response.status === 402 ? this.parseInsufficientCredits(text) : undefined;
@@ -2967,14 +2846,7 @@ export class OneShot {
     );
   }
 
-  /**
-   * Access-token sessions never sign. When a paid call answers 402 the SDK
-   * either got the server's `insufficient_credits` verdict (throw it) or a
-   * quote (re-POST with `x-quote-id` and no payment: the server executes
-   * when the quote's credits cover it, otherwise answers `insufficient_credits`
-   * with the balance and shortfall, which failFromResponse turns into the
-   * typed error). Server-decided on purpose — the SDK holds no ledger.
-   */
+  /** Token sessions never sign: retry the quote against credits and let the server ledger decide sufficiency. */
   private async retryAsCreditsSession(
     body: Record<string, unknown> | undefined,
     endpoint: string,
@@ -3118,10 +2990,7 @@ export class OneShot {
       return bodyAmount ?? '0';
     }
     const fromHeader = ethers.formatUnits(accepted.amount, 6);
-    // When the two agree (every fixed-price route), keep the body's string
-    // verbatim — downstream consumers such as the ETH auto-swap pass this
-    // value along, and there is no reason to reformat it. Only a genuine
-    // disagreement flips to the header.
+    // Preserve the body's amount formatting when it agrees with the authoritative header.
     if (bodyAmount != null && parseFloat(bodyAmount) === parseFloat(fromHeader)) {
       return bodyAmount;
     }
@@ -3133,11 +3002,7 @@ export class OneShot {
     return { 'X-Max-Cost-USDC': maxCost.toString() };
   }
 
-  /**
-   * Idempotency-Key header, sent on both legs (pre-402 and paid retry) so
-   * the server can replay a cached result instead of double-charging and
-   * double-executing on a client retry.
-   */
+  /** Send the idempotency key on both legs so retries cannot double-charge or repeat the action. */
   private idempotencyHeader(idempotencyKey?: string): Record<string, string> | undefined {
     if (!idempotencyKey) return undefined;
     return { 'Idempotency-Key': idempotencyKey };
@@ -3187,7 +3052,7 @@ export class OneShot {
     try {
       if (scope.signal.aborted) throw new OneShotError('Operation cancelled');
       if (key) options.onRequestCreated?.({ idempotencyKey: key });
-      return await abortable(this.executeToolRequestImpl<T>(endpoint, { ...options, idempotencyKey: key, signal: scope.signal }, quoteId, context), scope.signal);
+      return markUntrusted(await abortable(this.executeToolRequestImpl<T>(endpoint, { ...options, idempotencyKey: key, signal: scope.signal }, quoteId, context), scope.signal), endpoint);
     } catch (error) {
       if (scope.timedOut()) throw new RequestTimeoutError(Date.now() - started, context.phase, key, context.requestId, context.receiptId);
       if (error instanceof Error) Object.assign(error, { idempotencyKey: key, requestId: context.requestId, receiptId: context.receiptId, phase: context.phase });
@@ -3211,7 +3076,7 @@ export class OneShot {
 
     if (payload.memo !== undefined) {
       if (typeof payload.memo !== 'string' || payload.memo.trim().length === 0) {
-        delete payload.memo; // Drop invalid memo silently
+        delete payload.memo; // Invalid optional metadata must not block the call.
       } else if (payload.memo.length > 1000) {
         payload.memo = payload.memo.slice(0, 1000);
         this.log('Memo truncated to 1000 chars');
@@ -3235,8 +3100,7 @@ export class OneShot {
       throw new OneShotError('Operation cancelled');
     }
 
-    // One-time push of config.budgets before the first paid call, so the
-    // server-side gate knows about them on this very request.
+    // The server must know the configured budget before the first paid request.
     await this.ensureBudgetsSynced();
 
     if (signal?.aborted) throw new OneShotError('Operation cancelled');
@@ -3245,7 +3109,6 @@ export class OneShot {
     context.phase = 'submission';
     let response = await this.makeRequest(endpoint, payload, undefined, quoteId, signal, undefined, extraHeaders);
 
-    // Handle 402 Payment Required
     if (response.status === 402 && /\/v1\/tools\/(solve|predict|find\/person|lookup\/person-(profile|dossier))$/.test(endpoint)) {
       ({ execResp: response } = await this.runQuoteToPay<{ quote_id: string; total: string }>({
         endpoint, payload, signal, maxCost, quoteResponse: response, extraHeaders,
@@ -3254,11 +3117,9 @@ export class OneShot {
       }));
       context.phase = 'submission';
     } else if (response.status === 402) {
-      // Parse x402 v2 PaymentRequired from PAYMENT-REQUIRED header
       const paymentRequiredHeader = response.headers.get('payment-required');
       const { accepted, resource, extensions } = this.parsePaymentRequired(paymentRequiredHeader);
 
-      // Fallback: parse legacy body format for amount display
       const data = await response.json() as {
         payment_request?: { chain_id: number; token_address: string; amount: string; recipient: string };
         context?: { quote_id?: string };
@@ -3304,7 +3165,6 @@ export class OneShot {
 
     const result = await response.json() as Record<string, unknown>;
 
-    // Handle async jobs
     if ((result.status === 'pending' || result.status === 'processing') && result.request_id) {
       context.requestId = String(result.request_id);
       context.receiptId = typeof result.receipt_id === 'string' ? result.receipt_id : undefined;
@@ -3320,6 +3180,7 @@ export class OneShot {
         signal,
         onStatusUpdate,
         waitForPhones ? { waitForPhones, phoneTimeoutSec } : undefined,
+        endpoint,
       );
       if (completed && typeof completed === 'object' && !Array.isArray(completed)) {
         return { ...completed, request_id: context.requestId, receipt_id: completed.receipt_id ?? context.receiptId, idempotencyKey } as T;
@@ -3330,13 +3191,7 @@ export class OneShot {
     return (result.data ?? result) as T;
   }
 
-  /**
-   * Shared x402 quote-to-pay flow for paid tools. Fetches the 402 quote, runs
-   * any per-tool 400 handling, enforces maxCost, signs the payment auth, and
-   * POSTs the paid request. Returns the parsed quote context plus the raw paid
-   * Response — the caller owns the post-202 handling (poll a job vs. return the
-   * body directly), since that differs per tool.
-   */
+  /** Shared quote-to-pay flow; callers own post-202 handling because some tools poll and others return directly. */
   private async runQuoteToPay<Q extends { quote_id: string }>(cfg: {
     endpoint: string;
     payload: Record<string, unknown>;
@@ -3367,8 +3222,6 @@ export class OneShot {
     }
 
     if (quoteResp.status !== 402) {
-      // Routes the budget gate on the quote leg (fixed-price ones) surface a
-      // 403 here; failFromResponse maps it to BudgetExceededError.
       await this.failFromResponse(cfg.expectMsg, quoteResp);
     }
 
@@ -3449,20 +3302,27 @@ export class OneShot {
     );
   }
 
+  private unwrapJobResult(job: Record<string, unknown>): unknown {
+    const result = job.result ?? job;
+    if (result && typeof result === 'object' && !Array.isArray(result)) {
+      const value = { ...result } as Record<string, unknown>;
+      for (const field of ['cached', 'fetched_at']) {
+        if (field in job) value[field] = job[field];
+      }
+      return value;
+    }
+    return result;
+  }
+
   private async pollJob<T>(
     requestId: string,
     timeoutSec?: number,
     signal?: AbortSignal,
     onStatusUpdate?: StatusUpdateFn,
-    phoneOpts?: { waitForPhones?: boolean; phoneTimeoutSec?: number }
+    phoneOpts?: { waitForPhones?: boolean; phoneTimeoutSec?: number },
+    tool = '',
   ): Promise<T> {
-    // HTTP polling is the source of truth; the WebSocket is an accelerator.
-    // Both run concurrently from the start and the first terminal outcome wins,
-    // so a broken push channel (Redis down, worker unconfigured, proxy that
-    // swallows frames) costs nothing beyond the poll cadence. Previously the
-    // client waited 60% of its timeout on the socket before polling at all —
-    // in prod that was ~72s of dead air on every call while the push never came.
-    // An already-aborted signal ends the wait before any proof is signed or sent.
+    // Race HTTP with WebSocket push so a broken push channel cannot stall job completion.
     if (signal?.aborted) throw new OneShotError('Operation cancelled');
     const inner = new AbortController();
     const onOuterAbort = () => inner.abort();
@@ -3509,16 +3369,7 @@ export class OneShot {
     }
     this.log(`Job ${requestId} ready after ${Date.now() - startedAt}ms via ${wait.via ?? 'unknown'}`);
 
-    // Optional second phase: keep polling for the async phone-reveal webhook.
-    // Only kicks in when the caller explicitly opts in AND the result still
-    // has phones_pending=true (set by the worker when the upstream enrichment
-    // has a pending async phone callback). This is opt-in so existing callers
-    // see no behavior change — the WebSocket/HTTP polls return as soon as the
-    // worker sets status=completed, with phones=null.
-    //
-    // Pass the existing result as the initial fallback: if the polling GETs
-    // hit a transient error before any successful refresh, we return what we
-    // already have (with phones_pending=true still set so consumers know).
+    // Phone reveals are opt-in; retain the completed snapshot if every refresh fails.
     if (phoneOpts?.waitForPhones && this._isPhonesPending(result)) {
       result = await this._pollForPhones<T>(
         requestId,
@@ -3528,17 +3379,10 @@ export class OneShot {
       );
     }
     if (phoneOpts?.waitForPhones) notify('completed');
-    return result;
+    return markUntrusted(result, tool || wait.resultTool || '');
   }
 
-  /**
-   * Detects whether a job result is still waiting for an async phone reveal.
-   * The worker sets `result.phones_pending=true` when the upstream enrichment
-   * has a pending async webhook and the webhook URL is configured; the webhook
-   * handler flips it to false (or removes it) once phones arrive.
-   *
-   * Accepts worker search rows, profile objects, dossier sections and legacy results.
-   */
+  /** Detect pending phone reveals in search rows, profiles, dossier sections and legacy results. */
   private _isPhonesPending(result: unknown): boolean {
     if (!result || typeof result !== 'object') return false;
     const r = result as Record<string, unknown>;
@@ -3553,14 +3397,7 @@ export class OneShot {
     });
   }
 
-  /**
-   * Slow poll loop that waits for async phone-reveal callbacks to arrive via
-   * the webhook handler (which UPDATEs jobs.result_data.result.phones). Polls
-   * GET /v1/requests/{id} every 5s — the upstream provider can take several
-   * minutes to deliver, so a tight loop just wastes API calls. Returns the
-   * latest snapshot whether or not phones arrived (consumer can re-check
-   * `phones_pending`).
-   */
+  /** Poll phone reveals every 5s to avoid wasting calls during slow callbacks; return the latest snapshot on timeout. */
   private async _pollForPhones<T>(
     requestId: string,
     timeoutSec: number,
@@ -3569,8 +3406,6 @@ export class OneShot {
   ): Promise<T> {
     const deadline = Date.now() + timeoutSec * 1000;
     const interval = 5000;
-    // Seed with the snapshot the caller already has so a transient first-poll
-    // failure can still return the sync data (with phones_pending=true).
     let lastResult: T | undefined = initialResult;
 
     while (Date.now() < deadline) {
@@ -3581,13 +3416,12 @@ export class OneShot {
           signal,
         });
         if (!resp.ok) {
-          // Soft-fail on transient errors during the phone wait — return
-          // whatever we last had so consumers don't lose the sync result.
+          // Preserve the last successful snapshot across transient phone-wait errors.
           if (lastResult !== undefined) return lastResult;
           throw new ToolError('Failed to check job status', resp.status, await resp.text(), resp.headers.get('retry-after'));
         }
         const job = await resp.json() as Record<string, unknown>;
-        lastResult = (job.result ?? job) as T;
+        lastResult = this.unwrapJobResult(job) as T;
         if (!this._isPhonesPending(lastResult)) {
           return lastResult;
         }
@@ -3600,45 +3434,24 @@ export class OneShot {
       await this.sleep(interval, signal);
     }
 
-    // Timeout — return the last snapshot. phones_pending will still be true
-    // so the consumer knows phones never arrived.
     return lastResult as T;
   }
 
-  /**
-   * WebSocket branch of a job wait. Resolves on a `completed` push for this
-   * request, rejects with `JobError` on `failed` and with `OneShotError` on
-   * abort. Every other failure (no WebSocket global, handshake refused, socket
-   * closed early) rejects with a plain `Error`, which `pollJob` treats as
-   * "no push available" rather than as an outcome. There is no timeout here:
-   * the HTTP branch owns the deadline and aborts this one when it settles.
-   */
+  /** WebSocket transport failures leave HTTP polling in charge; job outcomes and cancellation settle the wait.
+   * The HTTP branch owns the deadline and aborts this branch when it settles. */
   private async waitViaWebSocket<T>(
     requestId: string,
     signal: AbortSignal,
     emit: (status: string) => void,
     wait: JobWaitState
   ): Promise<T> {
-    // Access-token sessions have no wallet signer to produce a signed proof,
-    // and the standard WebSocket constructor (browser and Node globals alike)
-    // cannot set a custom `Authorization` header on the handshake request —
-    // so there is no way to authenticate this upgrade without putting the
-    // reusable bearer token in the URL, which issue #971 round 1 (finding
-    // F-t_4d087f2a-5) forbids: a bearer secret must never ride in a URL that
-    // proxies, access logs, and telemetry can capture. These sessions skip
-    // the WebSocket accelerator entirely and rely on HTTP polling, which
-    // authenticates via the Authorization header on every request.
+    // WebSocket cannot carry an Authorization header; keep reusable bearer tokens out of logged URLs.
+    // Token sessions use authenticated HTTP polling instead.
     if (this.isAccessTokenSession) {
       throw new Error('WebSocket push is not available for access-token sessions; falling back to HTTP polling');
     }
 
-    // Build the signed, single-use read proof BEFORE opening the socket: the
-    // server authenticates the upgrade itself (not just the post-upgrade
-    // connection) the same as agentProofAuth does for every other free-read
-    // route (issue #971) — an unsigned ?wallet= alone is no longer
-    // sufficient. Unlike a bearer token, a proof is short-lived and single-use
-    // (5-minute TTL, Redis-enforced nonce), so passing it as a URL query
-    // param is an acceptable channel for it.
+    // Authenticate the upgrade with a short-lived, single-use proof; a wallet address alone proves nothing.
     const authHeaders = await this.signedReadHeaders();
     const authParams = new URLSearchParams();
     if (authHeaders['x-agent-proof']) authParams.set('proof', authHeaders['x-agent-proof']);
@@ -3706,7 +3519,8 @@ export class OneShot {
             settle(() => {
               cleanup();
               wait.via = 'ws';
-              const result = (msg.result ?? msg) as Record<string, unknown>;
+              wait.resultTool = typeof msg.result_tool === 'string' ? msg.result_tool : undefined;
+              const result = this.unwrapJobResult(msg) as Record<string, unknown>;
               if (msg.request_id && typeof result === 'object' && result !== null && !('request_id' in result)) {
                 result.request_id = msg.request_id;
               }
@@ -3732,7 +3546,6 @@ export class OneShot {
       };
 
       ws.onclose = () => {
-        // Any close before we got a result means no push is coming.
         settle(() => {
           cleanup();
           reject(new Error('WebSocket closed before result'));
@@ -3783,7 +3596,7 @@ export class OneShot {
 
         if (!resp.ok) {
           const body = await resp.text();
-          // 5xx / 429 from the poll endpoint are transient — keep polling.
+          // 5xx / 429 from the poll endpoint are transient - keep polling.
           // Any other non-2xx (401/403/404) is a real answer about this job.
           if (resp.status >= 500 || resp.status === 429) {
             throw new Error(`Poll returned ${resp.status}: ${body.slice(0, 200)}`);
@@ -3796,9 +3609,8 @@ export class OneShot {
         emit?.(String(job.status));
         if (job.status === 'completed') {
           this.log('Job completed');
-          if (wait) wait.via = 'http';
-          const result = (job.result ?? job) as Record<string, unknown>;
-          // Propagate request_id into the result so callers always have it
+          if (wait) { wait.via = 'http'; wait.resultTool = typeof job.result_tool === 'string' ? job.result_tool : undefined; }
+          const result = this.unwrapJobResult(job) as Record<string, unknown>;
           if (job.request_id && typeof result === 'object' && result !== null && !('request_id' in result)) {
             result.request_id = job.request_id;
           }
@@ -3866,9 +3678,6 @@ export class OneShot {
     extraHeaders?: Record<string, string>
   ): Promise<Response> {
     let resp = await this.sendLeg(endpoint, data, payment, quoteId, signal, timeoutMs, extraHeaders);
-    // The API refuses a request whose wallet proof it rejected, saying why (#1437).
-    // A stale clock window or a proof sent twice is cured by signing a new proof:
-    // send the leg again once. Nothing is paid in answer to this refusal.
     for (let attempt = 0; resp.status === 401; attempt++) {
       const refusal = await this.readInvalidProof(resp);
       if (!refusal) break;
@@ -3904,22 +3713,10 @@ export class OneShot {
     timeoutMs?: number,
     extraHeaders?: Record<string, string>
   ): Promise<Response> {
-    // A leg with no payment attached proves the wallet with a signed agent
-    // proof: the API spends an agent's credits, and shows them on a quote, only
-    // for a caller that has proven it holds the wallet (a bare X-Agent-ID is a
-    // public address). A leg that carries a payment signature needs none. The
-    // endpoints with durable admission read a 'submit' proof; a caller that
-    // asked for a proof explicitly keeps the scope it always had.
-    //
-    // One payment leg does need a proof: when credits cover the whole cost the
-    // "payment" is the zero-cost authorization, an unsigned stub (signature
-    // '0x'). It proves nothing, and the API refuses to spend credits on it
-    // alone (401 proof_required).
+    // Credit spending requires wallet proof unless a real payment signature already proves ownership.
+    // Zero-cost authorizations are unsigned stubs, so those still need a proof.
     const unsignedStub = payment?.payload?.signature === '0x';
-    // Identity Verification (#2405) answers a retry from the start its key already made, before payment, and
-    // only for a caller that proves the wallet: its payment leg carries the agent proof too, however the key was
-    // given (an option, or the idempotency_key body field the generated MCP tool sends). The API refuses a
-    // payment signature alone there with agent_proof_required. Same list as oneshot-python.
+    // Identity Verification requires wallet proof on the payment leg too, to recover keyed submissions.
     const provenPayment = /(?:^|\/)identity\/start$/.test(endpoint);
     const askedForProof = !!extraHeaders?.['x-agent-proof'];
     const proofScope = /(lookup\/person-(profile|email|email-status)|lookup\/place-permits|physical-mail\/send|solve|predict)$/.test(endpoint)
@@ -3963,14 +3760,8 @@ export class OneShot {
   }
 
 
-  /**
-   * ETH mode only. Make sure the wallet's *effective* USDC (on-chain balance
-   * minus payments signed but not yet settled) covers this charge, swapping
-   * ETH→USDC for a buffer of `swapBufferMultiplier` payments when it does not,
-   * then reserve the charge. Returns the reservation so the caller can release
-   * it if the payment never settles (request failed). Runs under a per-instance
-   * lock so concurrent calls never double-swap or race the wallet nonce.
-   */
+  /** Reserve effective USDC (on-chain minus unsettled payments), swapping a buffer if needed.
+   * Serialize reservations and swaps to avoid overspending and nonce races; release failed payments. */
   private async ensureUsdcBalance(paymentInfo: PaymentInfo): Promise<UsdcReservation | undefined> {
     if (this._currency !== 'ETH') return undefined;
 
@@ -4061,18 +3852,10 @@ export class OneShot {
     if (reservation) this._usdcPending.delete(reservation.id);
   }
 
-  /**
-   * How much USDC to buy: top up to `charge × swapBufferMultiplier`, counting
-   * whatever effective balance is already there. When the wallet provider
-   * exposes `getBalance` and its ETH cannot cover the buffered quote, fall
-   * back to the bare shortfall so an ETH-poor wallet can still make the one
-   * payment in front of it (a send-only provider always gets the buffer).
-   */
+  /** Buy a buffer, or only the shortfall when getBalance shows insufficient ETH for the buffer. */
   private async sizeSwap(charge: bigint, effective: bigint, chainId: number): Promise<bigint> {
     const shortfall = charge - effective;
-    // Integer math on a 10^6 scale (multiplier ≤ 1000, so ≤ 10^9 — always a
-    // finite, exact integer): keeps the multiplier's precision, no float→BigInt
-    // on an unbounded value.
+    // Bounded fixed-point math preserves precision without converting an unbounded float to BigInt.
     const mScaled = BigInt(Math.round(this._swapBufferMultiplier * SWAP_MULTIPLIER_SCALE));
     const target = (charge * mScaled + BigInt(SWAP_MULTIPLIER_SCALE) - 1n) / BigInt(SWAP_MULTIPLIER_SCALE);
     let amount = target > effective ? target - effective : shortfall;
@@ -4085,7 +3868,7 @@ export class OneShot {
           amount = shortfall;
         }
       } catch {
-        // Quoting failed — let executeSwap quote again and report properly.
+        // Quoting failed - let executeSwap quote again and report properly.
       }
     }
     return amount;
@@ -4098,7 +3881,7 @@ export class OneShot {
     return quote?.amountInMax;
   }
 
-  /** Perform the on-chain swap. */
+  /** Swap on the configured chain using the wallet provider. */
   private async executeUsdcSwap(usdcAmount: string, chainId: number) {
     const { executeSwap } = await import('./swap');
     return executeSwap(this.provider, this.rpcProvider, usdcAmount, chainId, this._slippage);
@@ -4142,7 +3925,6 @@ export class OneShot {
           ? Buffer.from(header, 'base64').toString()
           : atob(header);
         const parsed = JSON.parse(decoded);
-        // x402 v2: { x402Version: 2, accepts: [...], resource: {...}, extensions: {...} }
         if (parsed.accepts?.length > 0) {
           return {
             accepted: parsed.accepts[0] as PaymentRequirements,
@@ -4154,7 +3936,6 @@ export class OneShot {
         this.log('Failed to parse PAYMENT-REQUIRED header, using defaults');
       }
     }
-    // Fallback: construct from known production values
     return {
       accepted: {
         scheme: 'exact',
@@ -4189,7 +3970,6 @@ export class OneShot {
     if (header) {
       return this.parsePaymentRequired(header);
     }
-    // Probe: send quote ID without payment to get x402 middleware's 402
     // Carries X-Approval-Id: a policy-held call's probe must reach the 402,
     // not be held again.
     const probeResp = await this.makeRequest(endpoint, payload, undefined, quoteId, signal, undefined, extraHeaders);
@@ -4202,7 +3982,7 @@ export class OneShot {
     resource?: { url: string; description?: string; mimeType?: string },
     extensions?: Record<string, unknown>,
   ): Promise<SignedPayment> {
-    // Credits may cover the full cost — send a zero-cost authorization so the server
+    // Credits may cover the full cost - send a zero-cost authorization so the server
     // always receives a payment-signature header (avoids 402 from x402 SDK).
     if (parseFloat(paymentInfo.amount) === 0) {
       this.log('Credits cover full cost — sending zero-cost authorization');
@@ -4225,8 +4005,6 @@ export class OneShot {
       } };
     }
 
-    // Belt and braces: every paid path branches to retryAsCreditsSession
-    // before reaching here in access-token mode.
     if (this._accessToken) {
       throw new InsufficientCreditsError(
         `Credits do not cover $${paymentInfo.amount}; top up credits or use a wallet session`,
@@ -4234,7 +4012,6 @@ export class OneShot {
       );
     }
 
-    // If paying with ETH, make sure USDC covers the charge (swapping a buffer if not) and reserve it
     const reservation = await this.ensureUsdcBalance(paymentInfo);
 
     const now = Math.floor(Date.now() / 1000);
@@ -4244,15 +4021,11 @@ export class OneShot {
     const validBefore = now + 3600;
     const nonceHex = ethers.hexlify(nonce);
 
-    // Use the EIP-712 domain from the server's payment requirements — name,
-    // version AND chain. The chain used to be the mainnet constant, which made
-    // every signature invalid against Base Sepolia (the domain separator
-    // includes chainId), so the SDK could never pay on staging.
+    // Use the server's full EIP-712 domain, including chainId, so the signature matches its network.
     const domainName = (accepted.extra?.name as string) || 'USD Coin';
     const domainVersion = (accepted.extra?.version as string) || '2';
     const chainId = chainIdFromNetwork(accepted.network ?? paymentInfo.network) ?? CHAIN_ID;
 
-    // Sign EIP-3009 TransferWithAuthorization
     let signature: string;
     try {
       signature = await this.provider.signTypedData(
@@ -4286,7 +4059,6 @@ export class OneShot {
       throw err;
     }
 
-    // Return x402 PaymentPayload v2 format (including resource + extensions for Bazaar discovery)
     return { reservation, auth: {
       x402Version: 2,
       ...(resource ? { resource } : {}),

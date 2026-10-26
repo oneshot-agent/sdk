@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.61.0
+
+- Add `disputeComputeGoal(goalId, { reason })` to dispute a goal that ended `impossible_unverified`; the dispute is recorded on the goal and its receipt and refunds nothing. `ComputeEndReason` gains `impossible` and `impossible_unverified` (#2705).
+- Every person, company and business method takes `fresh: true` to bypass OneShot's shared store of earlier lookups and refresh it; their results carry `cached` and `fetched_at` (#2593).
+
 ## 0.60.0
 
 - Deliver each signed proof once. Every send that carries `x-agent-proof` now asks for a connection of its own (`Connection: close`, `keepalive: false`), so in Bun the fetch has no pooled socket to re-send it on. A browser's fetch drops `Connection` as a forbidden request header and reads `keepalive` differently, so in a browser the HTTP stack's own pooling and retry rules still apply and the replayed-read recovery below is the SDK's only defence. Bun 1.3.13's fetch re-sent a request byte for byte on a fresh connection when the pooled socket it chose closed after the server had read it; the API spent the nonce on the first copy and rejected the second as a replay. With this change that socket death surfaces as a network error to the caller instead. The signed-send paths of 0.53.1 and 0.58.0 each sign their own proof per send; the duplicate came from below the SDK, and SDKs before this change keep producing it (#2517).

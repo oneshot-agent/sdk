@@ -1,7 +1,5 @@
-// Public option + result types for every paid tool the SDK exposes.
-// Kept in a separate file so the OneShot class file (index.ts) stays
-// scannable. Consumers should keep importing from '@oneshot-agent/sdk'
-// (the package barrel re-exports everything from here).
+import type { UntrustedContent } from './untrusted-content';
+// Public types are re-exported from @oneshot-agent/sdk.
 
 import type { WalletProvider } from './wallet-provider';
 
@@ -61,15 +59,15 @@ export type LoggerFn = (message: string) => void;
 export type StatusUpdateFn = (status: string, requestId: string) => void;
 
 export interface OneShotConfig {
-  /** Option A: Raw private key (existing behavior) */
+  /** Raw private key for wallet authentication. */
   privateKey?: string;
-  /** Option B: Use Coinbase CDP Server Wallet (reads CDP_* env vars). Pass true or { address } to reuse existing. */
+  /** Use Coinbase CDP Server Wallet (reads CDP_* env vars). Pass true or { address } to reuse existing. */
   cdp?: boolean | { address?: string };
-  /** Option C: Bring your own WalletProvider implementation */
+  /** Bring your own WalletProvider implementation */
   walletProvider?: WalletProvider;
   /**
-   * Option D: an agent access token (`oneshot_<64 hex>`), for code that runs
-   * where the wallet key cannot be — hosted MCP clients, cloud runners. The
+   * An agent access token (`oneshot_<64 hex>`), for code that runs
+   * where the wallet key cannot be - hosted MCP clients, cloud runners. The
    * session identifies the agent with the token, pays every call from the
    * agent's prepaid credit balance, and never signs x402: a shortfall throws
    * `InsufficientCreditsError`. Budgets are read-only in this mode (set them
@@ -98,7 +96,7 @@ export interface OneShotConfig {
   /**
    * Payment currency: "USDC" (default, no swap) or "ETH". In ETH mode the SDK
    * checks the wallet's USDC before each payment and only swaps ETH→USDC (Uniswap
-   * V3, Base mainnet) when it does not cover the charge — buying a buffer so one
+   * V3, Base mainnet) when it does not cover the charge - buying a buffer so one
    * swap covers many calls. See `swapBufferMultiplier`.
    */
   currency?: 'USDC' | 'ETH';
@@ -116,7 +114,7 @@ export interface OneShotConfig {
   swapBufferMultiplier?: number;
   /**
    * Spend budget for this agent. Synced to the server once, before the first
-   * paid call, and enforced there against the receipts ledger — so the daily
+   * paid call, and enforced there against the receipts ledger - so the daily
    * figure is a real per-agent total, shared across every process and restart
    * running this wallet, not a per-instance counter.
    *
@@ -178,7 +176,7 @@ export interface AgentBudgetStatus {
 
 /**
  * Structured decision context for a tool call. Machine-readable metadata
- * that explains WHY this tool was called — consumed by auditor agents
+ * that explains WHY this tool was called - consumed by auditor agents
  * and programmatic oversight. Open schema: known fields are typed,
  * extra keys are allowed.
  */
@@ -228,7 +226,7 @@ export interface ToolOptions {
   signal?: AbortSignal;
   onStatusUpdate?: StatusUpdateFn;
   wait?: boolean;
-  /** Optional value tag for RoCS tracking — stored in the receipt at creation time */
+  /** Optional value tag for RoCS tracking - stored in the receipt at creation time */
   valueTag?: { type: string; amount?: number; label?: string };
   /**
    * Short human-readable reason for this tool call. Stored on the receipt
@@ -237,7 +235,7 @@ export interface ToolOptions {
    */
   memo?: string;
   /**
-   * Structured decision context — goal linkage, alternatives considered,
+   * Structured decision context - goal linkage, alternatives considered,
    * confidence score. Machine-readable counterpart to memo. Stored alongside
    * the receipt for programmatic auditing by supervisor agents.
    */
@@ -265,9 +263,9 @@ export interface ToolOptions {
    * is optional with a 24h cached-response replay window; personProfile /
    * personEmail / personEmailStatus are honored when durable enrichment is enabled
    * on the server AND the session authenticates with a wallet, not an
-   * `accessToken` — an access-token session skips the durable-replay check
+   * `accessToken` - an access-token session skips the durable-replay check
    * on these three routes entirely and always dispatches a fresh job, even
-   * with durable enrichment on (no expiry otherwise — backed by a durable
+   * with durable enrichment on (no expiry otherwise - backed by a durable
    * row, not a cache); physical-mail/send is mandatory and likewise never
    * expires. Save the key before submission.
    */
@@ -290,37 +288,37 @@ export interface EmailToolOptions extends ToolOptions {
   from_domain?: string;
   /**
    * Sender mailbox / local-part. Defaults to `agent` (i.e. agent@from_domain).
-   * Requires `from_domain` to be set — pinning `from_mailbox` alone throws a
+   * Requires `from_domain` to be set - pinning `from_mailbox` alone throws a
    * `ValidationError` (there is no default domain to attach it to). You may
-   * use any local-part — a new address is auto-provisioned on first use
+   * use any local-part - a new address is auto-provisioned on first use
    * (and starts unwarmed, building reputation over time). See the email
    * "list domains" tool for each domain's `default_from` and existing `addresses`.
    */
   from_mailbox?: string;
   /**
    * How this domain sends (provider-neutral):
-   *  - `'relay'` (default) — header/relay send; any from-address works with nothing
+   *  - `'relay'` (default) - header/relay send; any from-address works with nothing
    *    provisioned per address (no mailbox fee).
-   *  - `'mailbox'` — a real per-address mailbox; each new from-address provisions +
+   *  - `'mailbox'` - a real per-address mailbox; each new from-address provisions +
    *    warms a dedicated mailbox (one-time `mailbox_provisioning_fee` on the quote).
-   * Only honored when the domain is first set up — an already-provisioned domain
+   * Only honored when the domain is first set up - an already-provisioned domain
    * keeps the mode it was created with. Use `'mailbox'` on a new `from_domain`.
    *
    * Which means omitting this is NOT a way to avoid the fee: a domain created in
    * mailbox mode bills `mailbox_provisioning_fee` for every address that isn't
-   * already `active` on it — the default `agent@` included — whatever you pass
+   * already `active` on it - the default `agent@` included - whatever you pass
    * here, and `from_mailbox` doesn't change that either. Read `mailbox_mode` per
    * domain from `listDomains()` to see which of yours charge.
    */
   mailbox_mode?: 'relay' | 'mailbox';
   /**
    * Only meaningful when `from_domain` is a domain the agent doesn't own yet.
-   * A call with such a `from_domain` always stops after quoting — no charge,
-   * no send — and returns `status: 'confirmation_required'` with the exact
+   * A call with such a `from_domain` always stops after quoting - no charge,
+   * no send - and returns `status: 'confirmation_required'` with the exact
    * total and its `quote_id`. Pass that `quote_id` here on the repeat call to
    * register the domain, pay exactly that quote's total, and send in one call:
    * the SDK sends against the stored quote instead of quoting again, so the
-   * amount charged is the amount shown (#1070). A bare `true` names no amount
+   * amount charged is the amount shown. A bare `true` names no amount
    * and only re-quotes. An expired or used quote is refused by the server.
    */
   confirmNewDomain?: string;
@@ -334,12 +332,31 @@ export interface EmailToolOptions extends ToolOptions {
   }>;
 }
 
+/**
+ * The shared lookup cache's bypass. Every person, company and business lookup is served from
+ * OneShot's store when the same subject (or the same search) was looked up within its freshness window
+ * (profiles, dossiers, social accounts, email finds, company profiles and resolves 30 days; email status
+ * and searches 7 days; posts, articles, followers and interests 3 days); a stored record costs the same.
+ */
+export interface FreshLookupOption {
+  /** Look the record up again instead of using OneShot's stored copy, and refresh that copy. Off by default. */
+  fresh?: boolean;
+}
+
+/** What a person, company or business result says about where it came from. */
+export interface CachedRecordFields {
+  /** True when the record came from OneShot's store of earlier lookups. */
+  cached?: boolean;
+  /** When the record was obtained from its source, ISO 8601 UTC. */
+  fetched_at?: string;
+}
+
 export interface ResearchToolOptions extends ToolOptions {
   topic: string;
   depth?: 'deep' | 'quick';
 }
 
-export interface PersonFindOptions extends ToolOptions {
+export interface PersonFindOptions extends ToolOptions, FreshLookupOption {
   /** Off by default. Adds the per-person add-on on the pricing page × requested limit (default 100) for up to that many people; no phone hit guaranteed. */
   includePhone?: boolean;
   job_titles?: string[];
@@ -358,7 +375,7 @@ export interface PersonFindOptions extends ToolOptions {
   /** Max rows to return, 1-500 (server default 100). Large requests are
    * paginated server-side, so one response can hold up to `limit` rows.
    * The search runs under a time limit: if it is reached, the response holds
-   * the rows found so far (possibly fewer than `limit`) — continue with
+   * the rows found so far (possibly fewer than `limit`) - continue with
    * `offset`. With `include_phone`, every row reports its `phone_lookup`
    * outcome (see `PersonResult.phone_lookup`); a row whose lookup did not
    * finish in time is `not_attempted` or `unavailable`, never silently empty. */
@@ -371,7 +388,7 @@ export interface PersonFindOptions extends ToolOptions {
 }
 
 /**
- * What a caller knows about one person (#1899). Every single-person tool takes
+ * What a caller knows about one person. Every single-person tool takes
  * these same optional fields; at least one of `name`, `email`, `phone` or
  * `profile_url` is required. The API resolves the rest (a LinkedIn URL from a
  * name and company or an email, the other handles, the employer).
@@ -391,7 +408,7 @@ export interface PersonIdentity {
   social_media_url?: string;
 }
 
-export interface PersonProfileOptions extends ToolOptions, PersonIdentity {
+export interface PersonProfileOptions extends ToolOptions, PersonIdentity, FreshLookupOption {
   /** Off by default. Adds the per-person add-on on the pricing page for up to one person; no phone hit guaranteed. */
   includePhone?: boolean;
   /** Employer domain (older name; `company` takes a name or a domain). */
@@ -400,7 +417,7 @@ export interface PersonProfileOptions extends ToolOptions, PersonIdentity {
   company_name?: string;
 }
 
-export interface CompanyFindOptions extends ToolOptions {
+export interface CompanyFindOptions extends ToolOptions, FreshLookupOption {
   name?: string;
   domain?: string;
   industry?: string[];
@@ -413,14 +430,14 @@ export interface CompanyFindOptions extends ToolOptions {
   limit?: number;
 }
 
-export interface CompanyProfileOptions extends ToolOptions {
+export interface CompanyProfileOptions extends ToolOptions, FreshLookupOption {
   domain?: string;
   name?: string;
   linkedin_url?: string;
   ticker?: string;
 }
 
-export interface PersonEmailOptions extends ToolOptions, PersonIdentity {
+export interface PersonEmailOptions extends ToolOptions, PersonIdentity, FreshLookupOption {
   /** Same as `name` (older name). */
   full_name?: string;
   first_name?: string;
@@ -431,29 +448,29 @@ export interface PersonEmailOptions extends ToolOptions, PersonIdentity {
   company_name?: string;
 }
 
-export interface PersonEmailStatusOptions extends ToolOptions {
+export interface PersonEmailStatusOptions extends ToolOptions, FreshLookupOption {
   email: string;
 }
 
-export interface PersonDossierOptions extends ToolOptions, PersonIdentity {
+export interface PersonDossierOptions extends ToolOptions, PersonIdentity, FreshLookupOption {
   /** Off by default. Adds the per-person add-on on the pricing page for up to one person; no phone hit guaranteed. */
   includePhone?: boolean;
 }
 
-export interface PersonSocialAccountsOptions extends ToolOptions, PersonIdentity {}
+export interface PersonSocialAccountsOptions extends ToolOptions, PersonIdentity, FreshLookupOption {}
 
-export interface PersonArticlesOptions extends ToolOptions {
+export interface PersonArticlesOptions extends ToolOptions, FreshLookupOption {
   name: string;
   company: string;
   sort?: 'recent' | 'popular';
   limit?: number;
 }
 
-export interface PersonPostsOptions extends ToolOptions, PersonIdentity {}
+export interface PersonPostsOptions extends ToolOptions, PersonIdentity, FreshLookupOption {}
 
-export interface PersonInterestsOptions extends ToolOptions, PersonIdentity {}
+export interface PersonInterestsOptions extends ToolOptions, PersonIdentity, FreshLookupOption {}
 
-export interface PersonFollowersOptions extends ToolOptions, PersonIdentity {
+export interface PersonFollowersOptions extends ToolOptions, PersonIdentity, FreshLookupOption {
   type?: 'replies' | 'followers' | 'following' | 'followers,following';
   max_results?: number;
 }
@@ -507,7 +524,8 @@ export interface WebReadOptions extends ToolOptions {
   url: string;
 }
 
-export interface WebReadResult {
+export interface WebReadResult extends UntrustedContent {
+  hidden_removed: number;
   request_id?: string;
   /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
   receipt_id?: string;
@@ -571,7 +589,7 @@ export interface Education {
 /**
  * A normalized person record. The worker returns every scalar field below and
  * uses `null`, not a missing key, for a value the provider did not have; the
- * declared person_dossier schema requires exactly that shape (#1789).
+ * declared person_dossier schema requires exactly that shape.
  */
 export interface PersonResult {
   company_address?: BusinessAddress | null;
@@ -606,7 +624,7 @@ export interface PersonResult {
   phone_lookup?: 'found' | 'none' | 'not_attempted' | 'unavailable' | 'pending';
 }
 
-export interface PersonFindResult {
+export interface PersonFindResult extends CachedRecordFields {
   status: string;
   results: PersonResult[];
   total_found: number;
@@ -649,11 +667,11 @@ export interface EmailResult {
   error?: string;
   /**
    * Non-blocking advisory from the server. Values:
-   * - `pinned_domain_warming` — a pinned sender's domain is still warming (low warmup score)
-   * - `pinned_over_limit` — a pinned sender's domain is over its daily_send_limit
+   * - `pinned_domain_warming` - a pinned sender's domain is still warming (low warmup score)
+   * - `pinned_over_limit` - a pinned sender's domain is over its daily_send_limit
    * The send still proceeds; read this to back off / defer. (Note: an un-pinned
    * send with no eligible owned domain is a hard `400 no_sending_domain`, not a
-   * warning — there is no shared fallback sender.)
+   * warning - there is no shared fallback sender.)
    */
   warning?: string;
   email?: {
@@ -677,7 +695,7 @@ export type DomainPauseReason = 'warming' | 'low_reputation' | 'manual' | null;
 
 /** A mailbox already provisioned on a domain (from `/email/domains` `addresses[]`). */
 export interface DomainAddressEntry {
-  /** Full email address, lowercased — e.g. `sales@yourdomain.com`. */
+  /** Full email address, lowercased - e.g. `sales@yourdomain.com`. */
   address: string;
   /** Mailbox provisioning state. Only `active` counts as already-provisioned (free to send from). */
   status: 'active' | 'provisioning' | 'failed';
@@ -688,34 +706,34 @@ export interface DomainAddressEntry {
 export interface DomainPoolEntry {
   domain: string;
   /**
-   * Canonical sending address for this domain (e.g. `agent@yourdomain.com`) — the
+   * Canonical sending address for this domain (e.g. `agent@yourdomain.com`) - the
    * default mailbox when you don't pick one. Like any address, the first send from
    * it incurs the one-time `mailbox_provisioning_fee`; free once it's `active`.
    */
   default_from: string;
   /**
    * Mailboxes already provisioned on this domain. Empty = none yet; you can still
-   * send from any address — a new one is provisioned (and billed
+   * send from any address - a new one is provisioned (and billed
    * `mailbox_provisioning_fee`) on first use.
    */
   addresses: DomainAddressEntry[];
   /**
    * Which side of the provisioning fee this domain sits on.
    *
-   * `mailbox` — a real mailbox is provisioned per address, so every address
+   * `mailbox` - a real mailbox is provisioned per address, so every address
    * that isn't already `active` in `addresses[]` bills the one-time
    * `mailbox_provisioning_fee` on its first send. That includes the canonical
    * `default_from`; nothing is exempt.
-   * `relay` — header-only send, nothing provisioned, no per-address fee.
+   * `relay` - header-only send, nothing provisioned, no per-address fee.
    *
-   * This is a property of the DOMAIN, fixed when it was set up — not of the
+   * This is a property of the DOMAIN, fixed when it was set up - not of the
    * call. Omitting `mailbox_mode` on a quote does not make the send relay; the
    * domain's own mode always wins. Check here before you quote.
    */
   mailbox_mode: 'relay' | 'mailbox';
-  /** Rotation eligibility — the selector only picks `active`. */
+  /** Rotation eligibility - the selector only picks `active`. */
   pool_status: 'active' | 'paused' | 'removed';
-  /** Reputation health — a domain can be `paused` AND still `warming`/recovering. */
+  /** Reputation health - a domain can be `paused` AND still `warming`/recovering. */
   warmup_state: DomainWarmupState;
   pause_reason: DomainPauseReason;
   provisioning_status: string;
@@ -751,7 +769,7 @@ export interface DossierSection<T> {
   data: T;
 }
 
-export interface PersonProfileResult {
+export interface PersonProfileResult extends CachedRecordFields {
   status: string;
   profile: PersonResult & { social_accounts: SocialAccount[] };
   request_id?: string;
@@ -786,7 +804,7 @@ export interface CompanyResult {
   [key: string]: unknown;
 }
 
-export interface CompanyFindResult {
+export interface CompanyFindResult extends CachedRecordFields {
   status: string;
   results: CompanyResult[];
   total_found: number;
@@ -799,7 +817,7 @@ export interface CompanyFindResult {
   cost?: number;
 }
 
-export interface CompanyProfileResult {
+export interface CompanyProfileResult extends CachedRecordFields {
   status: string;
   company: CompanyResult;
   request_id?: string;
@@ -810,7 +828,7 @@ export interface CompanyProfileResult {
   cost?: number;
 }
 
-export interface PersonEmailResult {
+export interface PersonEmailResult extends CachedRecordFields {
   status: string;
   email: string | null;
   found: boolean;
@@ -873,7 +891,7 @@ export type PersonDossierPost = Omit<PersonPostsResult['result'][number],
   posted_at?: string | null;
 };
 
-export interface PersonDossierResult {
+export interface PersonDossierResult extends CachedRecordFields {
   status: string;
   result: {
     profile: { state: 'found'; data: PersonProfileResult['profile'] };
@@ -898,7 +916,7 @@ export interface PersonDossierResult {
   cost?: number;
 }
 
-export interface PersonSocialAccountsResult {
+export interface PersonSocialAccountsResult extends CachedRecordFields {
   status: string;
   result: Record<string, {
     url?: string;
@@ -912,7 +930,7 @@ export interface PersonSocialAccountsResult {
   cost?: number;
 }
 
-export interface PersonArticlesResult {
+export interface PersonArticlesResult extends CachedRecordFields {
   status: string;
   result: Array<{
     title?: string;
@@ -927,7 +945,7 @@ export interface PersonArticlesResult {
   cost?: number;
 }
 
-export interface PersonPostsResult {
+export interface PersonPostsResult extends CachedRecordFields {
   status: string;
   result: Array<{
     platform?: string;
@@ -944,7 +962,7 @@ export interface PersonPostsResult {
   cost?: number;
 }
 
-export interface PersonInterestsResult {
+export interface PersonInterestsResult extends CachedRecordFields {
   status: string;
   result: Record<string, unknown>;
   request_id: string;
@@ -953,7 +971,7 @@ export interface PersonInterestsResult {
   cost?: number;
 }
 
-export interface PersonFollowersResult {
+export interface PersonFollowersResult extends CachedRecordFields {
   status: string;
   result: {
     followers?: Array<Record<string, unknown>>;
@@ -966,7 +984,7 @@ export interface PersonFollowersResult {
   cost?: number;
 }
 
-export interface PersonEmailStatusResult {
+export interface PersonEmailStatusResult extends CachedRecordFields {
   status: string;
   email: string;
   valid: boolean;
@@ -981,7 +999,8 @@ export interface PersonEmailStatusResult {
   cost?: number;
 }
 
-export interface InboxEmail {
+export interface InboxEmail extends UntrustedContent {
+  hidden_removed: number;
   authenticated: boolean;
   id: string;
   from: string;
@@ -998,7 +1017,8 @@ export interface InboxEmail {
   }>;
 }
 
-export interface InboxListResult {
+export interface InboxListResult extends UntrustedContent {
+  hidden_removed: number;
   emails: InboxEmail[];
   count: number;
   has_more: boolean;
@@ -1056,13 +1076,6 @@ export interface VoiceQuote {
   quote_id: string;
   target_numbers: string[];
   conference_mode: boolean;
-  /** @deprecated The API stopped emitting a paraphrased objective summary
-   *  when the voice prompt pipeline switched to verbatim assembly. Field
-   *  retained for type-back-compat; will be removed in the next major. */
-  objective_summary?: string;
-  /** @deprecated See objective_summary — the LLM rewrite that produced these
-   *  bullets is gone. The full objective is in the call's system prompt. */
-  talking_points?: string[];
   success_criteria: string[];
   estimated_duration_minutes: number;
   complexity_score: number;
@@ -1152,9 +1165,6 @@ export interface SmsInboxResult {
   count: number;
 }
 
-// ---------------------------------------------------------------------------
-// Inbound voice — an agent-owned number answers its own calls
-// ---------------------------------------------------------------------------
 
 export interface VoiceNumber {
   id: string;
@@ -1411,8 +1421,6 @@ export interface BrowserTaskOptions extends ToolOptions {
   session_id?: string;
   /** Persistent browser profile ID for reusing cookies/localStorage across sessions */
   profile_id?: string;
-  /** @deprecated Unsupported. Import cookies/storage_state when creating a profile. */
-  secrets?: Record<string, string>;
   /** Legacy step-derived budget allowance (default: 50, supported: 25–100); not an exact action limit. */
   max_steps?: number;
 }
@@ -1621,7 +1629,7 @@ export interface ComputeSchedule {
   cron: string;
   /** USDC budget per run */
   budget_per_run: number;
-  /** Maximum number of runs (optional — runs indefinitely if omitted) */
+  /** Maximum number of runs (optional - runs indefinitely if omitted) */
   max_runs?: number;
 }
 
@@ -1689,13 +1697,42 @@ export interface ComputeCheckResult {
   attempt?: number;
 }
 
-export type ComputeEndReason = 'check_passed' | 'owner_confirmed' | 'check_failed' | 'budget_exhausted' | 'deadline_passed' | 'planner_failed';
+export type ComputeEndReason = 'check_passed' | 'owner_confirmed' | 'check_failed' | 'budget_exhausted' | 'deadline_passed' | 'planner_failed' | 'impossible' | 'impossible_unverified' | 'connection_timeout';
 
 export interface ComputeApprovals {
   /** Hold any single call whose cost exceeds this many USDC. */
   spend_over_usdc?: number;
   /** Hold every call of these tools, whatever the cost (e.g. ["commerce_buy", "physical_mail", "voice", "soul_hire"]). */
   tools?: string[];
+}
+
+/** A connected system a goal needs, as the quote read it from the objective. */
+export interface ComputeRequirement {
+  family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'repository';
+  /** The product the objective names (e.g. "QuickBooks"); null when only the kind of system was named. */
+  product: string | null;
+  /** The system can be connected on OneShot right now. */
+  available: boolean;
+  /** The goal owner has an active connection to it. null for a caller that has not proven it holds the agent wallet (access token or signed proof). */
+  connected: boolean | null;
+  /** Where the owner connects a system; only for a caller proven to hold the agent wallet. */
+  connect_url?: string;
+}
+
+/**
+ * Whether a goal can be done, as the quote judged it. `refuse` comes only with a proof and no quote;
+ * `hold` means a supported system is not connected yet (the quote is still issued); an unproven caller instead gets
+ * `accept` with the reason `connection_checked_at_payment`. Warnings never change the verdict.
+ */
+export interface ComputeFeasibility {
+  verdict: 'accept' | 'hold' | 'refuse';
+  reasons: {
+    code: 'system_unsupported' | 'deadline_in_past' | 'infeasible_input' | 'connection_checked_at_payment';
+    message: string;
+    conflicts?: { constraints: { family: string; ref: string; label: string }[]; explanation: string }[];
+  }[];
+  warnings: { code: 'no_tool_matched' | 'tight_deadline' | 'finish_line_unknowable' | 'product_unverified' | 'similar_goal_was_impossible'; message: string }[];
+  finish_line?: { kind: 'measurable' | 'needs_owner' | 'unknowable'; done_check?: ComputeDoneCheck };
 }
 
 export interface ComputeQuote {
@@ -1705,6 +1742,9 @@ export interface ComputeQuote {
   estimated_tasks: number;
   estimated_duration_days: number;
   budget_breakdown: Record<string, string>;
+  /** One entry per connected system the goal needs. */
+  requires: ComputeRequirement[];
+  feasibility: ComputeFeasibility;
   total_budget: string;
   expires_at: string;
   schedule_cron?: string;
@@ -1714,6 +1754,7 @@ export interface ComputeQuote {
 }
 
 export interface ComputeGoalResult {
+  requires?: ComputeRequirement[];
   goal_id: string;
   request_id: string;
   receipt_id?: string;
@@ -1732,9 +1773,12 @@ export interface ComputeGoalResult {
   };
 }
 
+export type GoalStatus = 'active' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'awaiting_confirmation' | 'awaiting_connection';
+
 export interface ComputeGoalStatus {
   id: string;
-  status: string;
+  status: GoalStatus;
+  connection_hold?: { since: string; requires: ComputeRequirement[] } | null;
   name: string;
   objective: string;
   current_phase: number | null;
@@ -1833,7 +1877,7 @@ export interface ComputeBudgetStatus {
 }
 
 
-export interface BusinessFindOptions extends ToolOptions {
+export interface BusinessFindOptions extends ToolOptions, FreshLookupOption {
   /** Business categories, e.g. ['hvac contractor', 'dental practice']. category or keywords required. */
   category?: string[];
   /** Free-text keywords (alternative to category). */
@@ -1852,7 +1896,7 @@ export interface BusinessFindOptions extends ToolOptions {
   limit?: number;
 }
 
-export interface BusinessResolveOptions extends ToolOptions {
+export interface BusinessResolveOptions extends ToolOptions, FreshLookupOption {
   name: string;
   address?: string;
   city?: string;
@@ -1887,7 +1931,7 @@ export interface LocalResult {
   longitude: number | null;
 }
 
-export interface BusinessFindResult {
+export interface BusinessFindResult extends CachedRecordFields {
   status: string;
   results: LocalResult[];
   total_found: number;
@@ -1902,9 +1946,9 @@ export interface BusinessFindResult {
   cost?: number;
 }
 
-export interface BusinessResolveResult {
+export interface BusinessResolveResult extends CachedRecordFields {
   status: string;
-  /** false is a completed job, not an error — the same contract as personEmail. */
+  /** false is a completed job, not an error - the same contract as personEmail. */
   found: boolean;
   /** 0..1 confidence of the best candidate (0 when nothing was returned). */
   confidence: number;
@@ -1931,7 +1975,7 @@ export type GovNoticeTypeCode = 'r' | 'p' | 'o' | 'k' | 's' | 'a' | 'u' | 'i' | 
 export interface RecordSolicitationsFindOptions extends ToolOptions {
   /** 6-digit NAICS codes, 1-20. Required. */
   naics: string[];
-  /** Default ['r', 'p'] — Sources Sought + Presolicitation, the window where the requirement is still being written. */
+  /** Default ['r', 'p'] - Sources Sought + Presolicitation, the window where the requirement is still being written. */
   notice_types?: GovNoticeTypeCode[];
   /** Look-back window on posted date, 1-365. Default 30. */
   since_days?: number;
@@ -2003,7 +2047,7 @@ export interface RecordSolicitationsFindResult {
   description_fetches: number;
   /**
    * ISO timestamp of the data snapshot behind `results`: the publish time of
-   * SAM.gov's daily extract when served from it (the common case — same-day
+   * SAM.gov's daily extract when served from it (the common case - same-day
    * postings appear the next morning), or the request time when the live
    * SAM.gov API answered.
    */
@@ -2017,13 +2061,11 @@ export interface RecordSolicitationsFindResult {
   cost?: number;
 }
 
-/** Interactive profile login (#1889). setup_url is a secret for the account's owner; do not log or persist it. */
+/** Interactive profile login. setup_url is a secret for the account's owner; do not log or persist it. */
 export interface BrowserProfileSetup {
   profile_id: string;
   session_id?: string;
   status: string;
-  /** @deprecated Use setup_url. Removed in the next release. */
-  live_url?: string | null;
   /** The OneShot page the account's owner opens to sign in. Opens once; a fresh one comes from createBrowserProfileSetupLink. Returned by start and link. */
   setup_url?: string;
   /** When setup_url stops opening (10 minutes after it was minted, or when the setup expires). */
@@ -2252,7 +2294,7 @@ export interface LinkedInConversationsOptions {
 export interface LinkedInMessagesOptions {
   accountId: string;
   conversationId?: string;
-  /** `inbound` = the human received it — use with `since` as a reply watermark. */
+  /** `inbound` = the human received it - use with `since` as a reply watermark. */
   direction?: 'inbound' | 'outbound';
   /** ISO time: only messages sent after this. */
   since?: string;
@@ -2425,7 +2467,7 @@ export type DiscoverToolsResult =
   | { kind: 'tools'; tools: { name: string; purpose: string; requiredInputs: string[] }[];
       nextCursor: string | null; message?: string; searchedCategories?: string[] };
 
-/** One of the agent's connections (`GET /v1/connections`, #2403). A read of a connected system takes its `id` as `connection_id`. */
+/** One of the agent's connections (`GET /v1/connections`). A read of a connected system takes its `id` as `connection_id`. */
 export interface AgentConnection {
   id: string;
   name: string;
