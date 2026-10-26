@@ -222,6 +222,7 @@ export interface ToolOptions {
   /** Called when the server returns durable job and receipt handles. */
   onAccepted?: (event: { request_id: string; receipt_id?: string; idempotencyKey?: string }) => void;
   maxCost?: number;
+  /** Polling limit in seconds. Overrides a tool's manifest timeout or its existing default. */
   timeout?: number;
   signal?: AbortSignal;
   onStatusUpdate?: StatusUpdateFn;
@@ -1708,7 +1709,7 @@ export interface ComputeApprovals {
 
 /** A connected system a goal needs, as the quote read it from the objective. */
 export interface ComputeRequirement {
-  family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'repository';
+  family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'meetings' | 'repository';
   /** The product the objective names (e.g. "QuickBooks"); null when only the kind of system was named. */
   product: string | null;
   /** The system can be connected on OneShot right now. */

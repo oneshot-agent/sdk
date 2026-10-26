@@ -1,4 +1,5 @@
 import { markUntrusted } from './untrusted-content';
+import { TOOL_TIMEOUTS } from './tool-timeouts.generated';
 export type { UntrustedContent } from './untrusted-content';
 import { Hunts } from './hunts';
 import type { DurableRecoveryEndpoint, RecoveryEndpoint, RecoveryResponse } from './recovery';
@@ -1715,7 +1716,7 @@ export class OneShot {
 
   /**
    * The agent's connections: GitHub and business systems, each with `id`, `system`, `account_label` and
-   * `status`. Free. A connected-system read (ledger, CRM, shipping, tax, procurement) takes the `id` of an active
+   * `status`. Free. A connected-system read (ledger, CRM, shipping, tax, procurement, meetings) takes the `id` of an active
    * one as `connection_id`; pick it by `system` and `account_label`, then call the read with the generic
    * {@link OneShot.route}.
    *
@@ -3176,7 +3177,7 @@ export class OneShot {
       }
       const completed = await this.pollJob<Record<string, unknown>>(
         result.request_id as string,
-        timeout,
+        timeout ?? TOOL_TIMEOUTS[endpoint],
         signal,
         onStatusUpdate,
         waitForPhones ? { waitForPhones, phoneTimeoutSec } : undefined,

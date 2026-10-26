@@ -141,6 +141,7 @@ try {
   `voice`, `sms`, `build`, `refineBuild`, `updateBuild` and `browser`; the other
   calls reject with the signal's `reason`. Handle both.
 - `timeout` is how long you wait, in seconds. It never limits the job.
+  `agent.tool()` uses the manifest timeout (Company Dossier: 1020 seconds), or 120 seconds when absent. Typed methods share it unless they specify their own default. An explicit `timeout` wins.
 - Goals run longer than calls. Watch one with `waitForComputeGoal`:
 
 ```typescript
