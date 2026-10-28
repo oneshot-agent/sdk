@@ -510,11 +510,14 @@ export interface ProductFindOptions extends ToolOptions {
 export interface WebSearchOptions extends ToolOptions {
   query: string;
   max_results?: number;
+  /** Only results published within the last day, week, month or year. */
+  published_within?: 'day' | 'week' | 'month' | 'year';
 }
 
 export interface WebSearchResult {
   query: string;
-  results: Array<{ url: string; title: string; description: string }>;
+  /** `published_at` is the publication date (YYYY-MM-DD) when the provider gives one, otherwise null. */
+  results: Array<{ url: string; title: string; description: string; published_at: string | null }>;
   result_count: number;
   memo?: string;
   cost?: number;
@@ -1776,6 +1779,23 @@ export interface ComputeGoalResult {
 
 export type GoalStatus = 'active' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'awaiting_confirmation' | 'awaiting_connection';
 
+export interface ComputeGoalClaimSource {
+  tool: string;
+  input_summary: string;
+  /** Source-reported time, or null when the tool did not report it. */
+  as_of: string | null;
+  retrieved_at: string;
+  call_id: string | null;
+}
+
+export interface ComputeGoalClaim {
+  text: string;
+  kind: 'observed' | 'inferred';
+  sources: ComputeGoalClaimSource[];
+  /** Zero-based indices of earlier claims. Inference rules are stated in text. */
+  basis?: number[];
+}
+
 export interface ComputeGoalStatus {
   id: string;
   status: GoalStatus;
@@ -1801,6 +1821,7 @@ export interface ComputeGoalStatus {
   /** The goal's answer in the planner's words, written when it finished. What its tasks produced: `getComputeOutputs`. */
   result?: string | null;
   result_at?: string | null;
+  claims?: ComputeGoalClaim[];
   started_at: string | null;
   completed_at: string | null;
   last_wake_at: string | null;
@@ -2479,7 +2500,8 @@ export interface AgentConnection {
   account_label: string | null;
   /** Only an `active` connection can be read. */
   status: 'pending' | 'active' | 'expired' | 'revoked';
-  scope: { repositories: string[]; accountId?: string; oauthScopes?: string[] };
+  /** `region` is the data center named at start, for a system that runs several (Zoho Books). */
+  scope: { repositories: string[]; accountId?: string; region?: string; oauthScopes?: string[] };
   credential?: 'stored';
   created_at: string;
   activated_at: string | null;

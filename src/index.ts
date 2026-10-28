@@ -156,6 +156,7 @@ import type {
   BrowserResult, UpdateBuildOptions, RefineBuildOptions, SpendCategory, SpendBreakdown, RoCSResult, RoCSByGoalResult,
   Receipt, ReceiptsListResult, UnifiedBalance, CreditsTopUpResult, ComputeSchedule, ComputeOptions,
   ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeStatusUpdateFn, ComputeTask, ComputeOutput, ComputeOutputContent,
+  ComputeGoalClaim, ComputeGoalClaimSource,
   ComputeBudgetStatus,
   DomainPoolEntry, DomainPoolListResult, DomainPoolStatusResult,
   AgentBudgetConfig, AgentBudgetStatus, AccessTokenCreated, AccessTokenInfo,
