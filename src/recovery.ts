@@ -1,6 +1,6 @@
 export type DurableRecoveryEndpoint =
   | 'lookup/person-profile' | 'lookup/person-email' | 'lookup/person-email-status'
-  | 'lookup/place-permits' | 'physical-mail/send' | 'solve' | 'predict';
+  | 'lookup/place-permits' | 'lookup/company-private-raises' | 'physical-mail/send' | 'solve' | 'predict';
 
 /** Endpoint names accepted by GET /v1/submissions/recover. */
 export type RecoveryEndpoint = DurableRecoveryEndpoint
