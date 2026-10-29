@@ -1712,7 +1712,7 @@ export interface ComputeApprovals {
 
 /** A connected system a goal needs, as the quote read it from the objective. */
 export interface ComputeRequirement {
-  family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'meetings' | 'repository';
+  family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'meetings' | 'mailbox' | 'files' | 'repository';
   /** The product the objective names (e.g. "QuickBooks"); null when only the kind of system was named. */
   product: string | null;
   /** The system can be connected on OneShot right now. */
