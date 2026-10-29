@@ -1684,7 +1684,7 @@ export type ComputeDoneCheck =
   | { kind: 'count'; of: 'emails'; status?: 'sent' | 'delivered' | 'opened'; at_least: number }
   /** The latest completed result of `tool`, at `path` (dot-separated; omit for the whole result). Give `equals` or `at_least`. */
   | { kind: 'tool_result'; tool: string; path?: string; equals?: string | number | boolean; at_least?: number }
-  /** Every case of the goal is in one of `finished_states` (a state in `owner_required_for` also needs an owner in the record). With no cases the check is not met. */
+  /** Every case of the goal is in one of `finished_states` (a state in `owner_required_for` also needs an owner in the record). `unreached` always counts as finished and is reported on its own. With no cases the check is not met. */
   | { kind: 'cases'; finished_states: string[]; owner_required_for?: string[]; min_cases?: number }
   /** No check can be written: you confirm with `confirmComputeGoal`. */
   | { kind: 'owner' };
