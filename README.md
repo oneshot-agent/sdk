@@ -153,7 +153,7 @@ const done = await agent.waitForComputeGoal(goal.goal_id, {
 ```
 
 - It resolves on `completed` and throws `JobError` on `failed` or `cancelled`
-  (`code` is the `end_reason`). `awaiting_confirmation`, `awaiting_connection`, `awaiting_budget` and `paused` wait for you;
+  (`code` is the `end_reason`). `awaiting_confirmation`, `awaiting_connection`, `awaiting_budget`, `awaiting_tool` and `paused` wait for you;
   they do not end the wait.
 - Budget exhaustion holds the goal in `awaiting_budget`; `fundComputeGoal` resumes it. After 7 days unanswered it ends `budget_exhausted` and unused funds are credited. An already failed budget goal also comes back after funding.
   Call `waitForComputeGoal` again; the old wait does not resume.

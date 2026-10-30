@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- #3174: Goal status includes `tool_requests` with each request's need, status and optional live tool name.
+
+## 0.62.0
+
+- Add `continueComputeGoalWithoutTool(goalId, { message })` to release a goal held in `awaiting_tool` without the tool it requested; the goal resumes with the message. `GoalStatus` gains `awaiting_tool` and `ComputeEndReason` gains `tool_timeout` (#3173).
+
 ## 0.61.0
 
 - Add `disputeComputeGoal(goalId, { reason })` to dispute a goal that ended `impossible_unverified`; the dispute is recorded on the goal and its receipt and refunds nothing. `ComputeEndReason` gains `impossible` and `impossible_unverified` (#2705).

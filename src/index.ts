@@ -44,7 +44,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Keep receipt on its subpath: node:crypto breaks browser bundles, and providerCost is not public.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.61.0';
+const SDK_VERSION = '0.62.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -1880,7 +1880,7 @@ export class OneShot {
    * with JobError (goal ID, end_reason code, snapshot in partialResult).
    * Budget exhaustion waits in awaiting_budget for funding; after seven days it ends. After fundComputeGoal revives an ended goal,
    * call waitForComputeGoal again with the same ID to observe the new run.
-   * Paused/awaiting_confirmation/awaiting_connection/awaiting_budget and recurring goals keep waiting until the
+   * Paused/awaiting_confirmation/awaiting_connection/awaiting_budget/awaiting_tool and recurring goals keep waiting until the
    * goal ends or the timeout (seconds, default 120) expires with JobTimeoutError.
    * Infinity disables the local deadline.
    * onStatusUpdate receives each distinct observed status before settlement.
@@ -2146,6 +2146,29 @@ export class OneShot {
     if (response.status === 404) throw new ToolError('Goal not found', 404, await response.text(), response.headers.get('retry-after'));
     if (!response.ok) throw new ToolError('Failed to dispute compute goal', response.status, await response.text(), response.headers.get('retry-after'));
     const json = await response.json() as { data: { goal_id: string; status: string; end_reason: string | null; dispute: { at: string; reason: string } } };
+    return json.data;
+  }
+
+  /**
+   * Continue a goal held in `awaiting_tool` without the tool it requested
+   * (#3173). The goal returns to active and resumes with `message` as what
+   * its owner said, or a default note that it continues without the tool.
+   *
+   * @example
+   * ```typescript
+   * await agent.continueComputeGoalWithoutTool(goalId, { message: 'Use the public filings instead.' });
+   * ```
+   */
+  async continueComputeGoalWithoutTool(goalId: string, input: { message?: string } = {}): Promise<{ goal_id: string; status: string }> {
+    this.validate(goalId, 'goalId');
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders('write')) },
+      body: JSON.stringify({ continue_without_tool: true, ...(input.message ? { response: input.message } : {}) }),
+    });
+    if (response.status === 404) throw new ToolError('Goal not found', 404, await response.text(), response.headers.get('retry-after'));
+    if (!response.ok) throw new ToolError('Failed to continue compute goal without the tool', response.status, await response.text(), response.headers.get('retry-after'));
+    const json = await response.json() as { data: { goal_id: string; status: string } };
     return json.data;
   }
 

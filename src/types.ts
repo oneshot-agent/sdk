@@ -1713,7 +1713,7 @@ export interface ComputeCheckResult {
   attempt?: number;
 }
 
-export type ComputeEndReason = 'check_passed' | 'owner_confirmed' | 'check_failed' | 'budget_exhausted' | 'deadline_passed' | 'planner_failed' | 'impossible' | 'impossible_unverified' | 'connection_timeout';
+export type ComputeEndReason = 'check_passed' | 'owner_confirmed' | 'check_failed' | 'budget_exhausted' | 'deadline_passed' | 'planner_failed' | 'impossible' | 'impossible_unverified' | 'connection_timeout' | 'tool_timeout';
 
 export interface ComputeApprovals {
   /** Hold any single call whose cost exceeds this many USDC. */
@@ -1827,7 +1827,7 @@ export interface ComputeGoalResult {
   };
 }
 
-export type GoalStatus = 'active' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'awaiting_confirmation' | 'awaiting_connection' | 'awaiting_budget';
+export type GoalStatus = 'active' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'awaiting_confirmation' | 'awaiting_connection' | 'awaiting_budget' | 'awaiting_tool';
 
 export interface ComputeGoalClaimSource {
   tool: string;
@@ -1849,6 +1849,7 @@ export interface ComputeGoalClaim {
 export interface ComputeGoalStatus {
   id: string;
   status: GoalStatus;
+  tool_requests: Array<{ id: string; need: string; status: 'open' | 'queued' | 'filed' | 'building' | 'shipped' | 'declined' | 'matched_existing' | 'duplicate'; tool_name?: string }>;
   connection_hold?: { since: string; requires: ComputeRequirement[] } | null;
   name: string;
   objective: string;
