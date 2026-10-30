@@ -52,7 +52,7 @@
     "base"
   ],
   "dependencies": {
-    "ethers": "6.16.0"
+    "ethers": "6.17.0"
   },
   "devDependencies": {
     "@types/node": "25.3.5",

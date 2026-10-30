@@ -1271,7 +1271,8 @@ export interface InboundCallsOptions {
 export interface Notification {
   id: string;
   agentId: string;
-  type: 'job_completed' | 'job_failed' | 'voice_completed' | 'sms_completed' | 'credit_issued' | 'domain_expiring' | 'phone_expiring';
+  type: 'job_completed' | 'job_failed' | 'voice_completed' | 'sms_completed' | 'credit_issued' | 'domain_expiring' | 'phone_expiring'
+    | 'goal_awaiting_budget' | 'goal_budget_warning';
   title: string;
   body?: string;
   metadata?: Record<string, unknown>;
@@ -1673,6 +1674,17 @@ export interface ComputeOptions extends ToolOptions {
    * sandbox default-deny on gets the same for all its goals.
    */
   egress_allowlist?: string[];
+  /**
+   * Your reading of the goal: the unit, how a unit starts, what each unit needs, the overhead, the
+   * volume and what no price list covers. It replaces the quote's reading and is priced again in
+   * code; a tool the goal cannot call is refused. Omit it and the quote proposes one.
+   */
+  scope?: ComputeGoalScope;
+  /**
+   * Called with the quote before anything is paid: read `quote.scope`, `quote.price` and
+   * `quote.done_check` there, and throw to stop without paying. `maxCost` still caps the total.
+   */
+  onQuote?: (quote: ComputeQuote) => void;
 }
 
 export type ComputeDoneCheck =
@@ -1737,6 +1749,39 @@ export interface ComputeFeasibility {
   }[];
   warnings: { code: 'no_tool_matched' | 'tight_deadline' | 'finish_line_unknowable' | 'product_unverified' | 'similar_goal_was_impossible'; message: string }[];
   finish_line?: { kind: 'measurable' | 'needs_owner' | 'unknowable'; done_check?: ComputeDoneCheck };
+  /** What the goal needs that no tool does, as the estimate read it; each is a `no_tool_matched` warning, and the quote is still issued. */
+  missing?: { entity: string; attribute?: string; action?: string; operation: 'lookup' | 'list' | 'act'; purpose: string }[];
+}
+
+/** One tool use inside a unit of a goal's scope. */
+export interface ComputeScopeUse {
+  tool: string;
+  qty: number;
+  max_attempts: number;
+  /** Whom or what the use is pointed at, in your words. */
+  target?: string;
+  persistence?: { max_attempts: number; spacing_seconds: number; escalate_to?: string; then: 'owner' | 'give_up' };
+}
+
+/** A goal's scope: the unit the goal works in, what one unit takes, and how many units there are. */
+export interface ComputeGoalScope {
+  unit: { name: string; starts_on: 'list' | 'event' | 'schedule' | 'once' };
+  per_unit: { uses: ComputeScopeUse[]; step_allowance: number; done: string[] };
+  overhead: { uses: Pick<ComputeScopeUse, 'tool' | 'qty' | 'max_attempts'>[]; step_allowance: number };
+  volume: { kind: 'list'; count: number } | { kind: 'open' };
+  unpriced: { name: string; reason: 'connection' | 'quoted_tool'; assumption?: string }[];
+}
+
+/** What a quote prices: one unit, the overhead, the whole goal or the units a budget covers, and what it cannot price. */
+export interface ComputeScopePrice {
+  per_unit: { expected: number; ceiling: number };
+  overhead: { expected: number; ceiling: number };
+  /** A listed volume: the whole goal. */
+  total?: { expected: number; ceiling: number };
+  /** An open volume with a budget: whole units after overhead; null for a zero-cost unit. */
+  units_covered?: number | null;
+  unpriced: ComputeGoalScope['unpriced'];
+  unmeasured: string[];
 }
 
 export interface ComputeQuote {
@@ -1749,6 +1794,11 @@ export interface ComputeQuote {
   /** One entry per connected system the goal needs. */
   requires: ComputeRequirement[];
   feasibility: ComputeFeasibility;
+  /** The recipe the goal is held to: yours, or the quote's reading. */
+  scope: ComputeGoalScope;
+  price: ComputeScopePrice;
+  /** The done check the goal is held to: yours, else the proposed one; null means you confirm. */
+  done_check: ComputeDoneCheck | null;
   total_budget: string;
   expires_at: string;
   schedule_cron?: string;
@@ -1777,7 +1827,7 @@ export interface ComputeGoalResult {
   };
 }
 
-export type GoalStatus = 'active' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'awaiting_confirmation' | 'awaiting_connection';
+export type GoalStatus = 'active' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'awaiting_confirmation' | 'awaiting_connection' | 'awaiting_budget';
 
 export interface ComputeGoalClaimSource {
   tool: string;
@@ -1816,7 +1866,9 @@ export interface ComputeGoalStatus {
   done_check?: ComputeDoneCheck | null;
   /** The latest evaluation of the done-check. */
   check_result?: ComputeCheckResult | null;
-  /** Why the goal ended. A goal that ran out of budget is `budget_exhausted`, never completed. */
+  /** Progress and code-priced funding estimate while waiting for budget. */
+  budget_hold?: { since: string; units_done: number; units_left?: number; cost_to_finish?: number; price_per_unit?: number } | null;
+  /** Why the goal ended. Budget exhaustion holds for 7 days before ending `budget_exhausted`. */
   end_reason?: ComputeEndReason | null;
   /** The goal's answer in the planner's words, written when it finished. What its tasks produced: `getComputeOutputs`. */
   result?: string | null;

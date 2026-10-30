@@ -154,7 +154,7 @@ import type {
   BuildProduct, BuildLeadCapture, BuildBrand, BuildImages, BuildOptions,
   BuildQuote, BuildResult, BrowserTaskOptions, BrowserProfile, BrowserProfileCreateOptions, BrowserProfileSetup, BrowserQuote,
   BrowserResult, UpdateBuildOptions, RefineBuildOptions, SpendCategory, SpendBreakdown, RoCSResult, RoCSByGoalResult,
-  Receipt, ReceiptsListResult, UnifiedBalance, CreditsTopUpResult, ComputeSchedule, ComputeOptions,
+  Receipt, ReceiptsListResult, UnifiedBalance, CreditsTopUpResult, ComputeSchedule, ComputeOptions, ComputeGoalScope, ComputeScopeUse, ComputeScopePrice,
   ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeStatusUpdateFn, ComputeTask, ComputeOutput, ComputeOutputContent,
   ComputeGoalClaim, ComputeGoalClaimSource,
   ComputeBudgetStatus,
@@ -1776,6 +1776,11 @@ export class OneShot {
    * Uses the quote-then-pay flow: first call gets a 402 with a budget estimate,
    * second call (with payment) creates the goal.
    *
+   * Name the unit of work, how work starts and what each unit needs in the objective, or pass
+   * `scope`. The quote carries `scope`, `price` (per unit expected and ceiling, overhead, total or
+   * units covered, unpriced, unmeasured) and the `done_check` the goal is held to; `onQuote` reads
+   * them before paying and may throw to stop. A `scope` you pass is priced again in code.
+   *
    * @example
    * ```typescript
    * const goal = await agent.compute({
@@ -1804,6 +1809,7 @@ export class OneShot {
     if (options.schedule) payload.schedule = options.schedule;
     if (options.approvals) payload.approvals = options.approvals;
     if (options.done_check) payload.done_check = options.done_check;
+    if (options.scope) payload.scope = options.scope;
     if (options.egress_allowlist) payload.egress_allowlist = options.egress_allowlist;
 
     // Compute returns the goal directly on 202 - no job polling, unlike the
@@ -1815,7 +1821,10 @@ export class OneShot {
       maxCost: options.maxCost,
       expectMsg: 'Expected 402 for compute quote',
       totalOf: (ctx) => ctx.total_budget,
-      onQuote: (ctx) => this.log(`Compute quote: $${ctx.total_budget} — ${ctx.objective_summary}`),
+      onQuote: (ctx) => {
+        this.log(`Compute quote: $${ctx.total_budget} — ${ctx.objective_summary}`);
+        options.onQuote?.(ctx);
+      },
       on400: async (resp) => {
         const errorData = await resp.json() as { error: string; message: string };
         if (errorData.error === 'content_blocked') {
@@ -1869,9 +1878,9 @@ export class OneShot {
    * Poll a compute goal using its goal_id, not its creation request_id.
    * Returns the complete goal snapshot on completed; failed/cancelled reject
    * with JobError (goal ID, end_reason code, snapshot in partialResult).
-   * Budget exhaustion ends this wait; after fundComputeGoal revives the goal,
+   * Budget exhaustion waits in awaiting_budget for funding; after seven days it ends. After fundComputeGoal revives an ended goal,
    * call waitForComputeGoal again with the same ID to observe the new run.
-   * Paused/awaiting_confirmation/awaiting_connection and recurring goals keep waiting until the
+   * Paused/awaiting_confirmation/awaiting_connection/awaiting_budget and recurring goals keep waiting until the
    * goal ends or the timeout (seconds, default 120) expires with JobTimeoutError.
    * Infinity disables the local deadline.
    * onStatusUpdate receives each distinct observed status before settlement.
@@ -2193,7 +2202,7 @@ export class OneShot {
 
   /**
    * Top up budget for a recurring compute goal, or for a goal (one-off or recurring) that
-   * ended because it ran out of budget (`end_reason: 'budget_exhausted'`).
+   * is awaiting budget or ended because it ran out of budget (`end_reason: 'budget_exhausted'`).
    *
    * Uses the quote-then-pay flow: the first call gets a 402 with the top-up price,
    * the second call (with payment) credits the budget. The amount IS the price.
