@@ -51,5 +51,37 @@ export type PredictForecastResult = PredictBase<'forecast'> & {
   };
 };
 
-export type PredictResultFor<M extends PredictModel> = M extends 'simulation' ? PredictSimulationResult : PredictForecastResult;
+export type PredictAlignmentResult = PredictBase<'alignment'> & {
+  prediction: { queries: Array<{ id: string; hits: Array<{
+    target_id: string;
+    identity: number;
+    coverage: { query: number; target: number };
+    e_value: number;
+    bit_score: number;
+    aligned_region: {
+      query_start: number; query_end: number; target_start: number; target_end: number;
+      strand: 'forward' | 'reverse' | 'none'; frame: number | null;
+      query_aligned: string; target_aligned: string;
+    };
+    reference_release: string | null;
+  }> }> } | null;
+  // Significance is reported per hit, so there is no aggregate uncertainty.
+  uncertainty: null;
+  meta: PredictMeta<'alignment'> & {
+    mode: 'pairwise' | 'search';
+    sequence_type: 'protein' | 'nucleotide';
+    type_source: 'stated' | 'detected';
+    total_residues: number;
+    reference_release: string | null;
+    // Present only for search mode; the fixed reference's licence requires this attribution.
+    reference_attribution: string | null;
+    comparisons_requested: number;
+    comparisons_completed: number;
+  };
+};
+
+export type PredictResultFor<M extends PredictModel> =
+  M extends 'simulation' ? PredictSimulationResult :
+  M extends 'forecast' ? PredictForecastResult :
+  PredictAlignmentResult;
 export type PredictResult = PredictResultFor<PredictModel>;

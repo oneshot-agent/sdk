@@ -56,4 +56,15 @@ export type PredictInput = {
         floor?: number | undefined;
     };
     time_limit_s?: number | undefined;
+} | {
+    model: "alignment";
+    alignment: {
+        mode: "pairwise" | "search";
+        sequences: {
+            id: string;
+            sequence: string;
+        }[];
+        sequence_type?: "auto" | "protein" | "nucleotide" | undefined;
+    };
+    time_limit_s?: number | undefined;
 };
