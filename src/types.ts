@@ -535,6 +535,7 @@ export interface WebReadResult extends UntrustedContent {
   receipt_id?: string;
   url: string;
   markdown: string;
+  /** Private org artifacts: authenticated GET returns download_url/expires_at; GET that URL with the same org session within five minutes. */
   screenshot_url?: string;
   metadata?: { title: string; description: string; statusCode?: number };
   truncated?: boolean;
@@ -1758,6 +1759,8 @@ export interface ComputeScopeUse {
   tool: string;
   qty: number;
   max_attempts: number;
+  /** Request sizes (recipients, segments, pages, minutes, problem size); never prices. */
+  drivers?: Record<string, number | boolean | string>;
   /** Whom or what the use is pointed at, in your words. */
   target?: string;
   persistence?: { max_attempts: number; spacing_seconds: number; escalate_to?: string; then: 'owner' | 'give_up' };
@@ -1767,7 +1770,7 @@ export interface ComputeScopeUse {
 export interface ComputeGoalScope {
   unit: { name: string; starts_on: 'list' | 'event' | 'schedule' | 'once' };
   per_unit: { uses: ComputeScopeUse[]; step_allowance: number; done: string[] };
-  overhead: { uses: Pick<ComputeScopeUse, 'tool' | 'qty' | 'max_attempts'>[]; step_allowance: number };
+  overhead: { uses: Pick<ComputeScopeUse, 'tool' | 'qty' | 'max_attempts' | 'drivers'>[]; step_allowance: number };
   volume: { kind: 'list'; count: number } | { kind: 'open' };
   unpriced: { name: string; reason: 'connection' | 'quoted_tool'; assumption?: string }[];
 }
