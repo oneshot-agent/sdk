@@ -1723,7 +1723,7 @@ export interface ComputeApprovals {
   tools?: string[];
 }
 
-/** A connected system a goal needs, as the quote read it from the objective. */
+/** A connected system required by the scoped tools or read from the objective. */
 export interface ComputeRequirement {
   family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'meetings' | 'mailbox' | 'files' | 'repository';
   /** The product the objective names (e.g. "QuickBooks"); null when only the kind of system was named. */
@@ -1748,7 +1748,7 @@ export interface ComputeFeasibility {
     message: string;
     conflicts?: { constraints: { family: string; ref: string; label: string }[]; explanation: string }[];
   }[];
-  warnings: { code: 'no_tool_matched' | 'tight_deadline' | 'finish_line_unknowable' | 'product_unverified' | 'similar_goal_was_impossible'; message: string }[];
+  warnings: { code: 'need_limit_exceeded' | 'no_tool_matched' | 'tight_deadline' | 'finish_line_unknowable' | 'product_unverified' | 'similar_goal_was_impossible'; message: string }[];
   finish_line?: { kind: 'measurable' | 'needs_owner' | 'unknowable'; done_check?: ComputeDoneCheck };
   /** What the goal needs that no tool does, as the estimate read it; each is a `no_tool_matched` warning, and the quote is still issued. */
   missing?: { entity: string; attribute?: string; action?: string; operation: 'lookup' | 'list' | 'act'; purpose: string }[];
@@ -1788,6 +1788,9 @@ export interface ComputeScopePrice {
 }
 
 export interface ComputeQuote {
+  /** Account prerequisites, observed without reserving capacity. Setup is purchased separately. */
+  requirements: ComputeToolRequirement[];
+  connection_requirements: ComputeRequirement[];
   quote_id: string;
   objective_summary: string;
   estimated_phases: number;
@@ -1808,6 +1811,17 @@ export interface ComputeQuote {
   budget_per_run?: number;
   max_runs?: number;
   projected_runs?: number;
+}
+
+export interface ComputeToolRequirement {
+  kind: 'sending_domain' | 'connection';
+  family?: ComputeRequirement['family'];
+  product?: string | null;
+  state: 'ready' | 'setup' | 'owner';
+  checked_at_payment?: boolean;
+  action_url?: string;
+  setup?: { price: number; currency: 'USD'; estimated: boolean; choice: 'domain_name' };
+  limit?: { daily: number; remaining: number; requested: number; warming: boolean };
 }
 
 export interface ComputeGoalResult {
