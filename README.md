@@ -153,8 +153,8 @@ const done = await agent.waitForComputeGoal(goal.goal_id, {
 ```
 
 - It resolves on `completed` and throws `JobError` on `failed` or `cancelled`
-  (`code` is the `end_reason`). `awaiting_confirmation`, `awaiting_connection`, `awaiting_budget`, `awaiting_tool` and `paused` wait for you;
-  they do not end the wait.
+  (`code` is the `end_reason`). `awaiting_confirmation`, `awaiting_connection`, `awaiting_budget`, `awaiting_tool`, `awaiting_setup` and `paused` wait for you; they do not end the wait.
+- Setup holds wait for the account need reader to report ready. Setup is a separate account purchase; cancelling the goal never removes a bought domain. After 7 days held the goal ends `cancelled/setup_timeout` and its unused budget is credited.
 - Budget exhaustion holds the goal in `awaiting_budget`; `fundComputeGoal` resumes it. After 7 days unanswered it ends `budget_exhausted` and unused funds are credited. An already failed budget goal also comes back after funding.
   Call `waitForComputeGoal` again; the old wait does not resume.
 - Timeout defaults to 120 seconds and throws `JobTimeoutError`. It stops your

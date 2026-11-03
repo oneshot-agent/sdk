@@ -97,6 +97,23 @@ export class PaymentError extends OneShotError {
   }
 }
 
+/**
+ * The payment for this call may have gone through: the server cannot yet say whether the signed authorization was
+ * spent (HTTP 500 `settlement_ambiguous`). The call was not run. Do not pay again for it: if the payment lands, the
+ * amount is credited to the agent's account. `settlementId` identifies the payment when you contact support.
+ *
+ * Not a ToolError on purpose: a generic "retry on 5xx" would sign and send a second payment.
+ */
+export class SettlementAmbiguousError extends OneShotError {
+  constructor(
+    message: string,
+    public readonly settlementId?: string,
+  ) {
+    super(message);
+    this.name = 'SettlementAmbiguousError';
+  }
+}
+
 export class JobError extends OneShotError {
   constructor(
     message: string,

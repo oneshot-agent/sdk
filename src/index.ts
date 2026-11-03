@@ -13,7 +13,7 @@ import { PhysicalMail } from './physical-mail';
 export * from './physical-mail';
 export * from './approvals';
 import { deadlineScope, abortable } from './deadline';
-import { RequestTimeoutError, InsufficientCreditsError, LinkedInConnectRequiredError } from './errors';
+import { RequestTimeoutError, InsufficientCreditsError, LinkedInConnectRequiredError, SettlementAmbiguousError } from './errors';
 import { ReadOnlyWalletProvider } from './providers/read-only';
 import { ethers } from 'ethers';
 import type { WalletProvider } from './wallet-provider';
@@ -1353,8 +1353,8 @@ export class OneShot {
    * already has with them, or a new one. Use it once an invitation is accepted,
    * or for a connection the account has never messaged. Needs the `reply`
    * grant; shares the reply daily cap and pacing. A failed send carries an
-   * error code: `not_connected` (invite them first) and `rate_limited` mean
-   * "defer", not "give up".
+   * error code: `recipient_not_connected` means invite them first, not give
+   * up.
    */
   async linkedinMessage(options: LinkedInMessageOptions): Promise<LinkedInMessageResult> {
     this.validate(options.accountId, 'accountId');
@@ -1880,7 +1880,7 @@ export class OneShot {
    * with JobError (goal ID, end_reason code, snapshot in partialResult).
    * Budget exhaustion waits in awaiting_budget for funding; after seven days it ends. After fundComputeGoal revives an ended goal,
    * call waitForComputeGoal again with the same ID to observe the new run.
-   * Paused/awaiting_confirmation/awaiting_connection/awaiting_budget/awaiting_tool and recurring goals keep waiting until the
+   * Paused/awaiting_confirmation/awaiting_connection/awaiting_budget/awaiting_tool/awaiting_setup and recurring goals keep waiting until the
    * goal ends or the timeout (seconds, default 120) expires with JobTimeoutError.
    * Infinity disables the local deadline.
    * onStatusUpdate receives each distinct observed status before settlement.
@@ -2854,6 +2854,8 @@ export class OneShot {
     const text = await response.text();
     const credits = response.status === 402 ? this.parseInsufficientCredits(text) : undefined;
     if (credits) throw credits;
+    const ambiguous = response.status === 500 ? this.parseSettlementAmbiguous(text) : undefined;
+    if (ambiguous) throw ambiguous;
     const rejection = [402, 500].includes(response.status) ? this.parsePaymentRejection(text) : undefined;
     if (rejection) throw rejection;
     const policy = response.status === 403 ? this.parsePolicyRejection(text) : undefined;
@@ -2975,6 +2977,18 @@ export class OneShot {
     }
   }
 
+  /** A 500 `settlement_ambiguous`: the payment may be spent, so the caller must not sign another for this call. */
+  private parseSettlementAmbiguous(text: string): SettlementAmbiguousError | undefined {
+    let body: { error?: unknown; settlement_id?: unknown };
+    try { body = JSON.parse(text); } catch { return undefined; }
+    if (body?.error !== 'settlement_ambiguous') return undefined;
+    const settlementId = typeof body.settlement_id === 'string' ? body.settlement_id : undefined;
+    return new SettlementAmbiguousError(
+      `Payment may have gone through. Don't pay again; if it landed and the call did not run, it is credited to your account.${settlementId ? ` [settlement ${settlementId}]` : ''}`,
+      settlementId,
+    );
+  }
+
   private parsePaymentRejection(text: string): PaymentError | undefined {
     let data: {
       error?: string;
@@ -3075,7 +3089,7 @@ export class OneShot {
 
   private async executeToolRequest<T>(endpoint: string, options: ToolOptions & Record<string, unknown>, quoteId?: string): Promise<T> {
     // LinkedIn writes act through a human's account and cannot be recalled: always keyed.
-    const reliable = /(?:^|\/)(lookup\/person-(profile|email|email-status)|lookup\/place-permits|lookup\/company-private-raises|solve|predict|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint);
+    const reliable = /(?:^|\/)(lookup\/person-(profile|email|email-status)|lookup\/place-permits|lookup\/company-private-raises|lookup\/company-fund-holdings|solve|predict|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint);
     const key = options.idempotencyKey ?? (reliable ? ethers.hexlify(ethers.randomBytes(16)) : undefined);
     if (options.totalTimeoutMs !== undefined && (!Number.isFinite(options.totalTimeoutMs) || options.totalTimeoutMs <= 0)) {
       throw new ValidationError('totalTimeoutMs must be positive', 'totalTimeoutMs');
@@ -3190,7 +3204,7 @@ export class OneShot {
       if (duplicate?.error === 'duplicate_request' && typeof duplicate.details?.request_id === 'string') {
         response = Response.json({ request_id: duplicate.details.request_id, receipt_id: duplicate.details.receipt_id,
           status: 'processing', tool: 'linkedin', linkedin: { action_request_id: duplicate.details.action_request_id,
-            invitation_id: duplicate.details.invitation_id } }, { status: 202 });
+            invitation_id: duplicate.details.invitation_id, scheduled_for: null } }, { status: 202 });
       }
     }
     if (!response.ok) {
@@ -3753,7 +3767,7 @@ export class OneShot {
     // Identity Verification requires wallet proof on the payment leg too, to recover keyed submissions.
     const provenPayment = /(?:^|\/)identity\/start$/.test(endpoint);
     const askedForProof = !!extraHeaders?.['x-agent-proof'];
-    const proofScope = /(lookup\/person-(profile|email|email-status)|lookup\/place-permits|lookup\/company-private-raises|physical-mail\/send|solve|predict)$/.test(endpoint)
+    const proofScope = /(lookup\/person-(profile|email|email-status)|lookup\/place-permits|lookup\/company-private-raises|lookup\/company-fund-holdings|physical-mail\/send|solve|predict)$/.test(endpoint)
       ? 'submit'
       : askedForProof ? 'read' : 'write';
     const headers: Record<string, string> = {
@@ -3940,11 +3954,20 @@ export class OneShot {
       resp = await this.makeRequest(endpoint, data, signed.auth, quoteId, signal, timeoutMs, extraHeaders);
     } catch (err) {
       // Keyed writes may already be queued server-side after a transport failure: keep the reservation.
-      if (!/(lookup\/person-(profile|email|email-status)|lookup\/place-permits|lookup\/company-private-raises|physical-mail\/send|solve|predict|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
+      if (!/(lookup\/person-(profile|email|email-status)|lookup\/place-permits|lookup\/company-private-raises|lookup\/company-fund-holdings|physical-mail\/send|solve|predict|linkedin\/(reply|message|profile-view|react|invite(?:\/withdraw)?))$/.test(endpoint)) this.releaseUsdcReservation(signed.reservation);
       throw err;
     }
-    if (!resp.ok && !(extraHeaders?.['Idempotency-Key'] && resp.status >= 500)) this.releaseUsdcReservation(signed.reservation);
+    // A settlement_ambiguous payment may be spent: keep its reservation until it expires.
+    if (!resp.ok && !(extraHeaders?.['Idempotency-Key'] && resp.status >= 500) && !(await this.isSettlementAmbiguous(resp))) {
+      this.releaseUsdcReservation(signed.reservation);
+    }
     return resp;
+  }
+
+  private async isSettlementAmbiguous(resp: Response): Promise<boolean> {
+    if (resp.status !== 500) return false;
+    const text = await resp.clone().text().catch(() => '');
+    return this.parseSettlementAmbiguous(text) !== undefined;
   }
 
   /** Parse the PAYMENT-REQUIRED header from a 402 response into the accepted requirements and Bazaar metadata. */

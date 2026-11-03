@@ -2,7 +2,9 @@
 
 ## Unreleased
 
+- #3482: `ComputeEndReason` gains `runner_retired`: a goal left on the retired planner runner was ended with its unused budget credited, and can be started again as a new goal.
 - #3174: Goal status includes `tool_requests` with each request's need, status and optional live tool name.
+- A paid call answered `500 settlement_ambiguous` throws `SettlementAmbiguousError` with `settlementId` instead of a generic `ToolError(500)`. The payment may have gone through: don't pay again for the call; if it landed and the call did not run, it is credited to your account. It is not a `ToolError`, so a retry-on-5xx wrapper no longer signs a second payment, and an ETH-mode balance reservation is kept for it (#3489).
 
 ## 0.62.0
 
