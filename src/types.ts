@@ -1785,7 +1785,7 @@ export interface ComputeApprovals {
 
 /** A connected system, or the agent's LinkedIn account, required by the scoped tools or read from the objective. */
 export interface ComputeRequirement {
-  family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'meetings' | 'mailbox' | 'files' | 'field_service' | 'matters' | 'client_work' | 'repository' | 'linkedin';
+  family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'meetings' | 'mailbox' | 'files' | 'field_service' | 'matters' | 'client_work' | 'portfolio' | 'repository' | 'linkedin';
   /** The product the objective names (e.g. "QuickBooks"); null when only the kind of system was named. */
   product: string | null;
   /** The system can be connected on OneShot right now. */
