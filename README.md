@@ -142,6 +142,7 @@ try {
   calls reject with the signal's `reason`. Handle both.
 - `timeout` is how long you wait, in seconds. It never limits the job.
   `agent.tool()` uses the manifest timeout (Company Dossier: 1020 seconds), or 120 seconds when absent. Typed methods share it unless they specify their own default. An explicit `timeout` wins.
+- `compute({ ..., onQuote })` exposes `price.hires`: each bound soul's public `display_name` and `soul_slug`, `service_name` and `service_slug`, nullable `need`, and server-read fixed `price_usd`. A `specialist` entry in `requirements` carries the unmatched `need` and the owner's `question`; starting the goal proceeds without that specialist.
 - Goals run longer than calls. Watch one with `waitForComputeGoal`:
 
 ```typescript

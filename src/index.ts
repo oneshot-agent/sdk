@@ -1796,7 +1796,7 @@ export class OneShot {
 
   /**
    * The agent's connections: GitHub and business systems, each with `id`, `system`, `account_label` and
-   * `status`. Free. A connected-system read (ledger, CRM, shipping, tax, procurement, meetings, field service) takes the `id` of an active
+   * `status`. Free. A connected-system read (ledger, CRM, shipping, tax, procurement, meetings, field service, legal matters) takes the `id` of an active
    * one as `connection_id`; pick it by `system` and `account_label`, then call the read with the generic
    * {@link OneShot.route}.
    *

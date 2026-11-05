@@ -1785,7 +1785,7 @@ export interface ComputeApprovals {
 
 /** A connected system, or the agent's LinkedIn account, required by the scoped tools or read from the objective. */
 export interface ComputeRequirement {
-  family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'meetings' | 'mailbox' | 'files' | 'field_service' | 'repository' | 'linkedin';
+  family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'meetings' | 'mailbox' | 'files' | 'field_service' | 'matters' | 'client_work' | 'repository' | 'linkedin';
   /** The product the objective names (e.g. "QuickBooks"); null when only the kind of system was named. */
   product: string | null;
   /** The system can be connected on OneShot right now. */
@@ -1835,6 +1835,16 @@ export interface ComputeGoalScope {
   unpriced: { name: string; reason: 'connection' | 'quoted_tool'; assumption?: string }[];
 }
 
+/** A bound soul's public identity and service, with the fixed price read by the server. */
+export interface ComputeQuotedHire {
+  need: string | null;
+  soul_slug: string;
+  display_name: string;
+  service_slug: string;
+  service_name: string;
+  price_usd: number;
+}
+
 /** What a quote prices: one unit, the overhead, the whole goal or the units a budget covers, and what it cannot price. */
 export interface ComputeScopePrice {
   per_unit: { expected: number; ceiling: number };
@@ -1845,10 +1855,11 @@ export interface ComputeScopePrice {
   units_covered?: number | null;
   unpriced: ComputeGoalScope['unpriced'];
   unmeasured: string[];
+  hires?: ComputeQuotedHire[];
 }
 
 export interface ComputeQuote {
-  /** Account prerequisites, observed without reserving capacity. Setup is purchased separately. */
+  /** Account prerequisites and unmatched specialist decisions. Setup is purchased separately. */
   requirements: ComputeToolRequirement[];
   connection_requirements: ComputeRequirement[];
   quote_id: string;
@@ -1874,7 +1885,10 @@ export interface ComputeQuote {
 }
 
 export interface ComputeToolRequirement {
-  kind: 'sending_domain' | 'caller_number' | 'browser_login' | 'connection';
+  kind: 'sending_domain' | 'caller_number' | 'browser_login' | 'connection' | 'specialist';
+  /** For a specialist: the step's need and the owner's choice to proceed without one. */
+  need?: string;
+  question?: string;
   family?: ComputeRequirement['family'];
   product?: string | null;
   state: 'ready' | 'setup' | 'owner';
