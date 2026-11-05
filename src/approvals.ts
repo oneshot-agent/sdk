@@ -63,7 +63,7 @@ export interface CreateApprovalOptions {
 
 export type PolicyTool =
   | 'email' | 'sms' | 'voice' | 'commerce'
-  | 'physical_mail' | 'crm_notes_create'
+  | 'physical_mail' | 'crm_notes_create' | 'crm_contacts_upsert' | 'crm_deals_update' | 'crm_tasks_create'
   | 'linkedin_invite' | 'linkedin_invite_withdraw' | 'linkedin_react' | 'linkedin_reply' | 'linkedin_message'
   | 'build' | 'browser'
   | 'identity';

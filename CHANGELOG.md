@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+- `quoteDomain(name, { mailbox_mode, addresses })` picks the domain's mode (`relay` by default, or `mailbox`) and its addresses (1 to 10, default `['agent']`). Quoting a domain you already have with new addresses prices adding them (`setup: 'domain_addresses'`); `buyDomain` buys either quote. `email()` drops `mailbox_mode`: a send never sets up a domain or an address. When the email quote answers `no_sending_domain` or `address_not_set_up`, `email()` returns the setup quote as `confirmation_required`, or `setup_required` / `setup_pending` with `requirements`, and sends nothing. `from_domain` alone sends from the domain's main address. `DomainWarmupState` gains `not_warmed` (relay domains and addresses, which are never warmed) (#3604).
 - #3482: `ComputeEndReason` gains `runner_retired`: a goal left on the retired planner runner was ended with its unused budget credited, and can be started again as a new goal.
 - #3174: Goal status includes `tool_requests` with each request's need, status and optional live tool name.
 - A paid call answered `500 settlement_ambiguous` throws `SettlementAmbiguousError` with `settlementId` instead of a generic `ToolError(500)`. The payment may have gone through: don't pay again for the call; if it landed and the call did not run, it is credited to your account. It is not a `ToolError`, so a retry-on-5xx wrapper no longer signs a second payment, and an ETH-mode balance reservation is kept for it (#3489).
+
+## 0.63.0
+
+- Add `quoteDomain` and `buyDomain` for separate account setup. New-domain email confirmation buys the exact setup quote without sending; send separately after verification. Setup responses expose price and billing terms (#3387).
 
 ## 0.62.0
 

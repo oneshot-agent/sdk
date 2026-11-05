@@ -288,39 +288,19 @@ export interface EmailToolOptions extends ToolOptions {
   reply_to_email_id?: string;
   from_domain?: string;
   /**
-   * Sender mailbox / local-part. Defaults to `agent` (i.e. agent@from_domain).
-   * Requires `from_domain` to be set - pinning `from_mailbox` alone throws a
-   * `ValidationError` (there is no default domain to attach it to). You may
-   * use any local-part - a new address is auto-provisioned on first use
-   * (and starts unwarmed, building reputation over time). See the email
-   * "list domains" tool for each domain's `default_from` and existing `addresses`.
+   * Sender address / local-part on `from_domain`. Defaults to the domain's main
+   * address (its `default_from` in `listDomains()`). Requires `from_domain` -
+   * pinning `from_mailbox` alone throws a `ValidationError`. The address must be
+   * one the domain has: an address it does not have answers
+   * `status: 'confirmation_required'` with the quote that adds it (see
+   * `quoteDomain`), and nothing is sent.
    */
   from_mailbox?: string;
   /**
-   * How this domain sends (provider-neutral):
-   *  - `'relay'` (default) - header/relay send; any from-address works with nothing
-   *    provisioned per address (no mailbox fee).
-   *  - `'mailbox'` - a real per-address mailbox; each new from-address provisions +
-   *    warms a dedicated mailbox (one-time `mailbox_provisioning_fee` on the quote).
-   * Only honored when the domain is first set up - an already-provisioned domain
-   * keeps the mode it was created with. Use `'mailbox'` on a new `from_domain`.
-   *
-   * Which means omitting this is NOT a way to avoid the fee: a domain created in
-   * mailbox mode bills `mailbox_provisioning_fee` for every address that isn't
-   * already `active` on it - the default `agent@` included - whatever you pass
-   * here, and `from_mailbox` doesn't change that either. Read `mailbox_mode` per
-   * domain from `listDomains()` to see which of yours charge.
-   */
-  mailbox_mode?: 'relay' | 'mailbox';
-  /**
-   * Only meaningful when `from_domain` is a domain the agent doesn't own yet.
-   * A call with such a `from_domain` always stops after quoting - no charge,
-   * no send - and returns `status: 'confirmation_required'` with the exact
-   * total and its `quote_id`. Pass that `quote_id` here on the repeat call to
-   * register the domain, pay exactly that quote's total, and send in one call:
-   * the SDK sends against the stored quote instead of quoting again, so the
-   * amount charged is the amount shown. A bare `true` names no amount
-   * and only re-quotes. An expired or used quote is refused by the server.
+   * Accept the exact setup quote (a new domain, or an address added to one).
+   * Buys setup only; no email is sent. Wait for setup to finish, then call
+   * email again without this option. A bare true is not confirmation; expired
+   * or used quotes are refused.
    */
   confirmNewDomain?: string;
   /** Display name shown to the recipient, e.g. "Jane Doe" → "Jane Doe <jane@domain>". */
@@ -659,11 +639,90 @@ export interface ResearchResult {
   cost?: number;
 }
 
+/**
+ * How a domain's addresses work, chosen when the domain is bought and fixed after:
+ *  - `relay` (default): each address sends and receives through the platform, with no hosted inbox. Free per address.
+ *  - `mailbox`: each address is a hosted inbox, warmed before it joins rotation. Each carries a one-time per-address fee.
+ */
+export type MailboxMode = 'relay' | 'mailbox';
+
+/** What to buy with a domain: its mode and the addresses it has. */
+export interface DomainSetupChoice {
+  /** Defaults to `relay`. On a domain the agent already has, the domain's own mode applies. */
+  mailbox_mode?: MailboxMode;
+  /**
+   * Local parts, such as `['sales', 'support']`: 1 to 10, lowercased, unique. The first is the main
+   * address that rotation and goals send from. Defaults to `['agent']`. The domain has exactly these
+   * addresses: mail to any other is dropped, and a send from one is refused with `address_not_set_up`.
+   * On a verified domain the agent already has, the quote prices only the addresses it does not have yet.
+   */
+  addresses?: string[];
+}
+
+export interface DomainSetupQuote {
+  domain: string;
+  /** Absent on an address purchase for a domain the agent already has. */
+  available?: boolean;
+  premium?: boolean;
+  purchasable: boolean;
+  reason?: string;
+  /** `sending_domain` buys the domain; `domain_addresses` adds addresses to one the agent already has. */
+  setup?: 'sending_domain' | 'domain_addresses';
+  mailbox_mode?: MailboxMode;
+  /** The local parts this quote buys. */
+  addresses?: string[];
+  /** Named addresses the domain already has; not charged. */
+  already_set_up?: string[];
+  registration_fee?: number;
+  /** The per-address fee times the number of addresses; 0 on relay. */
+  mailbox_provisioning_fee?: number;
+  quote_id?: string;
+  total_cost?: number;
+  currency?: string;
+  expires_at?: string;
+  billing?: { one_time: boolean; term_years: number; renewal_charged: boolean; summary: string };
+}
+
+export interface DomainSetupPurchase {
+  request_id?: string;
+  receipt_id?: string;
+  /** Present on the queued response; completed job results report domain_status instead. */
+  status?: string;
+  setup?: 'sending_domain' | 'domain_addresses';
+  domain?: string;
+  mailbox_mode?: MailboxMode;
+  addresses?: string[];
+  domain_status?: string | null;
+  registered?: boolean | null;
+  message?: string;
+}
+
+/** Account setup a call needs before it can run, as `/email/quote` reports it. */
+export interface SetupRequirement {
+  kind: string;
+  state: string;
+  action_url?: string;
+  setup?: {
+    price: number; currency: 'USD'; estimated: boolean;
+    choice?: 'domain_name'; choices?: Array<'domain_name' | 'mailbox_mode' | 'addresses'>;
+    domain?: string; addresses?: string[];
+    alternatives?: Array<{ action_url: string; price: number; currency: 'USD'; choice: 'domain_name'; choices?: Array<'domain_name' | 'mailbox_mode' | 'addresses'> }>;
+  };
+  [key: string]: unknown;
+}
+
 export interface EmailResult {
+  /** Account setup is separate from this email; inspect its quote or purchase result. */
+  setup?: DomainSetupQuote | DomainSetupPurchase;
+  /**
+   * On `status: 'setup_required'` or `'setup_pending'`: the setup the send needs, from the server's
+   * `no_sending_domain` or `address_not_set_up` answer. Nothing was charged.
+   */
+  requirements?: SetupRequirement[];
   request_id?: string;
   /** On `status: 'confirmation_required'`: the quote to pass back as `confirmNewDomain` to accept exactly this cost. */
   quote_id?: string;
-  /** On `status: 'confirmation_required'`: the explanation to relay, with the exact cost and the confirming call. */
+  /** On `status: 'confirmation_required'`: the setup instructions; the exact cost and billing terms are in setup. */
   message?: string;
   /** Receipt id (`rcpt_…`) for this call. Pass to `tagReceiptValue` to annotate value later. */
   receipt_id?: string;
@@ -674,8 +733,8 @@ export interface EmailResult {
    * Non-blocking advisory from the server. Values:
    * - `pinned_domain_warming` - a pinned sender's domain is still warming (low warmup score)
    * - `pinned_over_limit` - a pinned sender's domain is over its daily_send_limit
-   * The send still proceeds; read this to back off / defer. (Note: an un-pinned
-   * send with no eligible owned domain is a hard `400 no_sending_domain`, not a
+   * The send still proceeds; read this to back off / defer. (A send with no
+   * verified domain answers `status: 'setup_required'` with `requirements`, not a
    * warning - there is no shared fallback sender.)
    */
   warning?: string;
@@ -693,49 +752,39 @@ export interface EmailResult {
   cost?: number;
 }
 
-/** Reputation health, orthogonal to rotation eligibility. */
-export type DomainWarmupState = 'warming' | 'warmed' | 'degraded';
+/**
+ * Reputation health, orthogonal to rotation eligibility. `not_warmed`: a relay domain or address, which is
+ * never warmed and joins rotation at once on a daily limit that rises with the domain's age.
+ */
+export type DomainWarmupState = 'warming' | 'warmed' | 'degraded' | 'not_warmed';
 /** Why a domain is out of rotation (null when active). 'low_reputation' auto-recovers; 'manual' needs a resume. */
 export type DomainPauseReason = 'warming' | 'low_reputation' | 'manual' | null;
 
-/** A mailbox already provisioned on a domain (from `/email/domains` `addresses[]`). */
+/** An address on a domain (from `/email/domains` `addresses[]`). */
 export interface DomainAddressEntry {
   /** Full email address, lowercased - e.g. `sales@yourdomain.com`. */
   address: string;
-  /** Mailbox provisioning state. Only `active` counts as already-provisioned (free to send from). */
+  /** Only `active` addresses send and receive. `provisioning` is being set up; `failed` was refunded and can be bought again. */
   status: 'active' | 'provisioning' | 'failed';
-  /** Per-address reputation health (each provisioned address is warmed individually). */
+  /** Per-address reputation health: mailbox addresses are warmed one by one; relay addresses are `not_warmed`. */
   warmup_state: DomainWarmupState;
 }
 
 export interface DomainPoolEntry {
   domain: string;
-  /**
-   * Canonical sending address for this domain (e.g. `agent@yourdomain.com`) - the
-   * default mailbox when you don't pick one. Like any address, the first send from
-   * it incurs the one-time `mailbox_provisioning_fee`; free once it's `active`.
-   */
+  /** The domain's main address (e.g. `agent@yourdomain.com`): rotation and goals send from it. */
   default_from: string;
   /**
-   * Mailboxes already provisioned on this domain. Empty = none yet; you can still
-   * send from any address - a new one is provisioned (and billed
-   * `mailbox_provisioning_fee`) on first use.
+   * The addresses this domain has. It sends and receives only at these; add more with
+   * `quoteDomain(domain, { addresses })` and `buyDomain`.
    */
   addresses: DomainAddressEntry[];
   /**
-   * Which side of the provisioning fee this domain sits on.
-   *
-   * `mailbox` - a real mailbox is provisioned per address, so every address
-   * that isn't already `active` in `addresses[]` bills the one-time
-   * `mailbox_provisioning_fee` on its first send. That includes the canonical
-   * `default_from`; nothing is exempt.
-   * `relay` - header-only send, nothing provisioned, no per-address fee.
-   *
-   * This is a property of the DOMAIN, fixed when it was set up - not of the
-   * call. Omitting `mailbox_mode` on a quote does not make the send relay; the
-   * domain's own mode always wins. Check here before you quote.
+   * The domain's mode, fixed when it was bought. `mailbox`: each address is a hosted inbox, with a
+   * one-time per-address fee when it is added. `relay`: addresses send and receive with no hosted
+   * inbox, free to add.
    */
-  mailbox_mode: 'relay' | 'mailbox';
+  mailbox_mode: MailboxMode;
   /** Rotation eligibility - the selector only picks `active`. */
   pool_status: 'active' | 'paused' | 'removed';
   /** Reputation health - a domain can be `paused` AND still `warming`/recovering. */
@@ -1699,12 +1748,23 @@ export type ComputeDoneCheck =
   | { kind: 'tool_result'; tool: string; path?: string; equals?: string | number | boolean; at_least?: number }
   /** Every case of the goal is in one of `finished_states` (a state in `owner_required_for` also needs an owner in the record). `unreached` always counts as finished and is reported on its own. With no cases the check is not met. */
   | { kind: 'cases'; finished_states: string[]; owner_required_for?: string[]; min_cases?: number }
+  /**
+   * A named person accepts proof the agent submits (a document, photo, link or extracted fields). `verifier` needs an
+   * email or a phone number. With `fields`, the proof's document is read first and a field that is missing or breaks
+   * its constraint means the verifier is not asked.
+   */
+  | {
+    kind: 'evidence';
+    verifier: { name: string; email?: string; phone?: string; timezone?: string };
+    accepts: string;
+    fields?: Array<{ name: string; description: string; type: 'string' | 'number' | 'boolean'; equals?: string | number | boolean; one_of?: string[]; at_least?: number; at_most?: number }>;
+  }
   /** No check can be written: you confirm with `confirmComputeGoal`. */
   | { kind: 'owner' };
 
 /** What an evaluation of the done-check found. */
 export interface ComputeCheckResult {
-  kind: 'count' | 'tool_result' | 'cases' | 'owner';
+  kind: 'count' | 'tool_result' | 'cases' | 'evidence' | 'owner';
   /** `null` while waiting for the owner. */
   passed: boolean | null;
   observed?: unknown;
@@ -1723,9 +1783,9 @@ export interface ComputeApprovals {
   tools?: string[];
 }
 
-/** A connected system required by the scoped tools or read from the objective. */
+/** A connected system, or the agent's LinkedIn account, required by the scoped tools or read from the objective. */
 export interface ComputeRequirement {
-  family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'meetings' | 'mailbox' | 'files' | 'repository';
+  family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'meetings' | 'mailbox' | 'files' | 'field_service' | 'repository' | 'linkedin';
   /** The product the objective names (e.g. "QuickBooks"); null when only the kind of system was named. */
   product: string | null;
   /** The system can be connected on OneShot right now. */
@@ -1744,7 +1804,7 @@ export interface ComputeRequirement {
 export interface ComputeFeasibility {
   verdict: 'accept' | 'hold' | 'refuse';
   reasons: {
-    code: 'system_unsupported' | 'deadline_in_past' | 'infeasible_input' | 'connection_checked_at_payment';
+    code: 'system_unsupported' | 'deadline_in_past' | 'infeasible_input' | 'verifier_unreachable' | 'connection_checked_at_payment';
     message: string;
     conflicts?: { constraints: { family: string; ref: string; label: string }[]; explanation: string }[];
   }[];
@@ -1814,13 +1874,14 @@ export interface ComputeQuote {
 }
 
 export interface ComputeToolRequirement {
-  kind: 'sending_domain' | 'connection';
+  kind: 'sending_domain' | 'caller_number' | 'browser_login' | 'connection';
   family?: ComputeRequirement['family'];
   product?: string | null;
   state: 'ready' | 'setup' | 'owner';
   checked_at_payment?: boolean;
   action_url?: string;
-  setup?: { price: number; currency: 'USD'; estimated: boolean; choice: 'domain_name' };
+  /** Account setup the owner completes at `action_url`. With no `choice`, code picks what is bought. */
+  setup?: { price: number; currency: 'USD'; estimated: boolean; choice?: 'domain_name'; alternatives?: { action_url: string; price: number; currency: 'USD'; choice: 'domain_name' }[] };
   limit?: { daily: number; remaining: number; requested: number; warming: boolean };
 }
 
@@ -1952,6 +2013,21 @@ export interface ComputeTask {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+}
+
+export interface ComputeTaskListOptions {
+  /** Only tasks with this status. */
+  status?: 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+  /** Tasks per page, 1 to 500 (default 100). */
+  limit?: number;
+  /** The `next_cursor` of the previous page. */
+  cursor?: string;
+}
+
+export interface ComputeTaskPage {
+  tasks: ComputeTask[];
+  /** Pass as `cursor` for the next page; null on the last one. */
+  next_cursor: string | null;
 }
 
 export interface ComputeBudgetStatus {

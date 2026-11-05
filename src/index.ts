@@ -44,7 +44,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Keep receipt on its subpath: node:crypto breaks browser bundles, and providerCost is not public.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.62.0';
+const SDK_VERSION = '0.63.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -143,7 +143,7 @@ import type {
   WebSearchOptions, WebSearchResult, WebReadOptions, WebReadResult,
   VoiceCallOptions, SmsOptions, SmsInboxOptions,
   Experience, Education, PersonResult, PersonFindResult, ResearchResult,
-  EmailResult, PersonProfileResult, PersonEmailResult, AsyncJobResult,
+  EmailResult, DomainSetupQuote, DomainSetupPurchase, DomainSetupChoice, SetupRequirement, PersonProfileResult, PersonEmailResult, AsyncJobResult,
   PersonEnrichment, PersonDossierResult, PersonDossierPost, PersonSocialAccountsResult, SocialAccount, DossierSection,
   PersonArticlesResult, PersonPostsResult, PersonInterestsResult,
   PersonFollowersResult, PersonEmailStatusResult, InboxEmail, InboxListResult,
@@ -155,7 +155,7 @@ import type {
   BuildQuote, BuildResult, BrowserTaskOptions, BrowserProfile, BrowserProfileCreateOptions, BrowserProfileSetup, BrowserQuote,
   BrowserResult, UpdateBuildOptions, RefineBuildOptions, SpendCategory, SpendBreakdown, RoCSResult, RoCSByGoalResult,
   Receipt, ReceiptsListResult, UnifiedBalance, CreditsTopUpResult, ComputeSchedule, ComputeOptions, ComputeGoalScope, ComputeScopeUse, ComputeScopePrice,
-  ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeStatusUpdateFn, ComputeTask, ComputeOutput, ComputeOutputContent,
+  ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeStatusUpdateFn, ComputeTask, ComputeTaskListOptions, ComputeTaskPage, ComputeOutput, ComputeOutputContent,
   ComputeGoalClaim, ComputeGoalClaimSource,
   ComputeBudgetStatus,
   DomainPoolEntry, DomainPoolListResult, DomainPoolStatusResult,
@@ -432,6 +432,40 @@ export class OneShot {
     return this.executeToolRequest<T>(`/v1/tools/${toolName}`, options);
   }
 
+  /**
+   * Price account setup without a recipient or message; this does not buy or send. Choose the mode
+   * (`relay` by default, or `mailbox`) and the addresses (default `['agent']`). On a verified domain
+   * the agent already has, this prices only the named addresses it does not have yet.
+   */
+  async quoteDomain(domain: string, options: ToolOptions & DomainSetupChoice = {}): Promise<DomainSetupQuote> {
+    this.validate(domain, 'domain');
+    const { mailbox_mode, addresses, ...rest } = options;
+    if (mailbox_mode !== undefined && mailbox_mode !== 'relay' && mailbox_mode !== 'mailbox') {
+      throw new ValidationError("mailbox_mode must be 'relay' or 'mailbox'", 'mailbox_mode');
+    }
+    if (addresses !== undefined && (!Array.isArray(addresses) || addresses.length < 1 || addresses.length > 10
+      || addresses.some((a) => typeof a !== 'string' || !a.trim()))) {
+      throw new ValidationError('addresses must name 1 to 10 local parts, such as ["sales"]', 'addresses');
+    }
+    const quote = await this.executeToolRequest<DomainSetupQuote>('/v1/domains/quote', {
+      ...rest, domain,
+      ...(mailbox_mode ? { mailbox_mode } : {}),
+      ...(addresses ? { addresses: addresses.map((a) => a.trim().toLowerCase()) } : {}),
+    });
+    if (quote.total_cost !== undefined) this.assertWithinMaxCost(String(quote.total_cost), options.maxCost);
+    return quote;
+  }
+
+  /**
+   * Owner/API purchase of the exact setup quote. The mode and addresses are the quote's; the result
+   * names them. Registration, adding addresses and email are separate actions.
+   */
+  async buyDomain(domain: string, quoteId: string, options: ToolOptions = {}): Promise<DomainSetupPurchase> {
+    this.validate(domain, 'domain');
+    this.validate(quoteId?.trim(), 'quoteId');
+    return this.executeToolRequest<DomainSetupPurchase>('/v1/domains/buy', { ...options, domain }, quoteId.trim());
+  }
+
   async email(options: EmailToolOptions): Promise<EmailResult> {
     // to/subject are server-derived when replying to an inbound email.
     if (!options.reply_to_email_id) {
@@ -448,71 +482,116 @@ export class OneShot {
         'from_domain'
       );
     }
-    const useRotation = !options.from_domain && !options.from_mailbox;
-    const fromAddress = useRotation
-      ? undefined
-      : `${options.from_mailbox ?? 'agent'}@${options.from_domain}`;
 
     // Reuse the confirmed quote so the charge matches the amount shown; true alone confirms no amount.
     const confirmedQuote = typeof options.confirmNewDomain === 'string' && options.confirmNewDomain.trim()
       ? options.confirmNewDomain.trim() : undefined;
     if (confirmedQuote) {
-      this.log(`Email: sending against confirmed quote ${confirmedQuote}`);
-      return this.executeToolRequest<EmailResult>('/v1/tools/email/send',
-        this.emailSendPayload(options, fromAddress), confirmedQuote);
+      this.validate(options.from_domain, 'from_domain');
+      const setup = await this.buyDomain(options.from_domain!, confirmedQuote, {
+        maxCost: options.maxCost, signal: options.signal, wait: false,
+      });
+      return { status: 'setup_pending', setup, request_id: setup.request_id, receipt_id: setup.receipt_id,
+        message: 'Setup purchased; no email was sent. Wait for it to finish, then call email without confirmNewDomain.' };
     }
 
-    // Mailbox provisioning and domain registration are distinct fees; only a new domain needs confirmation.
-    const quote = await this.tool<{
-      total_cost: string; quote_id: string; from_address?: string; mailbox_provisioning_fee?: number;
-      is_new?: boolean; domain?: string; registration_fee?: number; service_fee?: number;
-    }>('email/quote', {
-      ...(fromAddress ? { from_address: fromAddress } : {}),
-      ...(options.to !== undefined ? { to_address: options.to } : {}),
-      ...(options.subject !== undefined ? { subject: options.subject } : {}),
-      ...(options.reply_to_email_id ? { reply_to_email_id: options.reply_to_email_id } : {}),
-      ...(options.mailbox_mode ? { mailbox_mode: options.mailbox_mode } : {}),
-      body: options.body,
-      maxCost: options.maxCost,
-    });
+    let fromAddress: string | undefined;
+    if (options.from_domain) {
+      const domainName = options.from_domain.trim().toLowerCase().replace(/\.$/, '');
+      // An unavailable ownership read leaves the email quote to decide whether setup is needed.
+      const owned = await this.listDomains().catch(() => undefined);
+      const entry = owned?.domains.find(d => d.domain.toLowerCase() === domainName);
+      // A new name reaches the setup quote without an email quote.
+      if (owned && !entry) return this.emailDomainSetup(domainName, options);
+      fromAddress = options.from_mailbox
+        ? `${options.from_mailbox}@${options.from_domain}`
+        : entry?.default_from ?? `agent@${options.from_domain}`;
+    }
+
+    type SendQuote = { total_cost: string; quote_id: string; from_address?: string; domain?: string; service_fee?: number; warning?: string };
+    let quote: SendQuote;
+    try {
+      quote = await this.tool<SendQuote>('email/quote', {
+        ...(fromAddress ? { from_address: fromAddress } : {}),
+        ...(options.to !== undefined ? { to_address: options.to } : {}),
+        ...(options.subject !== undefined ? { subject: options.subject } : {}),
+        ...(options.reply_to_email_id ? { reply_to_email_id: options.reply_to_email_id } : {}),
+        body: options.body,
+        maxCost: options.maxCost,
+      });
+    } catch (error) {
+      const setup = await this.emailSetupFromRefusal(error, options);
+      if (setup) return setup;
+      throw error;
+    }
 
     this.log(`Email quote: $${quote.total_cost}`);
 
     // Enforce the cap locally even if the server did not check the header.
     this.assertWithinMaxCost(quote.total_cost, options.maxCost);
 
-    // A new domain must be explicitly authorized against its exact quote before any charge or send.
-    if (quote.is_new) {
-      const domainName = quote.domain ?? options.from_domain ?? '';
-      const breakdown = quote.registration_fee !== undefined && quote.service_fee !== undefined
-        ? ` (registration $${quote.registration_fee} + service fee $${quote.service_fee}` +
-          `${quote.mailbox_provisioning_fee ? ` + mailbox fee $${quote.mailbox_provisioning_fee}` : ''})`
-        : '';
-      return {
-        status: 'confirmation_required',
-        cost: parseFloat(quote.total_cost),
-        quote_id: quote.quote_id,
-        domain: { domain: domainName, status: 'quote_only', was_provisioned: false },
-        message: `Registering ${domainName} costs $${quote.total_cost} total${breakdown}. ` +
-          `Nothing has been charged yet. Show the user this exact amount; once they agree, call this again with the same ` +
-          `arguments and confirm_new_domain: '${quote.quote_id}' (SDK: confirmNewDomain) to register the domain, ` +
-          `charge exactly $${quote.total_cost}, and send this email. true only re-quotes; a wrong or expired quote id is refused without charge.`,
-      } as EmailResult;
-    }
-
     return this.executeToolRequest<EmailResult>('/v1/tools/email/send',
       this.emailSendPayload(options, fromAddress ?? quote.from_address), quote.quote_id);
   }
 
-  /** The /email/send body for `email()`: the same whether it follows a fresh quote or a confirmed one. */
+  /**
+   * A send never sets up a domain or an address: the email quote refuses with `no_sending_domain` or
+   * `address_not_set_up` and names the setup. Route that to the setup quote, so the caller reviews its
+   * price, rather than surfacing a bare error. Any other error is the caller's.
+   */
+  private async emailSetupFromRefusal(error: unknown, options: EmailToolOptions): Promise<EmailResult | undefined> {
+    if (!(error instanceof ToolError) || error.statusCode !== 400) return undefined;
+    let body: { error?: string; message?: string; reason?: string; domain?: string; from_address?: string; requirements?: SetupRequirement[] };
+    try { body = JSON.parse(error.responseBody); } catch { return undefined; }
+    const requirements = Array.isArray(body.requirements) ? body.requirements : undefined;
+    if (body.error === 'address_not_set_up' && body.domain && body.from_address) {
+      const local = body.from_address.split('@')[0];
+      try {
+        return await this.emailDomainSetup(body.domain, options, [local]);
+      } catch (quoteError) {
+        // The address is already being added by an earlier purchase.
+        if (quoteError instanceof ToolError && quoteError.statusCode === 409 && /addresses_already_set_up/.test(quoteError.responseBody)) {
+          return { status: 'setup_pending', error: 'address_not_set_up', requirements,
+            message: `${body.from_address} is being set up; no email was sent. Send again once it is active in listDomains().` };
+        }
+        throw quoteError;
+      }
+    }
+    if (body.error !== 'no_sending_domain') return undefined;
+    const domain = body.domain ?? options.from_domain?.trim().toLowerCase();
+    if (body.reason === 'not_owned' && domain) return this.emailDomainSetup(domain, options);
+    const pending = body.reason === 'not_verified';
+    return {
+      status: pending ? 'setup_pending' : 'setup_required', error: 'no_sending_domain', requirements,
+      message: body.message ?? 'This agent has no verified sending domain. Buy one with quoteDomain and buyDomain; no email was sent.',
+    };
+  }
+
+  private async emailDomainSetup(domainName: string, options: EmailToolOptions, addresses?: string[]): Promise<EmailResult> {
+    const named = addresses ?? (options.from_mailbox ? [options.from_mailbox] : undefined);
+    const setup = await this.quoteDomain(domainName, { maxCost: options.maxCost, signal: options.signal, ...(named ? { addresses: named } : {}) });
+    const addingAddresses = setup.setup === 'domain_addresses';
+    return {
+      status: setup.purchasable ? 'confirmation_required' : 'setup_unavailable',
+      cost: setup.total_cost,
+      quote_id: setup.quote_id,
+      setup,
+      domain: { domain: domainName, status: 'quote_only', was_provisioned: false },
+      message: !setup.purchasable
+        ? 'This name cannot be purchased. Choose another name for account setup.'
+        : addingAddresses
+          ? 'This address is not on the domain yet. No purchase or email send has occurred. The owner or API caller must review setup.total_cost, then buy this exact quote at POST /v1/domains/buy (SDK: confirmNewDomain). Send separately once the address is active.'
+          : 'No setup purchase or email send has occurred. The owner or API caller must review setup.total_cost and setup.billing, then buy this exact quote at POST /v1/domains/buy (SDK: confirmNewDomain). No email is included; send separately after verification.',
+    };
+  }
+
+  /** Keep setup-only fields out of the paid send body. */
   private emailSendPayload(options: EmailToolOptions, resolvedFromAddress: string | undefined): Record<string, unknown> {
     const payload: Record<string, unknown> = {
       ...(resolvedFromAddress ? { from_address: resolvedFromAddress } : {}),
       ...(options.to !== undefined ? { to_address: options.to } : {}),
       ...(options.subject !== undefined ? { subject: options.subject } : {}),
       ...(options.reply_to_email_id ? { reply_to_email_id: options.reply_to_email_id } : {}),
-      // Preserve mailbox provisioning when the new domain does not yet have a stored mode.
-      ...(options.mailbox_mode ? { mailbox_mode: options.mailbox_mode } : {}),
       body: options.body,
       signal: options.signal,
       onStatusUpdate: options.onStatusUpdate,
@@ -1717,7 +1796,7 @@ export class OneShot {
 
   /**
    * The agent's connections: GitHub and business systems, each with `id`, `system`, `account_label` and
-   * `status`. Free. A connected-system read (ledger, CRM, shipping, tax, procurement, meetings) takes the `id` of an active
+   * `status`. Free. A connected-system read (ledger, CRM, shipping, tax, procurement, meetings, field service) takes the `id` of an active
    * one as `connection_id`; pick it by `system` and `account_label`, then call the read with the generic
    * {@link OneShot.route}.
    *
@@ -1935,7 +2014,8 @@ export class OneShot {
   }
 
   /**
-   * List tasks under a compute goal
+   * List tasks under a compute goal, newest first: one page of `limit` tasks (default 100, at most 500).
+   * Use `getComputeTasksPage` to read further pages.
    *
    * @example
    * ```typescript
@@ -1945,10 +2025,32 @@ export class OneShot {
    * }
    * ```
    */
-  async getComputeTasks(goalId: string): Promise<ComputeTask[]> {
-    this.validate(goalId, 'goalId');
+  async getComputeTasks(goalId: string, options: ComputeTaskListOptions = {}): Promise<ComputeTask[]> {
+    return (await this.getComputeTasksPage(goalId, options)).tasks;
+  }
 
-    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/tasks`, {
+  /**
+   * One page of a compute goal's tasks, newest first, with the cursor of the next page (null on the last).
+   *
+   * @example
+   * ```typescript
+   * let cursor: string | undefined;
+   * do {
+   *   const page = await agent.getComputeTasksPage('goal_01HX...', { cursor });
+   *   for (const t of page.tasks) console.log(t.id, t.status);
+   *   cursor = page.next_cursor ?? undefined;
+   * } while (cursor);
+   * ```
+   */
+  async getComputeTasksPage(goalId: string, options: ComputeTaskListOptions = {}): Promise<ComputeTaskPage> {
+    this.validate(goalId, 'goalId');
+    const query = new URLSearchParams();
+    if (options.status) query.set('status', options.status);
+    if (options.limit !== undefined) query.set('limit', String(options.limit));
+    if (options.cursor) query.set('cursor', options.cursor);
+    const qs = query.toString();
+
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/tasks${qs ? `?${qs}` : ''}`, {
       headers: await this.signedReadHeaders()
     });
 
@@ -1956,8 +2058,8 @@ export class OneShot {
       throw new ToolError('Failed to get compute tasks', response.status, await response.text(), response.headers.get('retry-after'));
     }
 
-    const json = await response.json() as { data: ComputeTask[] };
-    return json.data;
+    const json = await response.json() as { data: ComputeTask[]; page?: { next_cursor?: string | null } };
+    return { tasks: json.data, next_cursor: json.page?.next_cursor ?? null };
   }
 
   /**
@@ -2173,7 +2275,7 @@ export class OneShot {
   }
 
   /**
-   * Pause a recurring compute goal
+   * Pause a compute goal (one-off goals keep their work and continue where they were on resume)
    *
    * @example
    * ```typescript
@@ -2198,7 +2300,7 @@ export class OneShot {
   }
 
   /**
-   * Resume a paused recurring compute goal
+   * Resume a paused compute goal
    *
    * @example
    * ```typescript

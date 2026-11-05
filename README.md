@@ -34,7 +34,7 @@ Paid calls quote, pay and wait for the result. You write one line.
 | Area | Methods |
 |------|---------|
 | [Talk](https://docs.oneshotagent.com/api-reference/email/send) | `email` `voice` `sms` `inboxList` `inboxGet` `smsInboxList` `smsInboxGet` `notifications` `markNotificationRead` |
-| [Send from your domains](https://docs.oneshotagent.com/api-reference/email/domains) | `listDomains` `pauseDomain` `resumeDomain` |
+| [Send from your domains](https://docs.oneshotagent.com/api-reference/email/domains) | `quoteDomain` `buyDomain` `listDomains` `pauseDomain` `resumeDomain` |
 | [Find people and companies](https://docs.oneshotagent.com/api-reference/research/person-find) | `personFind` `personProfile` `personEmail` `personEmailStatus` `personDossier` `personSocialAccounts` `personArticles` `personPosts` `personInterests` `personFollowers` `companyFind` `companyProfile` `businessFind` `businessResolve` `recordSolicitationsFind` |
 | [Think](https://docs.oneshotagent.com/api-reference/research) | `research` `predict` `solve` |
 | [Web and buying](https://docs.oneshotagent.com/api-reference/web-search) | `webSearch` `webRead` `productFind` `commerceBuy` `physicalMail` |
@@ -162,11 +162,7 @@ const done = await agent.waitForComputeGoal(goal.goal_id, {
 
 ## Tool notes
 
-- **Email.** Omit `from_domain` and the server rotates across your warmed
-  domains. Pin one and you skip the warmup gates; the send goes out with a
-  `warning`. Own no eligible domain and the quote fails with `no_sending_domain`.
-  There is no shared sender. `mailbox_mode: 'mailbox'` applies only when a domain
-  is first set up. [Details](https://docs.oneshotagent.com/api-reference/email/send).
+- **Email setup and sending.** `quoteDomain(name, { mailbox_mode, addresses })` prices a name without sending. `relay` (the default) gives addresses that send and receive with no hosted inbox, free per address; `mailbox` gives each address a hosted inbox, warmed before it sends, with a one-time fee per address. `addresses` defaults to `['agent']`; the first is the main address. Review `total_cost` and `billing`, then `buyDomain(name, quote_id)` buys that exact quote. Quote a domain you already have with new `addresses` to add them. Wait for verification before sending. A domain sends and receives only at its addresses. `email()` answers `confirmation_required` with the setup quote when the domain or address is not set up yet, and `setup_required` with `requirements` when the agent has no domain; nothing is sent or charged. `email({ ..., confirmNewDomain: quote_id })` buys that setup only and returns `setup_pending`. Goals and MCP models cannot buy setup. [Details](https://docs.oneshotagent.com/api-reference/email/domain-purchase). Omit `from_domain` and the server rotates across your domains, sending from each one's main address. Pin one and you skip the warmup gates; the send goes out with a `warning`. There is no shared sender. [Details](https://docs.oneshotagent.com/api-reference/email/send).
 - **People search.** An empty result means nobody matched. A failed search
   throws; it never pretends to be empty. Page with `limit` (default 100, max 500)
   and `offset`. A search that hits its time limit returns what it found; rows

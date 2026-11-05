@@ -7,7 +7,7 @@ export type RecoveryEndpoint = DurableRecoveryEndpoint
   | 'sms' | 'sms/send' | 'voice' | 'voice/call' | 'email' | 'email/send'
   | 'linkedin' | 'linkedin/reply' | 'linkedin/message' | 'linkedin/profile-view'
   | 'linkedin/react' | 'linkedin/invite' | 'linkedin/invite/withdraw'
-  | 'crm/notes' | 'commerce/buy' | 'browser';
+  | 'crm/notes' | 'crm/contacts/upsert' | 'crm/deals/update' | 'crm/tasks' | 'commerce/buy' | 'browser';
 
 /** Generic tools retain their original envelope; inline tools need not have job handles. */
 export interface RecoveryResponse {
