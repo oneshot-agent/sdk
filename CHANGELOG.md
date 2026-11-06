@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.64.0
 
+- `compute()` takes `purchase_limit_usdc`, the most per purchase, all in. The quote funds it and `price.purchases` shows what it adds; a live total above it waits for your approval. Without it, purchases are not funded and the goal pauses at one it can't afford. `ComputeGoalScope` accepts the same field, and warnings gain `purchase_limit_over_budget`.
 - `quoteDomain(name, { mailbox_mode, addresses })` picks the domain's mode (`relay` by default, or `mailbox`) and its addresses (1 to 10, default `['agent']`). Quoting a domain you already have with new addresses prices adding them (`setup: 'domain_addresses'`); `buyDomain` buys either quote. `email()` drops `mailbox_mode`: a send never sets up a domain or an address. When the email quote answers `no_sending_domain` or `address_not_set_up`, `email()` returns the setup quote as `confirmation_required`, or `setup_required` / `setup_pending` with `requirements`, and sends nothing. `from_domain` alone sends from the domain's main address. `DomainWarmupState` gains `not_warmed` (relay domains and addresses, which are never warmed) (#3604).
 - #3482: `ComputeEndReason` gains `runner_retired`: a goal left on the retired planner runner was ended with its unused budget credited, and can be started again as a new goal.
 - #3174: Goal status includes `tool_requests` with each request's need, status and optional live tool name.

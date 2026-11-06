@@ -44,7 +44,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Keep receipt on its subpath: node:crypto breaks browser bundles, and providerCost is not public.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.63.0';
+const SDK_VERSION = '0.64.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -1882,6 +1882,8 @@ export class OneShot {
 
     if (options.params) payload.params = options.params;
     if (options.budget_usdc) payload.budget_usdc = options.budget_usdc;
+    // Sent even at 0: the API refuses it, where dropping it would fall back to a limit in `scope`.
+    if (options.purchase_limit_usdc !== undefined) payload.purchase_limit_usdc = options.purchase_limit_usdc;
     if (options.deadline) payload.deadline = options.deadline;
     if (options.soul_slug) payload.soul_slug = options.soul_slug;
     if (options.soul_service_slug) payload.soul_service_slug = options.soul_service_slug;

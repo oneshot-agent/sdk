@@ -1725,6 +1725,12 @@ export interface ComputeOptions extends ToolOptions {
    */
   egress_allowlist?: string[];
   /**
+   * The most you would pay for one purchase, all in: product, shipping, tax and fee. It is added to
+   * the total and unused money comes back as credit. A live total above it waits for your approval.
+   * Without it, the quote does not fund purchases and the goal pauses at one it can't afford.
+   */
+  purchase_limit_usdc?: number;
+  /**
    * Your reading of the goal: the unit, how a unit starts, what each unit needs, the overhead, the
    * volume and what no price list covers. It replaces the quote's reading and is priced again in
    * code; a tool the goal cannot call is refused. Omit it and the quote proposes one.
@@ -1808,7 +1814,7 @@ export interface ComputeFeasibility {
     message: string;
     conflicts?: { constraints: { family: string; ref: string; label: string }[]; explanation: string }[];
   }[];
-  warnings: { code: 'need_limit_exceeded' | 'no_tool_matched' | 'tight_deadline' | 'finish_line_unknowable' | 'product_unverified' | 'similar_goal_was_impossible'; message: string }[];
+  warnings: { code: 'need_limit_exceeded' | 'no_tool_matched' | 'tight_deadline' | 'finish_line_unknowable' | 'product_unverified' | 'similar_goal_was_impossible' | 'purchase_limit_over_budget'; message: string }[];
   finish_line?: { kind: 'measurable' | 'needs_owner' | 'unknowable'; done_check?: ComputeDoneCheck };
   /** What the goal needs that no tool does, as the estimate read it; each is a `no_tool_matched` warning, and the quote is still issued. */
   missing?: { entity: string; attribute?: string; action?: string; operation: 'lookup' | 'list' | 'act'; purpose: string }[];
@@ -1833,6 +1839,8 @@ export interface ComputeGoalScope {
   overhead: { uses: Pick<ComputeScopeUse, 'tool' | 'qty' | 'max_attempts' | 'drivers'>[]; step_allowance: number };
   volume: { kind: 'list'; count: number } | { kind: 'open' };
   unpriced: { name: string; reason: 'connection' | 'quoted_tool'; assumption?: string }[];
+  /** The most per purchase, all in. `purchase_limit_usdc` on the request wins over this. */
+  purchase_limit_usdc?: number;
 }
 
 /** A bound soul's public identity and service, with the fixed price read by the server. */
@@ -1856,6 +1864,8 @@ export interface ComputeScopePrice {
   unpriced: ComputeGoalScope['unpriced'];
   unmeasured: string[];
   hires?: ComputeQuotedHire[];
+  /** What the amounts above include to fund purchases, at your limit per purchase. */
+  purchases?: { limit_usdc: number; per_unit: number; overhead: number; total: number };
 }
 
 export interface ComputeQuote {
