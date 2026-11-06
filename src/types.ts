@@ -1785,7 +1785,7 @@ export interface ComputeApprovals {
 
 /** A connected system, or the agent's LinkedIn account, required by the scoped tools or read from the objective. */
 export interface ComputeRequirement {
-  family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'meetings' | 'mailbox' | 'files' | 'field_service' | 'matters' | 'client_work' | 'portfolio' | 'repository' | 'linkedin';
+  family: 'crm' | 'ledger' | 'shipping' | 'tax' | 'procurement' | 'meetings' | 'mailbox' | 'files' | 'field_service' | 'matters' | 'client_work' | 'portfolio' | 'practice' | 'repository' | 'linkedin';
   /** The product the objective names (e.g. "QuickBooks"); null when only the kind of system was named. */
   product: string | null;
   /** The system can be connected on OneShot right now. */
@@ -1961,7 +1961,7 @@ export interface ComputeGoalStatus {
   /** The latest evaluation of the done-check. */
   check_result?: ComputeCheckResult | null;
   /** Progress and code-priced funding estimate while waiting for budget. */
-  budget_hold?: { since: string; units_done: number; units_left?: number; cost_to_finish?: number; price_per_unit?: number } | null;
+  budget_hold?: { since: string; units_done: number; units_left?: number; cost_to_finish?: number; price_per_unit?: number; blocked_call?: { tool: string; label: string; amount_usdc: number; shortfall_usdc: number } } | null;
   /** Why the goal ended. Budget exhaustion holds for 7 days before ending `budget_exhausted`. */
   end_reason?: ComputeEndReason | null;
   /** The goal's answer in the planner's words, written when it finished. What its tasks produced: `getComputeOutputs`. */
