@@ -44,7 +44,7 @@ import { Approvals, ActionPolicies } from './approvals';
 // Keep receipt on its subpath: node:crypto breaks browser bundles, and providerCost is not public.
 
 // Keep in sync with package.json `version`. Guarded by version.test.ts.
-const SDK_VERSION = '0.64.0';
+const SDK_VERSION = '0.65.0';
 
 /** Shared state between the WebSocket and HTTP branches of one job wait. */
 interface JobWaitState {
@@ -685,7 +685,7 @@ export class OneShot {
 
   async personFind(options: PersonFindOptions): Promise<PersonFindResult> {
     const { includePhone, ...payload } = options;
-    return this.tool('find/person', { ...payload, include_phone: includePhone, limit: options.limit ?? 100 });
+    return this.tool('find/person', { ...payload, include_phone: includePhone, limit: options.limit ?? 25 });
   }
 
   /** At least one identity: name, email, phone or a profile URL under any of its names. */

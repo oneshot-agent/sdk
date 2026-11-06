@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.65.0
+
+- `personFind` sends `limit: 25` when none is given, not 100. The server prices a search per person in its limit, so older releases pay for 100 people on a call with no limit.
+
 ## 0.64.0
 
 - `compute()` takes `purchase_limit_usdc`, the most per purchase, all in. The quote funds it and `price.purchases` shows what it adds; a live total above it waits for your approval. Without it, purchases are not funded and the goal pauses at one it can't afford. `ComputeGoalScope` accepts the same field, and warnings gain `purchase_limit_over_budget`.

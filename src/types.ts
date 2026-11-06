@@ -338,7 +338,7 @@ export interface ResearchToolOptions extends ToolOptions {
 }
 
 export interface PersonFindOptions extends ToolOptions, FreshLookupOption {
-  /** Off by default. Adds the per-person add-on on the pricing page × requested limit (default 100) for up to that many people; no phone hit guaranteed. */
+  /** Off by default. Adds the per-person add-on on the pricing page × requested limit (default 25) for up to that many people; no phone hit guaranteed. */
   includePhone?: boolean;
   job_titles?: string[];
   keywords?: string[];
@@ -353,8 +353,8 @@ export interface PersonFindOptions extends ToolOptions, FreshLookupOption {
   /** Industries as free text, e.g. `['fintech', 'software']`. */
   industry?: string[];
   company_size?: string;
-  /** Max rows to return, 1-500 (server default 100). Large requests are
-   * paginated server-side, so one response can hold up to `limit` rows.
+  /** People to ask for and pay for, found or not, 1-500 (default 25). Large
+   * requests are paginated server-side, so one response can hold up to `limit` rows.
    * The search runs under a time limit: if it is reached, the response holds
    * the rows found so far (possibly fewer than `limit`) - continue with
    * `offset`. With `include_phone`, every row reports its `phone_lookup`
@@ -1814,7 +1814,7 @@ export interface ComputeFeasibility {
     message: string;
     conflicts?: { constraints: { family: string; ref: string; label: string }[]; explanation: string }[];
   }[];
-  warnings: { code: 'need_limit_exceeded' | 'no_tool_matched' | 'tight_deadline' | 'finish_line_unknowable' | 'product_unverified' | 'similar_goal_was_impossible' | 'purchase_limit_over_budget'; message: string }[];
+  warnings: { code: 'need_limit_exceeded' | 'no_tool_matched' | 'tight_deadline' | 'finish_line_unknowable' | 'product_unverified' | 'similar_goal_was_impossible' | 'purchase_limit_over_budget' | 'finished_states_unreachable'; message: string }[];
   finish_line?: { kind: 'measurable' | 'needs_owner' | 'unknowable'; done_check?: ComputeDoneCheck };
   /** What the goal needs that no tool does, as the estimate read it; each is a `no_tool_matched` warning, and the quote is still issued. */
   missing?: { entity: string; attribute?: string; action?: string; operation: 'lookup' | 'list' | 'act'; purpose: string }[];
