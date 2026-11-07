@@ -785,6 +785,8 @@ export interface DomainPoolEntry {
    * inbox, free to add.
    */
   mailbox_mode: MailboxMode;
+  /** A mailbox domain's signing key: `published` means it is in DNS, not that mail is signed. `null` on a relay domain. */
+  email_authentication: 'pending' | 'published' | null;
   /** Rotation eligibility - the selector only picks `active`. */
   pool_status: 'active' | 'paused' | 'removed';
   /** Reputation health - a domain can be `paused` AND still `warming`/recovering. */
@@ -1814,7 +1816,7 @@ export interface ComputeFeasibility {
     message: string;
     conflicts?: { constraints: { family: string; ref: string; label: string }[]; explanation: string }[];
   }[];
-  warnings: { code: 'need_limit_exceeded' | 'no_tool_matched' | 'tight_deadline' | 'finish_line_unknowable' | 'product_unverified' | 'similar_goal_was_impossible' | 'purchase_limit_over_budget' | 'finished_states_unreachable'; message: string }[];
+  warnings: { code: 'need_limit_exceeded' | 'no_tool_matched' | 'tight_deadline' | 'finish_line_unknowable' | 'product_unverified' | 'similar_goal_was_impossible' | 'purchase_limit_over_budget' | 'finished_states_unreachable' | 'value_field_without_result_address'; message: string }[];
   finish_line?: { kind: 'measurable' | 'needs_owner' | 'unknowable'; done_check?: ComputeDoneCheck };
   /** What the goal needs that no tool does, as the estimate read it; each is a `no_tool_matched` warning, and the quote is still issued. */
   missing?: { entity: string; attribute?: string; action?: string; operation: 'lookup' | 'list' | 'act'; purpose: string }[];
