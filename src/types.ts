@@ -2031,6 +2031,13 @@ export interface ComputeTask {
   progress_pct: number | null;
   progress_message: string | null;
   result: unknown;
+  /** Why a `failed` task failed, as a class (`argument_error`, `policy_denied`, `platform_failure`, ...); null for any other status. */
+  failure_class: string | null;
+  /**
+   * The reason a `failed` task failed, in words: a refusal the platform wrote as stored, a generic reason for a
+   * `platform_failure` or `provider_failure` (its stored message can be a raw tool error); null for any other status.
+   */
+  error: string | null;
   /** What this task produced, by key. Read one with `getComputeOutput(goalId, key)`. */
   outputs?: Array<Pick<ComputeOutput, 'key' | 'content_type' | 'size_bytes' | 'readable'>>;
   quoted_usdc: string | null;
