@@ -2025,8 +2025,9 @@ export interface ComputeTask {
   task_type: string;
   tool: string | null;
   description: string;
-  status: string;
-  phase: number | null;
+  status: 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+  /** The phase name the orchestrator gave the task. */
+  phase: string | null;
   sequence: number | null;
   progress_pct: number | null;
   progress_message: string | null;
