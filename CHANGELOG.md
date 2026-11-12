@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `createTaskPushNotificationConfig`, `getTaskPushNotificationConfig`, `listTaskPushNotificationConfigs` and `deleteTaskPushNotificationConfig` manage the callback URLs on a compute goal you own; its terminal status is POSTed to each. Create and delete send a write proof, get and list a read proof, and an access token works for all four. `TaskPushNotificationConfig`, `PushNotificationAuthentication`, `CreateTaskPushNotificationConfigOptions`, `ListTaskPushNotificationConfigsOptions` and `TaskPushNotificationConfigList` are exported (#4082).
+
 ## 0.65.0
 
 - `personFind` sends `limit: 25` when none is given, not 100. The server prices a search per person in its limit, so older releases pay for 100 people on a call with no limit.

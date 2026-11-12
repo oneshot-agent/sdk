@@ -29,6 +29,19 @@ const usdc = await agent.getBalance(agent.usdcAddress);
 
 Paid calls quote, pay and wait for the result. You write one line.
 
+## Subscribe to a platform task
+
+Save as `subscribe.ts`; run `bun subscribe.ts` with `AGENT_PRIVATE_KEY` and `TASK_ID` (an existing compute goal UUID) in the environment:
+
+```typescript
+import { OneShot } from '@oneshot-agent/sdk';
+
+const agent = new OneShot({ privateKey: process.env.AGENT_PRIVATE_KEY! });
+for await (const event of agent.subscribeToTask(process.env.TASK_ID!)) console.log(event.kind, event.status.state);
+```
+
+The platform `/a2a/rpc` subscription uses the client's read proof or access token and yields the initial Task and status updates. It stops at a terminal event or server EOF (at most five minutes). EOF need not mean completion; reconnect explicitly. Per-soul subscriptions are unsupported. Pass `{ signal }` to abort a pending read, or `break` to close the stream. HTTP failures without a JSON-RPC error throw `ToolError`. Responses containing a JSON-RPC error throw `A2AError` with `code` and optional `data`, including a missing-task HTTP 404 response.
+
 ## What it does
 
 | Area | Methods |
@@ -42,9 +55,11 @@ Paid calls quote, pay and wait for the result. You write one line.
 | [Connected systems](https://docs.oneshotagent.com/api-reference/connections/overview) | `listConnections`, then `route('POST', '/v1/tools/ledger/invoices', { paid: true, body: { connection_id } })` for each read |
 | [LinkedIn](https://docs.oneshotagent.com/api-reference/linkedin/overview) | `linkedinConnect` `linkedinInvite` `linkedinWithdrawInvitation` `linkedinMessage` `linkedinReply` `reconnectLinkedInAccount` and more |
 | [Build](https://docs.oneshotagent.com/api-reference/build/create) | `build` `updateBuild` |
-| [Goals](https://docs.oneshotagent.com/api-reference/compute/create) | `compute` `waitForComputeGoal` `getComputeGoal` `getComputeTasks` `getComputeOutputs` `respondToComputeTask` `pauseComputeGoal` `resumeComputeGoal` `cancelComputeGoal` `fundComputeGoal` |
+| [Goals](https://docs.oneshotagent.com/api-reference/compute/create) | `compute` `waitForComputeGoal` `getComputeGoal` `getComputeTasks` `getComputeOutputs` `getComputeOutputsPage` `getComputeOutput` `respondToComputeTask` `pauseComputeGoal` `resumeComputeGoal` `cancelComputeGoal` `fundComputeGoal` `createTaskPushNotificationConfig` `getTaskPushNotificationConfig` `listTaskPushNotificationConfigs` `deleteTaskPushNotificationConfig` |
 | [Money and receipts](https://docs.oneshotagent.com/api-reference/analytics/overview) | `getBalance` `getUnifiedBalance` `budgets` `topUpCredits` `spendBreakdown` `rocs` `receiptsList` `tagReceiptValue` |
 | Anything else | `tool(name, input)` for any tool, `route(method, path, { params, query, body, paid })` for any declared route |
+
+**Output pagination.** `getComputeOutputs(goalId)` returns the first page as an array. `getComputeOutputsPage(goalId, { limit, cursor })` returns `{ outputs, next_cursor }`: process `outputs`, then pass the opaque `next_cursor` back unchanged until it is `null`. Omit `cursor` initially; `limit` defaults to 100 (1–500). `getComputeOutput(goalId, key)` reads individual content. [Traversal example](https://docs.oneshotagent.com/api-reference/compute/outputs).
 
 ## Money
 
@@ -133,10 +148,8 @@ try {
 
 ## Waiting and stopping
 
-- Paid calls wait by default. `wait: false` returns the `request_id`;
-  `waitForResult(requestId)` picks the result up later.
-- An `AbortSignal` stops the call **before payment** and nothing is charged.
-  After payment, the work happens and is billed. Aborting only stops your wait.
+- Paid calls wait by default. `wait: false` returns the `request_id`; `waitForResult(requestId)` picks the result up later.
+- An `AbortSignal` stops the call **before payment** and nothing is charged. After payment, the work happens and is billed. Aborting only stops your wait.
 - An abort rejects with `OneShotError('Operation cancelled')` for `commerceBuy`,
   `voice`, `sms`, `build`, `refineBuild`, `updateBuild` and `browser`; the other
   calls reject with the signal's `reason`. Handle both.
@@ -147,43 +160,30 @@ try {
 
 ```typescript
 const goal = await agent.compute({ objective: 'Research battery recycling', budget_usdc: 5 });
-const done = await agent.waitForComputeGoal(goal.goal_id, {
-  timeout: 300,
-  onStatusUpdate: (status) => console.log(status),
-});
+// Or be called back: the goal's terminal status is POSTed to your URL while the hook stays registered. get and list read the hooks.
+const hook = await agent.createTaskPushNotificationConfig({ taskId: goal.goal_id, url: 'https://example.com/hooks/oneshot', token: 'my-token' });
+const done = await agent.waitForComputeGoal(goal.goal_id, { timeout: 300, onStatusUpdate: (status) => console.log(status) });
 ```
 
-- It resolves on `completed` and throws `JobError` on `failed` or `cancelled`
+Keep the hook after the wait returns: a finished poll does not mean the callback was delivered. Clean up later, once your webhook receiver confirms it received the callback:
+
+```typescript
+await agent.deleteTaskPushNotificationConfig(goalId, hookId); // deleting drops a notification not yet sent
+```
+
+- `waitForComputeGoal` resolves on `completed` and throws `JobError` on `failed` or `cancelled`
   (`code` is the `end_reason`). `awaiting_confirmation`, `awaiting_connection`, `awaiting_budget`, `awaiting_tool`, `awaiting_setup` and `paused` wait for you; they do not end the wait.
 - Setup holds wait for the account need reader to report ready. Setup is a separate account purchase; cancelling the goal never removes a bought domain. After 7 days held the goal ends `cancelled/setup_timeout` and its unused budget is credited.
-- Budget exhaustion holds the goal in `awaiting_budget`; `fundComputeGoal` resumes it. After 7 days unanswered it ends `budget_exhausted` and unused funds are credited. An already failed budget goal also comes back after funding.
-  Call `waitForComputeGoal` again; the old wait does not resume.
-- Timeout defaults to 120 seconds and throws `JobTimeoutError`. It stops your
-  polling, not the goal. Stop the goal with `cancelComputeGoal`.
+- Budget exhaustion holds the goal in `awaiting_budget`; `fundComputeGoal` resumes it. After 7 days unanswered it ends `budget_exhausted` and unused funds are credited. An already failed budget goal also comes back after funding. Call `waitForComputeGoal` again; the old wait does not resume.
+- Timeout defaults to 120 seconds and throws `JobTimeoutError`. It stops your polling, not the goal. Stop the goal with `cancelComputeGoal`.
 
 ## Tool notes
 
 - **Email setup and sending.** `quoteDomain(name, { mailbox_mode, addresses })` prices a name without sending. `relay` (the default) gives addresses that send and receive with no hosted inbox, free per address; `mailbox` gives each address a hosted inbox, warmed before it sends, with a one-time fee per address. `addresses` defaults to `['agent']`; the first is the main address. Review `total_cost` and `billing`, then `buyDomain(name, quote_id)` buys that exact quote. Quote a domain you already have with new `addresses` to add them. Wait for verification before sending. A domain sends and receives only at its addresses. `email()` answers `confirmation_required` with the setup quote when the domain or address is not set up yet, and `setup_required` with `requirements` when the agent has no domain; nothing is sent or charged. `email({ ..., confirmNewDomain: quote_id })` buys that setup only and returns `setup_pending`. Goals and MCP models cannot buy setup. [Details](https://docs.oneshotagent.com/api-reference/email/domain-purchase). Omit `from_domain` and the server rotates across your domains, sending from each one's main address. Pin one and you skip the warmup gates; the send goes out with a `warning`. There is no shared sender. [Details](https://docs.oneshotagent.com/api-reference/email/send).
-- **People search.** An empty result means nobody matched. A failed search
-  throws; it never pretends to be empty. `limit` (default 25, max 500) is what you
-  pay for, found or not, and a search can return fewer rows. Page with `offset`. A search that hits its time limit returns what it found; rows
-  whose phone lookup ran out of time say `_phone_enrich_reason: 'time_budget_exhausted'`.
-  [Details](https://docs.oneshotagent.com/api-reference/research/person-find).
-- **Phone lookup** is off by default. `includePhone: true` is charged for each person
-  you ask for (the search `limit`), found or not; a failed job is refunded. `waitForPhones: true` waits
-  for numbers still arriving. It never buys any. Check `phones_pending`.
-  [Price](https://docs.oneshotagent.com/pricing).
-- **Stored records.** A person, company or business record looked up recently may
-  come from OneShot's store of earlier lookups (profiles, dossiers, social accounts,
-  email finds, company profiles and resolves up to 30 days old; email status and
-  searches 7 days; posts, articles, followers and interests 3 days), at the same
-  price. The result says `cached` and `fetched_at`; `fresh: true` on any person,
-  company or business method asks again and refreshes the copy.
-- **Account login.** `startBrowserProfileSetup` returns a `setup_url`. It opens
-  once and expires in 10 minutes. Give it only to the account's owner, never open
-  it yourself, keep it out of logs and prompts. Poll `getBrowserProfileSetup`
-  until `completed_at` is set. You get cookie names back, never values.
-  [Details](https://docs.oneshotagent.com/api-reference/browser/profiles).
+- **People search.** An empty result means nobody matched. A failed search throws; it never pretends to be empty. `limit` (default 25, max 500) is what you pay for, found or not, and a search can return fewer rows. Page with `offset`. A search that hits its time limit returns what it found; rows whose phone lookup ran out of time say `_phone_enrich_reason: 'time_budget_exhausted'`. [Details](https://docs.oneshotagent.com/api-reference/research/person-find).
+- **Phone lookup** is off by default. `includePhone: true` is charged for each person you ask for (the search `limit`), found or not; a failed job is refunded. `waitForPhones: true` waits for numbers still arriving. It never buys any. Check `phones_pending`. [Price](https://docs.oneshotagent.com/pricing).
+- **Stored records.** A person, company or business record looked up recently may come from OneShot's store of earlier lookups (profiles, dossiers, social accounts, email finds, company profiles and resolves up to 30 days old; email status and searches 7 days; posts, articles, followers and interests 3 days), at the same price. The result says `cached` and `fetched_at`; `fresh: true` on any person, company or business method asks again and refreshes the copy.
+- **Account login.** `startBrowserProfileSetup` returns a `setup_url`. It opens once and expires in 10 minutes. Give it only to the account's owner, never open it yourself, keep it out of logs and prompts. Poll `getBrowserProfileSetup` until `completed_at` is set. You get cookie names back, never values. [Details](https://docs.oneshotagent.com/api-reference/browser/profiles).
 - **LinkedIn.** Invitations are capped at 25 per account per UTC day;
   withdrawing one does not give the slot back. Use OneShot's `invitation_id`.
   A session that expired comes back with `reconnectLinkedInAccount`; a deleted

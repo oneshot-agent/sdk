@@ -2014,6 +2014,19 @@ export interface ComputeOutput {
   updated_at: string;
 }
 
+export interface ComputeOutputListOptions {
+  /** Number of outputs per page (default 100, at most 500). */
+  limit?: number;
+  /** Opaque next_cursor from the preceding page. */
+  cursor?: string;
+}
+
+export interface ComputeOutputPage {
+  outputs: ComputeOutput[];
+  /** Null on the last page. */
+  next_cursor: string | null;
+}
+
 /** An output with its text. `content` is null when `readable` is false; `truncated` when it was cut to the read limit. */
 export interface ComputeOutputContent extends ComputeOutput {
   content: string | null;
@@ -2077,6 +2090,49 @@ export interface ComputeBudgetStatus {
     description: string;
     created_at: string;
   }>;
+}
+
+/** How OneShot authenticates to a push callback: sent as `Authorization: <scheme> <credentials>`. */
+export interface PushNotificationAuthentication {
+  /** An HTTP authentication scheme token, e.g. `Bearer`. */
+  scheme: string;
+  credentials?: string;
+}
+
+/**
+ * A callback registered on a compute goal (an A2A `TaskPushNotificationConfig`,
+ * protobuf JSON field names). The goal's terminal status is POSTed to `url`.
+ */
+export interface TaskPushNotificationConfig {
+  /** The compute goal's UUID (`goal_id`). */
+  taskId: string;
+  /** Unique per task: 1 to 128 of `[A-Za-z0-9_-]`. */
+  id: string;
+  /** Absolute HTTP(S) URL without embedded credentials or a fragment. */
+  url: string;
+  /** Sent to the callback as `X-A2A-Notification-Token`. */
+  token?: string;
+  authentication?: PushNotificationAuthentication;
+}
+
+/** Input to `createTaskPushNotificationConfig`. An `id` that already exists replaces that whole configuration. */
+export interface CreateTaskPushNotificationConfigOptions extends Omit<TaskPushNotificationConfig, 'id'> {
+  /** Omit to have the server generate a UUID. */
+  id?: string;
+}
+
+export interface ListTaskPushNotificationConfigsOptions {
+  /** Default 50, at most 100. */
+  pageSize?: number;
+  /** `nextPageToken` of the previous page. */
+  pageToken?: string;
+}
+
+export interface TaskPushNotificationConfigList {
+  /** In `id` order. */
+  configs: TaskPushNotificationConfig[];
+  /** Empty on the last page. */
+  nextPageToken: string;
 }
 
 

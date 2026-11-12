@@ -1,4 +1,6 @@
 import { markUntrusted } from './untrusted-content';
+import { SUBSCRIPTION_DEADLINE_MS, isEventStream, taskEvents, untilAborted, type A2ATaskEvent } from './a2a';
+export { A2AError, type A2ATaskEvent } from './a2a';
 import { TOOL_TIMEOUTS } from './tool-timeouts.generated';
 export type { UntrustedContent } from './untrusted-content';
 import { Hunts } from './hunts';
@@ -155,9 +157,10 @@ import type {
   BuildQuote, BuildResult, BrowserTaskOptions, BrowserProfile, BrowserProfileCreateOptions, BrowserProfileSetup, BrowserQuote,
   BrowserResult, UpdateBuildOptions, RefineBuildOptions, SpendCategory, SpendBreakdown, RoCSResult, RoCSByGoalResult,
   Receipt, ReceiptsListResult, UnifiedBalance, CreditsTopUpResult, ComputeSchedule, ComputeOptions, ComputeGoalScope, ComputeScopeUse, ComputeScopePrice,
-  ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeStatusUpdateFn, ComputeTask, ComputeTaskListOptions, ComputeTaskPage, ComputeOutput, ComputeOutputContent,
+  ComputeQuote, ComputeGoalResult, ComputeGoalStatus, ComputeStatusUpdateFn, ComputeTask, ComputeTaskListOptions, ComputeTaskPage, ComputeOutput, ComputeOutputContent, ComputeOutputListOptions, ComputeOutputPage,
   ComputeGoalClaim, ComputeGoalClaimSource,
   ComputeBudgetStatus,
+  TaskPushNotificationConfig, CreateTaskPushNotificationConfigOptions, ListTaskPushNotificationConfigsOptions, TaskPushNotificationConfigList,
   DomainPoolEntry, DomainPoolListResult, DomainPoolStatusResult,
   AgentBudgetConfig, AgentBudgetStatus, AccessTokenCreated, AccessTokenInfo,
   LinkedInConnectOptions,
@@ -1955,6 +1958,37 @@ export class OneShot {
     return json.data;
   }
 
+  /** Observe an existing platform A2A task on one bounded SSE connection.
+   * Break from for-await or abort options.signal to close the connection.
+   * EOF can mean the server's five-minute bound, not task completion.
+   */
+  async *subscribeToTask(taskId: string, options: { signal?: AbortSignal } = {}): AsyncGenerator<A2ATaskEvent> {
+    this.validate(taskId, 'taskId');
+    options.signal?.throwIfAborted();
+    // One budget covers signing, the request and the stream. The request's signal also carries the caller's
+    // abort into the body, so it stays attached until the stream ends (AbortSignal.any needs Node 20).
+    const started = Date.now();
+    const request = new AbortController();
+    const forward = () => request.abort(options.signal?.reason);
+    options.signal?.addEventListener('abort', forward, { once: true });
+    const opening = setTimeout(() => request.abort(new DOMException('Task subscription did not open before its deadline', 'TimeoutError')), SUBSCRIPTION_DEADLINE_MS);
+    try {
+      const headers = await untilAborted(this.signedReadHeaders(), request.signal);
+      const response = await this.fetchApi(`${this.baseUrl}/a2a/rpc`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 'subscription', method: 'SubscribeToTask', params: { id: taskId } }),
+        signal: request.signal,
+      });
+      // A stream's own deadline ends it like EOF; an error body stays under this one until it is read.
+      if (isEventStream(response)) clearTimeout(opening);
+      yield* taskEvents(response, options.signal, SUBSCRIPTION_DEADLINE_MS - (Date.now() - started));
+    } finally {
+      clearTimeout(opening);
+      options.signal?.removeEventListener('abort', forward);
+    }
+  }
+
   /**
    * Poll a compute goal using its goal_id, not its creation request_id.
    * Returns the complete goal snapshot on completed; failed/cancelled reject
@@ -2067,7 +2101,8 @@ export class OneShot {
   /**
    * List what a compute goal produced: the files its sandbox tasks left and
    * the tool results too large for a task row. The goal's short answer is
-   * `result` on `getComputeGoal`.
+   * `result` on `getComputeGoal`. Returns the first page (default 100 outputs).
+   * Use `getComputeOutputsPage` to read further pages.
    *
    * @example
    * ```typescript
@@ -2077,9 +2112,18 @@ export class OneShot {
    * ```
    */
   async getComputeOutputs(goalId: string): Promise<ComputeOutput[]> {
-    this.validate(goalId, 'goalId');
+    return (await this.getComputeOutputsPage(goalId)).outputs;
+  }
 
-    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/outputs`, {
+  /** One page of outputs in key order, with next_cursor (null on the last page). */
+  async getComputeOutputsPage(goalId: string, options: ComputeOutputListOptions = {}): Promise<ComputeOutputPage> {
+    this.validate(goalId, 'goalId');
+    const query = new URLSearchParams();
+    if (options.limit !== undefined) query.set('limit', String(options.limit));
+    if (options.cursor !== undefined) query.set('cursor', options.cursor);
+    const qs = query.toString();
+
+    const response = await this.fetchApi(`${this.baseUrl}/v1/compute/${goalId}/outputs${qs ? `?${qs}` : ''}`, {
       headers: await this.signedReadHeaders()
     });
 
@@ -2087,8 +2131,8 @@ export class OneShot {
       throw new ToolError('Failed to list compute outputs', response.status, await response.text(), response.headers.get('retry-after'));
     }
 
-    const json = await response.json() as { data: ComputeOutput[] };
-    return json.data;
+    const json = await response.json() as { data: ComputeOutput[]; page?: { next_cursor?: string | null } };
+    return { outputs: json.data, next_cursor: json.page?.next_cursor ?? null };
   }
 
   /** Read one output of a compute goal by the `key` from `getComputeOutputs` (or a task's `outputs`). */
@@ -2135,6 +2179,63 @@ export class OneShot {
 
     const json = await response.json() as { data: ComputeBudgetStatus };
     return json.data;
+  }
+
+  /** Both values are URL path segments: anything else could address a different route. */
+  private pushConfigPath(taskId: string, id?: string): string {
+    if (typeof taskId !== 'string' || !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(taskId)) {
+      throw new ValidationError('taskId must be the compute goal UUID (goal_id)', 'taskId');
+    }
+    if (id !== undefined && (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id))) {
+      throw new ValidationError('id must be 1 to 128 of A-Z, a-z, 0-9, _ and -', 'id');
+    }
+    return `/v1/compute/${taskId}/push-notification-configs${id === undefined ? '' : `/${id}`}`;
+  }
+
+  /**
+   * Register a callback URL on a compute goal you own. When the goal completes,
+   * fails or is cancelled, its terminal status is POSTed there. Omitting `id`
+   * generates one; an existing `id` replaces that whole configuration. Free.
+   *
+   * @example
+   * ```typescript
+   * const config = await agent.createTaskPushNotificationConfig({
+   *   taskId: goal.goal_id,
+   *   url: 'https://example.com/hooks/oneshot',
+   *   token: 'my-token',
+   * });
+   * ```
+   */
+  async createTaskPushNotificationConfig(options: CreateTaskPushNotificationConfigOptions): Promise<TaskPushNotificationConfig> {
+    const { taskId, ...config } = options ?? ({} as CreateTaskPushNotificationConfigOptions);
+    // The id travels in the body; checking it here keeps the two id rules identical.
+    this.pushConfigPath(taskId, config.id);
+    this.validate(config.url, 'url');
+    return this.agentJson<TaskPushNotificationConfig>(this.pushConfigPath(taskId), 'POST', config, 'write');
+  }
+
+  /** Read one push configuration of a compute goal you own, including its token and credentials. */
+  async getTaskPushNotificationConfig(taskId: string, id: string): Promise<TaskPushNotificationConfig> {
+    this.validate(id, 'id');
+    return this.agentJson<TaskPushNotificationConfig>(this.pushConfigPath(taskId, id), 'GET');
+  }
+
+  /**
+   * List the push configurations of a compute goal you own, in `id` order.
+   * Pass `nextPageToken` back as `pageToken` until it is empty.
+   */
+  async listTaskPushNotificationConfigs(taskId: string, options: ListTaskPushNotificationConfigsOptions = {}): Promise<TaskPushNotificationConfigList> {
+    const query = new URLSearchParams();
+    if (options.pageSize !== undefined) query.set('pageSize', String(options.pageSize));
+    if (options.pageToken) query.set('pageToken', options.pageToken);
+    const qs = query.toString();
+    return this.agentJson<TaskPushNotificationConfigList>(`${this.pushConfigPath(taskId)}${qs ? `?${qs}` : ''}`, 'GET');
+  }
+
+  /** Remove a push configuration from a compute goal you own. Notifications still queued for it are dropped. */
+  async deleteTaskPushNotificationConfig(taskId: string, id: string): Promise<void> {
+    this.validate(id, 'id');
+    await this.agentJson<unknown>(this.pushConfigPath(taskId, id), 'DELETE', undefined, 'write');
   }
 
   /**
@@ -3549,7 +3650,7 @@ export class OneShot {
     });
   }
 
-  /** Poll phone reveals every 5s to avoid wasting calls during slow callbacks; return the latest snapshot on timeout. */
+  /** Poll phone reveals at most every 5s; bound all stages by the phone deadline and return the latest snapshot on expiry. */
   private async _pollForPhones<T>(
     requestId: string,
     timeoutSec: number,
@@ -3559,34 +3660,49 @@ export class OneShot {
     const deadline = Date.now() + timeoutSec * 1000;
     const interval = 5000;
     let lastResult: T | undefined = initialResult;
+    const scope = deadlineScope(signal, timeoutSec * 1000);
 
-    while (Date.now() < deadline) {
-      if (signal?.aborted) throw new OneShotError('Operation cancelled');
-      try {
-        const resp = await this.fetchApi(`${this.baseUrl}/v1/requests/${requestId}`, {
-          headers: await this.signedReadHeaders(),
-          signal,
-        });
-        if (!resp.ok) {
-          // Preserve the last successful snapshot across transient phone-wait errors.
-          if (lastResult !== undefined) return lastResult;
-          throw new ToolError('Failed to check job status', resp.status, await resp.text(), resp.headers.get('retry-after'));
-        }
-        const job = await resp.json() as Record<string, unknown>;
-        lastResult = this.unwrapJobResult(job) as T;
-        if (!this._isPhonesPending(lastResult)) {
-          return lastResult;
-        }
-      } catch (err) {
+    try {
+      while (Date.now() < deadline) {
         if (signal?.aborted) throw new OneShotError('Operation cancelled');
-        if (err instanceof OneShotError) throw err;
-        if (lastResult !== undefined) return lastResult;
-        throw err;
+        try {
+          const headers = await abortable(this.signedReadHeaders(), scope.signal);
+          scope.signal.throwIfAborted();
+          if (Date.now() >= deadline) return lastResult as T;
+          const resp = await abortable(this.fetchApi(`${this.baseUrl}/v1/requests/${requestId}`, {
+            headers,
+            signal: scope.signal,
+          }), scope.signal);
+          if (!resp.ok) {
+            // Preserve the last successful snapshot across transient phone-wait errors.
+            if (lastResult !== undefined) return lastResult;
+            throw new ToolError('Failed to check job status', resp.status, await abortable(resp.text(), scope.signal), resp.headers.get('retry-after'));
+          }
+          const job = await abortable(resp.json(), scope.signal) as Record<string, unknown>;
+          scope.signal.throwIfAborted();
+          if (Date.now() >= deadline) return lastResult as T;
+          lastResult = this.unwrapJobResult(job) as T;
+          if (!this._isPhonesPending(lastResult)) {
+            return lastResult;
+          }
+        } catch (err) {
+          if (signal?.aborted) throw new OneShotError('Operation cancelled');
+          if (err instanceof OneShotError) throw err;
+          if (lastResult !== undefined) return lastResult;
+          throw err;
+        }
+        await this.sleep(Math.min(interval, Math.max(0, deadline - Date.now())), scope.signal);
       }
-      await this.sleep(interval, signal);
-    }
 
-    return lastResult as T;
+      if (signal?.aborted) throw new OneShotError('Operation cancelled');
+      return lastResult as T;
+    } catch (err) {
+      if (signal?.aborted) throw new OneShotError('Operation cancelled');
+      if (scope.timedOut() || Date.now() >= deadline) return lastResult as T;
+      throw err;
+    } finally {
+      scope.close();
+    }
   }
 
   /** WebSocket transport failures leave HTTP polling in charge; job outcomes and cancellation settle the wait.
