@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `compute()` sends `budget_usdc: 0` instead of dropping it, so the API refuses it and the call throws `ValidationError` before any payment. It used to be left out, and the goal was quoted and paid at OneShot's estimate. A positive budget is sent as before, and an omitted one is still estimated (#4121).
+- `subscribeToTask` recovers from clock skew like other reads do: a clock-window proof refusal before the stream opens (A2A returns it inside the JSON-RPC error's `data`) corrects the signing clock from `server_time` and opens once more with a fresh nonce, inside the same deadline and abort signal. Token sessions, other refusals and errors after the stream starts are thrown as before (#4118).
 - `createTaskPushNotificationConfig`, `getTaskPushNotificationConfig`, `listTaskPushNotificationConfigs` and `deleteTaskPushNotificationConfig` manage the callback URLs on a compute goal you own; its terminal status is POSTed to each. Create and delete send a write proof, get and list a read proof, and an access token works for all four. `TaskPushNotificationConfig`, `PushNotificationAuthentication`, `CreateTaskPushNotificationConfigOptions`, `ListTaskPushNotificationConfigsOptions` and `TaskPushNotificationConfigList` are exported (#4082).
 
 ## 0.65.0

@@ -1884,7 +1884,8 @@ export class OneShot {
     };
 
     if (options.params) payload.params = options.params;
-    if (options.budget_usdc) payload.budget_usdc = options.budget_usdc;
+    // Sent even at 0: the API refuses it, where dropping it would have the API estimate a budget and quote it.
+    if (options.budget_usdc != null) payload.budget_usdc = options.budget_usdc;
     // Sent even at 0: the API refuses it, where dropping it would fall back to a limit in `scope`.
     if (options.purchase_limit_usdc !== undefined) payload.purchase_limit_usdc = options.purchase_limit_usdc;
     if (options.deadline) payload.deadline = options.deadline;
@@ -1961,6 +1962,7 @@ export class OneShot {
   /** Observe an existing platform A2A task on one bounded SSE connection.
    * Break from for-await or abort options.signal to close the connection.
    * EOF can mean the server's five-minute bound, not task completion.
+   * A clock-window proof refusal before the stream opens is retried once, inside the same deadline.
    */
   async *subscribeToTask(taskId: string, options: { signal?: AbortSignal } = {}): AsyncGenerator<A2ATaskEvent> {
     this.validate(taskId, 'taskId');
@@ -2837,6 +2839,7 @@ export class OneShot {
   }
 
   /** Retry a clock-window refusal once using the API's server_time, or a spent nonce on GET/HEAD.
+   * The refusal is read at the top level or inside a JSON-RPC error's data.
    * Never retry a spent nonce on a write: the first delivery may already have executed it.
    * Callers supply replayable JSON bodies and retain their original abort/deadline signal. */
   private async fetchApi(url: string, init: RequestInit): Promise<Response> {
@@ -2853,7 +2856,11 @@ export class OneShot {
     let scope: string;
     let serverTime: number | undefined;
     try {
-      const body = await response.clone().json() as { error?: unknown; message?: unknown; server_time?: unknown } | null;
+      type Refusal = { error?: unknown; message?: unknown; server_time?: unknown };
+      const json = await response.clone().json() as (Refusal & { jsonrpc?: unknown }) | null;
+      // A2A reports the proof middleware's refusal as the data of a JSON-RPC error.
+      const wrapped = json?.jsonrpc === '2.0' ? (json.error as { data?: Refusal | null } | null)?.data : undefined;
+      const body = wrapped ?? json;
       if (body?.error !== 'proof_required' || typeof body.message !== 'string') return response;
       const prefix = 'This endpoint requires a signed agent proof (x-agent-proof): ';
       const reason = body.message.startsWith(prefix) ? body.message.slice(prefix.length) : '';
@@ -2872,7 +2879,9 @@ export class OneShot {
 
     init.signal?.throwIfAborted();
     if (serverTime !== undefined) this.proofClockOffsetSec = serverTime - Math.floor(Date.now() / 1000);
-    const refreshed = await this.signedReadHeaders(scope);
+    // A signer that never answers must not outlive the caller's abort or deadline.
+    const signing = this.signedReadHeaders(scope);
+    const refreshed = await (init.signal ? untilAborted(signing, init.signal) : signing);
     init.signal?.throwIfAborted();
     if (!refreshed['x-agent-proof']) return response;
     const retryHeaders = new Headers(init.headers); // Keep the caller's headers intact.

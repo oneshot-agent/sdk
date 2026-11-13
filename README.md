@@ -40,7 +40,7 @@ const agent = new OneShot({ privateKey: process.env.AGENT_PRIVATE_KEY! });
 for await (const event of agent.subscribeToTask(process.env.TASK_ID!)) console.log(event.kind, event.status.state);
 ```
 
-The platform `/a2a/rpc` subscription uses the client's read proof or access token and yields the initial Task and status updates. It stops at a terminal event or server EOF (at most five minutes). EOF need not mean completion; reconnect explicitly. Per-soul subscriptions are unsupported. Pass `{ signal }` to abort a pending read, or `break` to close the stream. HTTP failures without a JSON-RPC error throw `ToolError`. Responses containing a JSON-RPC error throw `A2AError` with `code` and optional `data`, including a missing-task HTTP 404 response.
+The platform `/a2a/rpc` subscription uses the client's read proof or access token and yields the initial Task and status updates. It stops at a terminal event or server EOF (at most five minutes). EOF need not mean completion; reconnect explicitly. A clock-window proof refusal before the stream opens is retried once with a corrected proof, inside the same deadline. Per-soul subscriptions are unsupported. Pass `{ signal }` to abort a pending read, or `break` to close the stream. HTTP failures without a JSON-RPC error throw `ToolError`. Responses containing a JSON-RPC error throw `A2AError` with `code` and optional `data`, including a missing-task HTTP 404 response.
 
 ## What it does
 
