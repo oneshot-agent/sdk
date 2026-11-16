@@ -3053,7 +3053,7 @@ export class OneShot {
     return body.data;
   }
 
-  /** Local fast-fail guard: throw when a quote total exceeds the caller's cap. */
+  /** Local fast-fail guard for both quote totals and resolved payment charges. */
   private assertWithinMaxCost(total: string, maxCost?: number): void {
     if (maxCost && parseFloat(total) > maxCost) {
       throw new OneShotError(`Quote $${total} exceeds maxCost $${maxCost}`);
@@ -3403,6 +3403,7 @@ export class OneShot {
         };
         this.log(`Payment required: ${paymentInfo.amount} USDC`);
 
+        this.assertWithinMaxCost(paymentInfo.amount, maxCost);
         this.assertWithinBudget(paymentInfo.amount);
         this.checkAbortBeforePayment(signal);
         context.phase = 'payment';
@@ -3519,6 +3520,7 @@ export class OneShot {
       quoteResp, cfg.endpoint, cfg.payload, quoteData.context.quote_id, cfg.signal, approval,
     );
     paymentInfo.amount = this.chargeAmount(accepted, quoteData.payment_request.amount);
+    this.assertWithinMaxCost(paymentInfo.amount, cfg.maxCost);
     const signed = await this.signPaymentAuthorization(paymentInfo, accepted, resource, extensions);
     const execResp = await this.makePaidRequest(
       signed, cfg.endpoint, cfg.payload, quoteData.context.quote_id, cfg.signal, cfg.execTimeoutMs, approval,
