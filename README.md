@@ -148,6 +148,8 @@ try {
 
 ## Waiting and stopping
 
+- `approvals.waitFor(id, { signal, timeoutMs, intervalMs })` bounds signing, fetch and response-body reads. Its timeout defaults to 24 hours. Aborting rejects with `OneShotError('Operation cancelled')` and stops polling without withdrawing the approval.
+- Approval waits return the latest snapshot on timeout, or throw `OneShotError('Approval wait timed out')` if none arrived. They also return the latest snapshot when another polling interval would exceed the budget. Check `status` before retrying a held action: the snapshot may still be `pending`.
 - Paid calls wait by default. `wait: false` returns the `request_id`; `waitForResult(requestId)` picks the result up later.
 - An `AbortSignal` stops the call **before payment** and nothing is charged. After payment, the work happens and is billed. Aborting only stops your wait.
 - An abort rejects with `OneShotError('Operation cancelled')` for `commerceBuy`,

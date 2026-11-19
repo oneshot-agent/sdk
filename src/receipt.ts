@@ -1,43 +1,13 @@
 /**
- * Receipt canonicalization + offline verification.
- *
- * The api-service signs every terminal receipt with Ed25519
- * (`apps/api-service/src/services/receipt-signing.ts`) and publishes the
- * verification keys at `/.well-known/oneshot-receipts.json`. Anyone holding a
- * receipt from `GET /v1/analytics/receipts` (or the audit export) can verify
- * it offline with `verifyReceipt` below, or with the `oneshot-verify-receipt`
- * CLI.
- *
- * `canonicalizeReceipt` here is the ONE canonical implementation. The
- * api-service signer imports it from this file (see
- * `apps/api-service/src/services/receipt-signing.ts`) rather than keeping
- * its own copy, so signer and verifier can never drift apart — see
- * `tests/unit/receipt-verify.test.ts`'s "shared canonicalizer" guard.
- *
- * There is exactly ONE payload format, and it carries no version field. The
- * signing key is ours and every receipt is an attestation by us, so when the
- * payload has to change we change this function and re-sign every stored
- * receipt (`scripts/resign-receipts.ts`, bumping `revision`) instead of
- * forking a numbered format and carrying verification code for old ones.
- *
- * This lives in `libs/agent-sdk` (not `libs/shared-types`) because
- * `libs/agent-sdk` is the package that ships to npm as a standalone SDK
- * with no other workspace dependencies (see package.json — only `ethers`).
- * `libs/shared-types` is never published, so a published SDK cannot import
- * from it without breaking for every external consumer. api-service is not
- * published, so it can and does import straight from this file's source
- * (the same pattern `apps/api-service/src/mcp/agent.ts` already uses for
- * `OneShot` itself).
+ * The signer shares this canonicalizer so signed bytes cannot drift from offline verification.
+ * Format changes require re-signing stored receipts with a higher revision; there is no format version.
+ * Keep this in the published SDK: external consumers cannot import the unpublished shared-types package.
  */
 import { createHash, createPublicKey, verify as ed25519Verify } from 'node:crypto';
 
 export const RECEIPT_SIGNATURE_ALG = 'Ed25519' as const;
 
-/**
- * Fields covered by a receipt signature. Every one of them is public: the
- * canonical payload contains nothing the public receipt projection omits, so
- * whoever holds the receipt can recompute the exact signed bytes.
- */
+/** Signed fields must be public so receipt holders can recompute the exact signed bytes. */
 export interface SignableReceipt {
   receiptId: string;
   agentId: string;
@@ -53,33 +23,16 @@ export interface SignableReceipt {
   settlementTx?: string | null;
   createdAt: Date | string;
   settledAt?: Date | string | null;
-  /**
-   * Signing-time revision counter. Bound into the signed bytes, so two signed
-   * copies of the same `receipt_id` order from the bytes alone — no database
-   * lookup required. Defaults to 1; every re-sign persists one more.
-   */
+  /** Signing the revision lets receipt holders order re-signed copies without a database lookup. */
   revision?: number;
-  /**
-   * Free-form receipt metadata (`memo`, `decisionContext`, etc. — see
-   * `apps/api-service/src/services/receipts.ts`'s `createReceipt`). The
-   * metadata VALUE is never placed in the signed bytes — it is free-form and
-   * unbounded — only its digest is (see `computeMetadataDigest`), so a memo
-   * or decision-context edit invalidates the signature until the receipt is
-   * re-signed. `null` and absent digest identically.
-   */
+  /** Digest unbounded metadata so edits invalidate the signature without expanding the signed payload. */
   metadata?: unknown;
 }
 
-/** Deterministic JSON serialization used ONLY to derive `metadata_digest`. Object keys are sorted recursively, undefined values are dropped. */
 function canonicalizeMetadataValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalizeMetadataValue);
   if (value && typeof value === 'object' && !(value instanceof Date)) {
-    // A plain `{}` accumulator is unsafe here: `Object.prototype` defines
-    // `__proto__` as an accessor, so `sorted['__proto__'] = x` on an ordinary
-    // object would set the prototype instead of creating an own data
-    // property, and JSON.stringify only serializes own properties — the
-    // value would silently vanish from the digest input. `Object.create(null)`
-    // avoids this.
+    // A null prototype keeps __proto__ as an own property so it cannot vanish from the digest.
     const sorted: Record<string, unknown> = Object.create(null);
     for (const key of Object.keys(value as Record<string, unknown>).sort()) {
       const entry = (value as Record<string, unknown>)[key];
@@ -91,13 +44,11 @@ function canonicalizeMetadataValue(value: unknown): unknown {
   return value;
 }
 
-/** SHA-256 hex digest of a receipt's `metadata`. `null` and `undefined` canonicalize to the string "null". */
 export function computeMetadataDigest(metadata: unknown): string {
   const canonical = JSON.stringify(canonicalizeMetadataValue(metadata ?? null));
   return createHash('sha256').update(canonical, 'utf8').digest('hex');
 }
 
-/** The signature fields signReceipt() attaches to a SignableReceipt. */
 export interface ReceiptSignatureFields {
   signature: string;
   digest: string;
@@ -110,11 +61,7 @@ function receiptTimestamp(value: Date | string | null | undefined): string | nul
   return (value instanceof Date ? value : new Date(value)).toISOString();
 }
 
-/**
- * Deterministic JSON payload signed for every terminal receipt. Object
- * insertion order is intentional and is part of the wire format. Amounts are
- * strings, timestamps are UTC ISO-8601, absent optionals are `null`.
- */
+/** Object insertion order is part of the signed wire format. */
 export function canonicalizeReceipt(receipt: SignableReceipt): string {
   return JSON.stringify({
     receipt_id: receipt.receiptId,
@@ -136,7 +83,6 @@ export function canonicalizeReceipt(receipt: SignableReceipt): string {
   });
 }
 
-/** One entry from the published JWKS (`/.well-known/oneshot-receipts.json`). */
 export interface ReceiptJwk {
   kty: string;
   crv: string;
@@ -150,7 +96,6 @@ export interface ReceiptJwks {
   keys: ReceiptJwk[];
 }
 
-/** Reasons a receipt can fail verification — distinguishable, not a generic false. */
 export type ReceiptVerificationFailureReason =
   | 'malformed_receipt'
   | 'key_not_found'
@@ -161,17 +106,7 @@ export type ReceiptVerificationResult =
   | { valid: true; keyId: string }
   | { valid: false; reason: ReceiptVerificationFailureReason; keyId?: string; message: string };
 
-/**
- * Verify a signed receipt offline against a JWKS.
- *
- * Recomputes the canonical payload via `canonicalizeReceipt` (including the
- * metadata digest, so the receipt's `metadata` must be the value that was
- * signed), matches the receipt's `keyId` against the JWKS `kid`s (so a
- * rotated-out key still verifies as long as the JWKS retains it), checks the
- * SHA-256 digest, and checks the Ed25519 signature. A `key_id` that matches
- * no key in the JWKS fails with `reason: 'key_not_found'` rather than a
- * generic false.
- */
+/** Verification needs the original metadata and the signing key retained in the JWKS after rotation. */
 export function verifyReceipt(
   receipt: SignableReceipt & Partial<ReceiptSignatureFields>,
   jwks: ReceiptJwks,
@@ -248,13 +183,7 @@ export function verifyReceipt(
   return { valid: true, keyId };
 }
 
-/**
- * Adapt the wire-format (snake_case) JSON a caller gets from the API — e.g.
- * `GET /v1/analytics/receipts` or a receipt JSON file — into the shape
- * `verifyReceipt` expects. The audit export (`GET /v1/audit/receipts`) names
- * the attestation fields `receipt_*` because its plain `signature` is the
- * on-chain settlement transaction; both shapes are accepted.
- */
+// Audit exports use receipt_* for attestations because signature holds the settlement transaction.
 export function receiptFromWire(input: object): SignableReceipt & Partial<ReceiptSignatureFields> {
   if (!input || Array.isArray(input) || typeof input !== 'object') throw new Error('Receipt must be a JSON object');
   const wire = { ...input } as Record<string, unknown>;

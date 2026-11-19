@@ -23,6 +23,7 @@
  * ```
  */
 import { OneShotError } from './errors';
+import { abortable, deadlineScope } from './deadline';
 
 export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled' | 'consumed';
 
@@ -90,7 +91,7 @@ export interface ActionPolicy {
   timeout_seconds?: number;
 }
 
-type Request = <T>(path: string, method: string, body?: unknown, scope?: 'read' | 'write') => Promise<T>;
+type Request = <T>(path: string, method: string, body?: unknown, scope?: 'read' | 'write', signal?: AbortSignal) => Promise<T>;
 
 /** Wait `ms`, rejecting at once if `signal` aborts. */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -112,8 +113,8 @@ export class Approvals {
     return this.request<Approval>('/v1/approvals', 'POST', options, 'write');
   }
 
-  async get(approvalId: string): Promise<Approval> {
-    return this.request<Approval>(`/v1/approvals/${encodeURIComponent(approvalId)}`, 'GET');
+  async get(approvalId: string, options: { signal?: AbortSignal } = {}): Promise<Approval> {
+    return this.request<Approval>(`/v1/approvals/${encodeURIComponent(approvalId)}`, 'GET', undefined, undefined, options.signal);
   }
 
   async list(options: { status?: ApprovalStatus; limit?: number } = {}): Promise<Approval[]> {
@@ -133,17 +134,35 @@ export class Approvals {
   /**
    * Poll until the approval is decided (or expires). Resolves with the final
    * approval; it never throws on a denial — check `status`.
+   * The timeout includes in-flight reads and returns the latest snapshot, or
+   * throws OneShotError('Approval wait timed out') if none arrived. Cancellation
+   * throws OneShotError('Operation cancelled') without withdrawing the approval.
    */
   async waitFor(approvalId: string, options: { timeoutMs?: number; intervalMs?: number; signal?: AbortSignal } = {}): Promise<Approval> {
     const deadline = Date.now() + (options.timeoutMs ?? 24 * 3600 * 1000);
     const interval = Math.max(1000, options.intervalMs ?? 5000);
     const { signal } = options;
-    for (;;) {
+    const scope = deadlineScope(signal, options.timeoutMs ?? 24 * 3600 * 1000);
+    let latest: Approval | undefined;
+    try {
+      for (;;) {
+        scope.signal.throwIfAborted();
+        const approval = await abortable(this.get(approvalId, { signal: scope.signal }), scope.signal);
+        scope.signal.throwIfAborted();
+        latest = approval;
+        if (TERMINAL.includes(approval.status)) return approval;
+        if (Date.now() + interval > deadline) return approval;
+        await sleep(interval, scope.signal);
+      }
+    } catch (error) {
       if (signal?.aborted) throw new OneShotError('Operation cancelled');
-      const approval = await this.get(approvalId);
-      if (TERMINAL.includes(approval.status)) return approval;
-      if (Date.now() + interval > deadline) return approval;
-      await sleep(interval, signal);
+      if (scope.timedOut()) {
+        if (latest) return latest;
+        throw new OneShotError('Approval wait timed out');
+      }
+      throw error;
+    } finally {
+      scope.close();
     }
   }
 }

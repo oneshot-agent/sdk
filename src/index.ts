@@ -252,7 +252,7 @@ export class OneShot {
   }, input => this.executeToolRequest('/v1/tools/physical-mail/send', { ...input, wait: false }));
 
   /** Ask a named human to decide, and read decisions. See ./approvals.ts. */
-  readonly approvals = new Approvals((path, method, body, scope) => this.agentJson(path, method, body, scope));
+  readonly approvals = new Approvals((path, method, body, scope, signal) => this.agentJson(path, method, body, scope, signal));
   /** Which paid calls run, are denied, or wait for approval. Wallet sessions write it. */
   readonly policy = new ActionPolicies((path, method, body, scope) => this.agentJson(path, method, body, scope));
 
@@ -2976,16 +2976,26 @@ export class OneShot {
    * ```
    */
   /** Signed-proof JSON request to a free agent route; returns `data`. Errors map through failFromResponse. */
-  private async agentJson<T>(path: string, method: string, body?: unknown, scope: 'read' | 'write' = 'read'): Promise<T> {
-    const response = await this.fetchApi(`${this.baseUrl}${path}`, {
-      method,
-      headers: { 'Content-Type': 'application/json', ...(await this.signedReadHeaders(scope)) },
-      ...(body === undefined || method === 'GET' ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!response.ok) await this.failFromResponse(`${method} ${path.split('?')[0]} failed`, response);
-    const json = await response.json() as { data?: T };
-    return (json && typeof json === 'object' && 'data' in json ? json.data : json) as T;
+  private async agentJson<T>(path: string, method: string, body?: unknown, scope: 'read' | 'write' = 'read', signal?: AbortSignal): Promise<T> {
+    const request = signal ? deadlineScope(signal, 30_000) : undefined;
+    const read = <U>(work: Promise<U>) => request ? abortable(work, request.signal) : work;
+    try {
+      request?.signal.throwIfAborted();
+      const headers = await read(this.signedReadHeaders(scope));
+      request?.signal.throwIfAborted();
+      const response = await read(this.fetchApi(`${this.baseUrl}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json', ...headers },
+        ...(body === undefined || method === 'GET' ? {} : { body: JSON.stringify(body) }),
+        signal: request?.signal ?? AbortSignal.timeout(30_000),
+      }));
+      request?.signal.throwIfAborted();
+      if (!response.ok) await read(this.failFromResponse(`${method} ${path.split('?')[0]} failed`, response));
+      const json = await read(response.json()) as { data?: T };
+      return (json && typeof json === 'object' && 'data' in json ? json.data : json) as T;
+    } finally {
+      request?.close();
+    }
   }
 
   async budgets(): Promise<AgentBudgetStatus> {
